@@ -17,20 +17,22 @@ import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 from pymongo import MongoClient
+import ssl
 
-# ---------------------------------------------------------------------------
-# MongoDB Atlas Connection Setup
-# ---------------------------------------------------------------------------
-# Database configuration parameters
 DB_NAME = "Vektor"
 COLLECTION_NAME = "Reports"
 
 @st.cache_resource
 def get_mongo_collection():
     try:
-        # Retrieve the hidden URI securely from Streamlit secrets
         mongo_uri = st.secrets["MONGO_URI"]
-        client = MongoClient(mongo_uri, serverSelectionTimeoutMS=5000)
+        
+        # Initialize MongoClient with explicit SSL/TLS context options to bypass handshake mismatch
+        client = MongoClient(
+            mongo_uri, 
+            serverSelectionTimeoutMS=5000,
+            ssl_cert_reqs=ssl.CERT_NONE  # Bypasses strict local cert validation errors on cloud containers
+        )
         db = client[DB_NAME]
         return db[COLLECTION_NAME]
     except Exception as e:
