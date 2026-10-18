@@ -25,9 +25,17 @@ COLLECTION_NAME = "Reports"
 def get_mongo_collection():
     try:
         # Securely retrieve the connection string from Streamlit secrets
-        mongo_uri = st.secrets["MONGO_URI"]
+        mongo_uri = st.secrets["MONGO_URI"].strip()
         
-        # Initialize MongoClient with connection timeout
+        # Ensure TLS parameters are explicitly present to bypass SSL handshake errors
+        if "?" not in mongo_uri:
+            mongo_uri += "?tls=true&tlsAllowInvalidCertificates=true"
+        elif "tls=true" not in mongo_uri and "ssl=true" not in mongo_uri:
+            mongo_uri += "&tls=true&tlsAllowInvalidCertificates=true"
+        elif "tlsAllowInvalidCertificates" not in mongo_uri:
+            mongo_uri += "&tlsAllowInvalidCertificates=true"
+        
+        # Initialize MongoClient with safe connection timeouts
         client = MongoClient(
             mongo_uri, 
             serverSelectionTimeoutMS=5000
