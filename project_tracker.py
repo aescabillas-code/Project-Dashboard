@@ -256,12 +256,64 @@ def fmt_money(value):
         return "$0.00"
 
 
+@st.dialog("Add task", width="large")
+def add_task_dialog(project_id: int, today: date):
+    st.caption("Create a task for the active project. Required fields are marked with an asterisk.")
+    with st.form("add_task_modal_form", clear_on_submit=True):
+        a, b, c = st.columns(3)
+        wbs = a.text_input("WBS / outline code", placeholder="e.g. 1.2")
+        task_name = b.text_input("Task name *")
+        owner = c.text_input("Owner / assignee")
+        d, e, f = st.columns(3)
+        start_date = d.date_input("Start date", value=today)
+        end_date = e.date_input("End date", value=today + timedelta(days=1))
+        priority = f.selectbox("Priority", PRIORITIES, index=1)
+        g, h, i = st.columns(3)
+        status = g.selectbox("Status", STATUSES)
+        progress = h.slider("Progress (%)", 0, 100, 0)
+        milestone = i.checkbox("Milestone")
+        j, k, l = st.columns(3)
+        predecessors = j.text_input("Predecessors (task IDs)", placeholder="e.g. 2, 4")
+        estimated_cost = k.number_input("Estimated cost", min_value=0.0, value=0.0, step=100.0)
+        actual_cost = l.number_input("Actual cost", min_value=0.0, value=0.0, step=100.0)
+        notes = st.text_area("Notes")
+        save_col, cancel_col = st.columns(2)
+        submitted = save_col.form_submit_button("Save task", type="primary", use_container_width=True)
+        cancelled = cancel_col.form_submit_button("Cancel", use_container_width=True)
+        if submitted:
+            try:
+                if end_date < start_date:
+                    raise ValueError("End date cannot be earlier than start date.")
+                save_task(project_id, dict(wbs=wbs, task_name=task_name, owner=owner,
+                    start_date=start_date, end_date=end_date, priority=priority, status=status,
+                    progress=progress, milestone=milestone, predecessors=predecessors,
+                    estimated_cost=estimated_cost, actual_cost=actual_cost, notes=notes))
+                st.session_state["vektor_task_notice"] = "Task added successfully."
+                st.rerun()
+            except Exception as exc:
+                st.error(str(exc))
+        if cancelled:
+            st.rerun()
+
+
+@st.dialog("Delete task?", width="small")
+def delete_task_dialog(task_id: int, project_id: int, task_name: str):
+    st.warning(f'This will permanently delete “{task_name}”. This action cannot be undone.')
+    yes, no = st.columns(2)
+    if yes.button("Delete task", type="primary", use_container_width=True):
+        delete_task(task_id, project_id)
+        st.session_state["vektor_task_notice"] = "Task deleted successfully."
+        st.rerun()
+    if no.button("Cancel", use_container_width=True):
+        st.rerun()
+
+
 st.set_page_config(page_title="Vektor | Direction + Velocity", page_icon="📊", layout="wide")
 init_db()
 
 st.markdown("""
 <style>
-    :root { --pt-navy:#003B5C; --pt-blue:#01A982; --pt-green:#01A982; --pt-teal:#01A982; --pt-line:#d9e5df; --pt-ink:#173b35; }
+    :root { --pt-navy:#173B35; --pt-blue:#01A982; --pt-green:#01A982; --pt-teal:#01A982; --pt-line:#d9e5df; --pt-ink:#173b35; }
     .block-container {padding: 1.1rem 1.35rem 2rem; max-width: 1900px;}
     [data-testid="stMetric"] {background:linear-gradient(145deg,#ffffff,#f3fbf7); border:1px solid var(--pt-line); padding:14px 16px; border-radius:14px; box-shadow:0 2px 8px rgba(0,59,92,.06);}
     [data-testid="stMetricLabel"] {color:#536b63; font-weight:650;}
@@ -274,11 +326,18 @@ st.markdown("""
     div[data-testid="stSidebar"] > div {height:100vh; overflow-y:auto;}
     /* Keep the workspace navigation expanded: hide Streamlit's sidebar collapse controls. */
     [data-testid="stSidebarCollapseButton"], [data-testid="collapsedControl"], button[kind="header"] {display:none !important;}
-    div[data-testid="stSidebar"] [data-testid="stRadio"] label {padding:7px 9px; border-radius:8px; font-weight:550;}
-    div[data-testid="stSidebar"] [data-testid="stRadio"] label:hover {background:#d8f2e7;}
+    div[data-testid="stSidebar"] div[data-testid="stButton"] > button {
+      width:100%; text-align:left; justify-content:flex-start; border:1px solid transparent;
+      border-radius:8px; background:transparent; color:#263b34; padding:.55rem .75rem;
+    }
+    div[data-testid="stSidebar"] div[data-testid="stButton"] > button[kind="primary"] {
+      background:#01A982; color:#ffffff; border-color:#01A982;
+    }
+    .vektor-eyebrow {font-size:.78rem; letter-spacing:.16em; font-weight:750; color:#007F63;}
+    .vektor-section {border-bottom:2px solid #01A982; padding-bottom:.45rem; margin-bottom:.8rem;}
     div[data-testid="stButton"] > button, div[data-testid="stDownloadButton"] > button {border-radius:9px; font-weight:650; min-height:2.55rem; border-color:#01A982; color:#007F63;}
     div[data-testid="stButton"] > button[kind="primary"] {background:#01A982; color:#ffffff; border-color:#01A982;}
-    div[data-testid="stButton"] > button:hover, div[data-testid="stDownloadButton"] > button:hover {background:#e3f7ee; border-color:#01A982; color:#003B5C;}
+    div[data-testid="stButton"] > button:hover, div[data-testid="stDownloadButton"] > button:hover {background:#e3f7ee; border-color:#01A982; color:#173B35;}
     [data-testid="stProgressBar"] > div > div {background-color:#01A982;}
     a {color:#01A982;}
     div[data-testid="stPlotlyChart"] {border:1px solid #dce9e2; border-radius:12px; padding:5px; background:#fff;}
@@ -315,9 +374,15 @@ with st.sidebar:
     project_id = project_options[selected_label]
     project_row = projects.loc[projects["project_id"] == project_id].iloc[0]
     st.markdown("#### WORKSPACE")
-    page = st.radio("Navigate", [
-        "Overview", "Task Plan & Gantt", "Task Register", "Resources", "Project Settings", "Import / Export"
-    ], label_visibility="collapsed")
+    nav_items = ["Overview", "Task Plan & Gantt", "Task Register", "Resources", "Project Settings", "Import / Export"]
+    if "vektor_page" not in st.session_state:
+        st.session_state["vektor_page"] = "Overview"
+    for nav_item in nav_items:
+        if st.button(nav_item, key=f"vektor_nav_{nav_item}", use_container_width=True,
+                     type="primary" if st.session_state["vektor_page"] == nav_item else "secondary"):
+            st.session_state["vektor_page"] = nav_item
+            st.rerun()
+    page = st.session_state["vektor_page"]
     st.divider()
     st.caption("● Local database connected")
     st.caption(f"Storage: {DB_PATH.name}")
@@ -363,9 +428,10 @@ if page == "Overview":
                 lambda r: "Overdue" if r["end_date"] < today and r["status"] != "Completed"
                 else ("Completed" if r["status"] == "Completed" else "In Progress"), axis=1)
             fig = px.timeline(gantt, x_start="Start", x_end="Finish", y="Task label", color="Health",
-                              color_discrete_map={"Overdue": "#D64545", "Completed": "#01A982", "In Progress": "#01A982"},
+                              color_discrete_map={"Overdue": "#C83E4D", "Completed": "#01A982", "In Progress": "#70C9A9"},
                               hover_data=["owner", "progress", "priority", "status"])
             fig.update_yaxes(autorange="reversed", title="")
+            fig.add_vline(x=pd.Timestamp(today), line_dash="dash", line_color="#01A982", annotation_text="TODAY", annotation_position="top")
             fig.update_layout(height=max(320, min(650, 36 * total + 100)), margin=dict(l=10, r=10, t=20, b=10),
                               legend_title_text="")
             st.plotly_chart(fig, use_container_width=True)
@@ -418,9 +484,10 @@ elif page == "Task Plan & Gantt":
             plot_df["Task"] = plot_df.apply(lambda r: f"{r['task_id']} · {r['wbs']} {r['task_name']}".strip(), axis=1)
             plot_df["Schedule"] = plot_df["task_id"].apply(lambda x: "Critical path" if int(x) in critical_ids else "Standard")
             fig = px.timeline(plot_df, x_start="Start", x_end="Finish", y="Task", color="Schedule",
-                              color_discrete_map={"Critical path": "#01A982", "Standard": "#003B5C"},
+                              color_discrete_map={"Critical path": "#01A982", "Standard": "#A7B7B0"},
                               hover_data=["owner", "progress", "status", "priority", "predecessors"])
             fig.update_yaxes(autorange="reversed", title="")
+            fig.add_vline(x=pd.Timestamp(today), line_dash="dash", line_color="#01A982", annotation_text="TODAY", annotation_position="top")
             fig.update_layout(height=max(360, min(850, 34 * len(plot_df) + 100)), margin=dict(l=10, r=10, t=20, b=10))
             st.plotly_chart(fig, use_container_width=True)
         st.subheader("Dependency / critical-path summary")
@@ -430,38 +497,14 @@ elif page == "Task Plan & Gantt":
 elif page == "Task Register":
     st.subheader("Task register")
     st.caption("Add, edit, or delete tasks. Task IDs are generated automatically; use task IDs in the Predecessors field.")
-    with st.expander("＋ Add a task", expanded=False):
-        with st.form("add_task_form", clear_on_submit=True):
-            a, b, c = st.columns(3)
-            wbs = a.text_input("WBS / outline code", placeholder="e.g. 1.2")
-            task_name = b.text_input("Task name *")
-            owner = c.text_input("Owner / assignee")
-            d, e, f = st.columns(3)
-            start_date = d.date_input("Start date", value=today)
-            end_date = e.date_input("End date", value=today + timedelta(days=1))
-            priority = f.selectbox("Priority", PRIORITIES, index=1)
-            g, h, i = st.columns(3)
-            status = g.selectbox("Status", STATUSES)
-            progress = h.slider("Progress (%)", 0, 100, 0)
-            milestone = i.checkbox("Milestone (zero-duration marker)")
-            j, k, l = st.columns(3)
-            predecessors = j.text_input("Predecessors (task IDs)", placeholder="e.g. 2, 4")
-            estimated_cost = k.number_input("Estimated cost", min_value=0.0, value=0.0, step=100.0)
-            actual_cost = l.number_input("Actual cost", min_value=0.0, value=0.0, step=100.0)
-            notes = st.text_area("Notes")
-            submitted = st.form_submit_button("Add task", type="primary")
-            if submitted:
-                try:
-                    if end_date < start_date:
-                        raise ValueError("End date cannot be earlier than start date.")
-                    save_task(project_id, dict(wbs=wbs, task_name=task_name, owner=owner,
-                        start_date=start_date, end_date=end_date, priority=priority, status=status,
-                        progress=progress, milestone=milestone, predecessors=predecessors,
-                        estimated_cost=estimated_cost, actual_cost=actual_cost, notes=notes))
-                    st.success("Task added.")
-                    st.rerun()
-                except Exception as exc:
-                    st.error(str(exc))
+    add_col, info_col = st.columns([1, 4])
+    with add_col:
+        if st.button("＋ Add Task", type="primary", use_container_width=True):
+            add_task_dialog(project_id, today)
+    with info_col:
+        st.caption("Create tasks in a popup. Edit and delete actions are also handled through focused dialogs.")
+    if st.session_state.get("vektor_task_notice"):
+        st.success(st.session_state.pop("vektor_task_notice"))
     tasks = get_tasks(project_id)
     if not tasks.empty:
         search = st.text_input("Search tasks", placeholder="Search task, WBS, owner, status…")
@@ -485,40 +528,47 @@ elif page == "Task Register":
         chosen = st.selectbox("Select task", list(task_lookup.keys()), key="edit_task_select")
         selected_id = task_lookup[chosen]
         row = tasks.loc[tasks["task_id"] == selected_id].iloc[0]
-        with st.form(f"edit_task_{selected_id}"):
-            a, b, c = st.columns(3)
-            ewbs = a.text_input("WBS / outline code", str(row["wbs"] or ""))
-            ename = b.text_input("Task name *", str(row["task_name"] or ""))
-            eowner = c.text_input("Owner / assignee", str(row["owner"] or ""))
-            d, e, f = st.columns(3)
-            estart = d.date_input("Start date", value=row["start_date"] or today, key=f"start_{selected_id}")
-            eend = e.date_input("End date", value=row["end_date"] or today, key=f"end_{selected_id}")
-            epriority = f.selectbox("Priority", PRIORITIES, index=PRIORITIES.index(row["priority"]) if row["priority"] in PRIORITIES else 1)
-            g, h, i = st.columns(3)
-            estatus = g.selectbox("Status", STATUSES, index=STATUSES.index(row["status"]) if row["status"] in STATUSES else 0)
-            eprogress = h.slider("Progress (%)", 0, 100, int(row["progress"]), key=f"progress_{selected_id}")
-            emilestone = i.checkbox("Milestone", bool(row["milestone"]), key=f"milestone_{selected_id}")
-            j, k, l = st.columns(3)
-            epreds = j.text_input("Predecessors (task IDs)", str(row["predecessors"] or ""))
-            eest = k.number_input("Estimated cost", min_value=0.0, value=float(row["estimated_cost"] or 0), step=100.0)
-            eactual = l.number_input("Actual cost", min_value=0.0, value=float(row["actual_cost"] or 0), step=100.0)
-            enotes = st.text_area("Notes", str(row["notes"] or ""))
-            saved = st.form_submit_button("Save changes", type="primary")
-            if saved:
-                try:
-                    save_task(project_id, dict(wbs=ewbs, task_name=ename, owner=eowner,
-                        start_date=estart, end_date=eend, priority=epriority, status=estatus,
-                        progress=eprogress, milestone=emilestone, predecessors=epreds,
-                        estimated_cost=eest, actual_cost=eactual, notes=enotes), selected_id)
-                    st.success("Task updated.")
-                    st.rerun()
-                except Exception as exc:
-                    st.error(str(exc))
-        confirm_delete = st.checkbox("I understand this permanently deletes the selected task", key=f"confirm_delete_{selected_id}")
-        if st.button("Delete selected task", disabled=not confirm_delete):
-            delete_task(selected_id, project_id)
-            st.success("Task deleted.")
-            st.rerun()
+        edit_col, delete_col = st.columns([1, 1])
+        with edit_col:
+            if st.button("Edit selected task", type="primary", use_container_width=True):
+                st.session_state["vektor_edit_task_id"] = int(selected_id)
+        with delete_col:
+            if st.button("Delete selected task", use_container_width=True):
+                delete_task_dialog(int(selected_id), project_id, str(row["task_name"]))
+        if st.session_state.get("vektor_edit_task_id") == int(selected_id):
+            @st.dialog("Edit task", width="large")
+            def edit_task_dialog(project_id: int, selected_id: int, row: pd.Series):
+                with st.form(f"edit_task_modal_{selected_id}"):
+                    a, b, c = st.columns(3)
+                    ewbs = a.text_input("WBS / outline code", str(row["wbs"] or ""))
+                    ename = b.text_input("Task name *", str(row["task_name"] or ""))
+                    eowner = c.text_input("Owner / assignee", str(row["owner"] or ""))
+                    d, e, f = st.columns(3)
+                    estart = d.date_input("Start date", value=row["start_date"] or today, key=f"edit_start_{selected_id}")
+                    eend = e.date_input("End date", value=row["end_date"] or today, key=f"edit_end_{selected_id}")
+                    epriority = f.selectbox("Priority", PRIORITIES, index=PRIORITIES.index(row["priority"]) if row["priority"] in PRIORITIES else 1)
+                    g, h, i = st.columns(3)
+                    estatus = g.selectbox("Status", STATUSES, index=STATUSES.index(row["status"]) if row["status"] in STATUSES else 0)
+                    eprogress = h.slider("Progress (%)", 0, 100, int(row["progress"]), key=f"edit_progress_{selected_id}")
+                    emilestone = i.checkbox("Milestone", bool(row["milestone"]), key=f"edit_milestone_{selected_id}")
+                    j, k, l = st.columns(3)
+                    epreds = j.text_input("Predecessors (task IDs)", str(row["predecessors"] or ""))
+                    eest = k.number_input("Estimated cost", min_value=0.0, value=float(row["estimated_cost"] or 0), step=100.0)
+                    eactual = l.number_input("Actual cost", min_value=0.0, value=float(row["actual_cost"] or 0), step=100.0)
+                    enotes = st.text_area("Notes", str(row["notes"] or ""))
+                    save = st.form_submit_button("Save changes", type="primary")
+                    if save:
+                        try:
+                            save_task(project_id, dict(wbs=ewbs, task_name=ename, owner=eowner,
+                                start_date=estart, end_date=eend, priority=epriority, status=estatus,
+                                progress=eprogress, milestone=emilestone, predecessors=epreds,
+                                estimated_cost=eest, actual_cost=eactual, notes=enotes), selected_id)
+                            st.session_state["vektor_task_notice"] = "Task updated successfully."
+                            st.session_state.pop("vektor_edit_task_id", None)
+                            st.rerun()
+                        except Exception as exc:
+                            st.error(str(exc))
+            edit_task_dialog(project_id, int(selected_id), row)
     else:
         st.info("No tasks yet. Use Add a task to begin.")
 
