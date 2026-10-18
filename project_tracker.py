@@ -6139,3 +6139,756 @@ elif page == "Reports":
                 f"""<div class="vk-table-wrap"><table class="vk-table"><thead><tr><th>Name</th><th>Team</th><th style="text-align:center">Active Tasks</th><th style="text-align:center">Completed</th><th style="text-align:center">In Progress</th><th style="text-align:center">Not Started</th><th style="text-align:center">High Priority</th><th>Workload Status</th></tr></thead><tbody>{wl_tr}</tbody></table></div>""",
                 unsafe_allow_html=True,
             )
+# =========================================================================
+    # REPORT TAB 7: CUSTOM REPORT (Exact Match to Image 33)
+    # =========================================================================
+    elif active_rtab == "Custom":
+        if "custom_viz_type" not in st.session_state:
+            st.session_state.custom_viz_type = "Bar Chart"
+
+        # --- SECTION 1: BUILD CUSTOM REPORT ---
+        with st.container(border=True):
+            b_left, b_right = st.columns([2.15, 1.05])
+
+            with b_left:
+                st.markdown(
+                    clean_html(
+                        """
+                        <div style="font-size:16px;font-weight:800;color:#0F172A">Build Custom Report</div>
+                        <div style="font-size:12.5px;color:#64748B;margin-bottom:12px">Select the data and options you want to include in your report.</div>
+                        """
+                    ),
+                    unsafe_allow_html=True,
+                )
+
+                cfg1, cfg2, cfg3 = st.columns([1, 1, 1.45])
+                with cfg1:
+                    st.markdown("<div style='font-size:12px;font-weight:700;color:#0F172A;margin-bottom:4px'>Report Type</div>", unsafe_allow_html=True)
+                    st.selectbox(
+                        "Report Type",
+                        ["📁 Project Report", "📋 Task Report", "👥 Resource Report", "⚑ Milestone Report", "📊 Workload Report"],
+                        key="cr_rep_type",
+                        label_visibility="collapsed",
+                    )
+                with cfg2:
+                    st.markdown("<div style='font-size:12px;font-weight:700;color:#0F172A;margin-bottom:4px'>Group By</div>", unsafe_allow_html=True)
+                    st.selectbox(
+                        "Group By",
+                        ["▤ Project", "👥 Team", "● Status", "⚑ Priority", "👤 Assignee"],
+                        key="cr_group_by",
+                        label_visibility="collapsed",
+                    )
+                with cfg3:
+                    st.markdown("<div style='font-size:12px;font-weight:700;color:#0F172A;margin-bottom:4px'>Metrics / Data to Include</div>", unsafe_allow_html=True)
+                    st.multiselect(
+                        "Metrics / Data to Include",
+                        ["Project Status", "Task Status", "Milestone Status", "Team Members", "Progress", "Priority", "Overdue"],
+                        default=["Project Status", "Task Status", "Milestone Status", "Team Members"],
+                        key="cr_metrics",
+                        label_visibility="collapsed",
+                    )
+
+                st.markdown("<div style='font-size:12px;font-weight:700;color:#0F172A;margin:8px 0 4px 0'>Filters</div>", unsafe_allow_html=True)
+                fl1, fl2, fl3, fl4 = st.columns([1, 1, 1, 1.35])
+                with fl1:
+                    cr_f_proj = st.selectbox("Filter Project", ["All Projects"] + projects_list, key="cr_flt_proj", label_visibility="collapsed")
+                with fl2:
+                    cr_f_team = st.selectbox("Filter Team", ["All Teams"] + teams_list, key="cr_flt_team", label_visibility="collapsed")
+                with fl3:
+                    cr_f_stat = st.selectbox("Filter Status", ["All Statuses", "On Track", "At Risk", "Delayed"], key="cr_flt_stat", label_visibility="collapsed")
+                with fl4:
+                    st.date_input("Filter Date Range", (date(2024, 4, 24), date(2024, 6, 30)), key="cr_flt_dates", label_visibility="collapsed")
+
+                st.write("")
+                act_b1, act_b2, _ = st.columns([0.95, 0.7, 2.6])
+                with act_b1:
+                    if st.button("▷ Generate Report", type="primary", key="cr_gen_btn", use_container_width=True):
+                        st.session_state.custom_generated = True
+                        st.rerun()
+                with act_b2:
+                    if st.button("↻ Reset", key="cr_reset_btn", use_container_width=True):
+                        st.session_state.custom_viz_type = "Bar Chart"
+                        st.session_state["cr_flt_proj"] = "All Projects"
+                        st.session_state["cr_flt_team"] = "All Teams"
+                        st.session_state["cr_flt_stat"] = "All Statuses"
+                        st.rerun()
+
+            with b_right, st.container(border=True):
+                st.markdown("<div style='font-size:13.5px;font-weight:700;color:#0F172A;margin-bottom:10px'>Visualization Type</div>", unsafe_allow_html=True)
+                viz_row1 = [("📊", "Bar Chart"), ("📊", "Column Chart"), ("◔", "Pie Chart")]
+                viz_row2 = [("📈", "Line Chart"), ("⊞", "Table"), ("▤", "Summary Cards")]
+
+                vc1 = st.columns(3)
+                for col, (v_ico, v_lbl) in zip(vc1, viz_row1):
+                    with col:
+                        is_sel = st.session_state.custom_viz_type == v_lbl
+                        if st.button(
+                            f"{v_ico}\n{v_lbl}",
+                            key=f"cr_viz_{v_lbl}",
+                            type="primary" if is_sel else "secondary",
+                            use_container_width=True,
+                        ):
+                            st.session_state.custom_viz_type = v_lbl
+                            st.rerun()
+
+                vc2 = st.columns(3)
+                for col, (v_ico, v_lbl) in zip(vc2, viz_row2):
+                    with col:
+                        is_sel = st.session_state.custom_viz_type == v_lbl
+                        if st.button(
+                            f"{v_ico}\n{v_lbl}",
+                            key=f"cr_viz_{v_lbl}",
+                            type="primary" if is_sel else "secondary",
+                            use_container_width=True,
+                        ):
+                            st.session_state.custom_viz_type = v_lbl
+                            st.rerun()
+
+        st.write("")
+        # --- DATASET FOR CUSTOM REPORT PREVIEW & TABLE VIEW ---
+        custom_proj_df = pd.DataFrame(
+            [
+                {"Project Name": "Website Revamp", "Project Status": "On Track", "Total Tasks": 40, "Completed": 18, "In Progress": 12, "Not Started": 6, "Overdue": 4, "Total Milestones": 8, "Team Members": 8},
+                {"Project Name": "Marketing Campaign", "Project Status": "At Risk", "Total Tasks": 36, "Completed": 14, "In Progress": 10, "Not Started": 8, "Overdue": 4, "Total Milestones": 6, "Team Members": 6},
+                {"Project Name": "IT Infrastructure Upgrade", "Project Status": "At Risk", "Total Tasks": 28, "Completed": 12, "In Progress": 8, "Not Started": 6, "Overdue": 2, "Total Milestones": 5, "Team Members": 5},
+                {"Project Name": "Sustainability Initiative", "Project Status": "Delayed", "Total Tasks": 22, "Completed": 10, "In Progress": 6, "Not Started": 4, "Overdue": 2, "Total Milestones": 4, "Team Members": 4},
+                {"Project Name": "Internal Operations", "Project Status": "On Track", "Total Tasks": 18, "Completed": 8, "In Progress": 6, "Not Started": 4, "Overdue": 0, "Total Milestones": 2, "Team Members": 3},
+            ]
+        )
+        if cr_f_proj != "All Projects" and cr_f_proj in custom_proj_df["Project Name"].values:
+            custom_proj_df = custom_proj_df[custom_proj_df["Project Name"] == cr_f_proj].copy()
+        if cr_f_stat != "All Statuses":
+            custom_proj_df = custom_proj_df[custom_proj_df["Project Status"] == cr_f_stat].copy()
+
+        # --- SECTION 2: REPORT PREVIEW ---
+        with st.container(border=True):
+            rp_h1, rp_h2, rp_h3 = st.columns([2.8, 0.25, 0.85])
+            with rp_h1:
+                st.markdown(
+                    clean_html(
+                        """
+                        <div style="font-size:16px;font-weight:800;color:#0F172A">Report Preview</div>
+                        <div style="font-size:12.5px;color:#64748B">Project status and task distribution by project.</div>
+                        """
+                    ),
+                    unsafe_allow_html=True,
+                )
+            with rp_h2:
+                st.markdown("<div style='font-size:12.5px;color:#475569;padding-top:8px;text-align:right'>Show:</div>", unsafe_allow_html=True)
+            with rp_h3:
+                st.selectbox(
+                    "Show",
+                    ["Project Status", "Task Status", "Milestone Status", "Team Members"],
+                    key="cr_preview_show",
+                    label_visibility="collapsed",
+                )
+
+            pv_l, pv_r = st.columns([2.15, 1.05])
+            with pv_l:
+                sel_viz = st.session_state.custom_viz_type
+                if sel_viz in ("Bar Chart", "Column Chart"):
+                    fig_cr = go.Figure()
+                    series_cfg = [
+                        ("Completed", GREEN),
+                        ("In Progress", BLUE),
+                        ("Not Started", ORANGE),
+                        ("Overdue", RED),
+                    ]
+                    for s_name, s_col in series_cfg:
+                        vals = custom_proj_df[s_name].tolist()
+                        fig_cr.add_trace(
+                            go.Bar(
+                                name=s_name,
+                                x=custom_proj_df["Project Name"],
+                                y=vals,
+                                text=[str(v) if v > 0 else "" for v in vals],
+                                textposition="inside",
+                                insidetextanchor="middle",
+                                textfont=dict(color="white", size=11),
+                                marker=dict(color=s_col, line=dict(color="white", width=1)),
+                            )
+                        )
+                    fig_cr.update_layout(
+                        barmode="stack" if sel_viz == "Bar Chart" else "group",
+                        height=265,
+                        margin=dict(l=0, r=10, t=10, b=30),
+                        xaxis=dict(title=None, tickfont=dict(size=12, color="#1E293B")),
+                        yaxis=dict(title=None, range=[0, 52], dtick=10, gridcolor="#EDF2F7"),
+                        legend=dict(orientation="h", yanchor="top", y=-0.16, xanchor="center", x=0.5, font=dict(size=12)),
+                        paper_bgcolor="rgba(0,0,0,0)",
+                        plot_bgcolor="rgba(0,0,0,0)",
+                        bargap=0.38,
+                    )
+                    st.plotly_chart(fig_cr, use_container_width=True, config={"displayModeBar": False})
+
+                elif sel_viz == "Pie Chart":
+                    totals = [
+                        int(custom_proj_df["Completed"].sum()),
+                        int(custom_proj_df["In Progress"].sum()),
+                        int(custom_proj_df["Not Started"].sum()),
+                        int(custom_proj_df["Overdue"].sum()),
+                    ]
+                    fig_cr = px.pie(
+                        names=["Completed", "In Progress", "Not Started", "Overdue"],
+                        values=totals,
+                        hole=0.55,
+                        color=["Completed", "In Progress", "Not Started", "Overdue"],
+                        color_discrete_map={"Completed": GREEN, "In Progress": BLUE, "Not Started": ORANGE, "Overdue": RED},
+                    )
+                    fig_cr.update_layout(height=265, margin=dict(l=0, r=0, t=10, b=10), paper_bgcolor="rgba(0,0,0,0)")
+                    st.plotly_chart(fig_cr, use_container_width=True, config={"displayModeBar": False})
+
+                elif sel_viz == "Line Chart":
+                    fig_cr = px.line(
+                        custom_proj_df,
+                        x="Project Name",
+                        y=["Completed", "In Progress", "Not Started", "Overdue"],
+                        markers=True,
+                        color_discrete_map={"Completed": GREEN, "In Progress": BLUE, "Not Started": ORANGE, "Overdue": RED},
+                    )
+                    fig_cr.update_layout(
+                        height=265,
+                        margin=dict(l=0, r=10, t=10, b=30),
+                        xaxis_title=None,
+                        yaxis_title=None,
+                        legend_title_text="",
+                        legend=dict(orientation="h", yanchor="top", y=-0.16, xanchor="center", x=0.5),
+                        paper_bgcolor="rgba(0,0,0,0)",
+                        plot_bgcolor="rgba(0,0,0,0)",
+                    )
+                    st.plotly_chart(fig_cr, use_container_width=True, config={"displayModeBar": False})
+
+                else:
+                    st.dataframe(custom_proj_df, hide_index=True, use_container_width=True)
+
+            with pv_r:
+                st.markdown(
+                    clean_html(
+                        """
+                        <div style="font-size:14.5px;font-weight:800;color:#0F172A;margin-bottom:10px;padding-top:4px">Summary</div>
+                        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+                            <div style="border:1px solid #E2ECF5;border-radius:12px;padding:16px;background:white;display:flex;align-items:center;gap:12px">
+                                <div style="width:44px;height:44px;min-width:44px;border-radius:50%;background:#DBEAFE;color:#1473E6;display:flex;align-items:center;justify-content:center;font-size:20px">📁</div>
+                                <div>
+                                    <div style="font-size:12px;font-weight:600;color:#334155">Total Projects</div>
+                                    <div style="font-size:26px;font-weight:800;color:#0F172A;line-height:1.15">5</div>
+                                </div>
+                            </div>
+                            <div style="border:1px solid #E2ECF5;border-radius:12px;padding:16px;background:white;display:flex;align-items:center;gap:12px">
+                                <div style="width:44px;height:44px;min-width:44px;border-radius:50%;background:#D1FAE5;color:#00875A;display:flex;align-items:center;justify-content:center;font-size:20px">☰</div>
+                                <div>
+                                    <div style="font-size:12px;font-weight:600;color:#334155">Total Tasks</div>
+                                    <div style="font-size:26px;font-weight:800;color:#0F172A;line-height:1.15">180</div>
+                                </div>
+                            </div>
+                            <div style="border:1px solid #E2ECF5;border-radius:12px;padding:16px;background:white;display:flex;align-items:center;gap:12px">
+                                <div style="width:44px;height:44px;min-width:44px;border-radius:50%;background:#D1FAE5;color:#00875A;display:flex;align-items:center;justify-content:center;font-size:20px">⚑</div>
+                                <div>
+                                    <div style="font-size:12px;font-weight:600;color:#334155">Total Milestones</div>
+                                    <div style="font-size:26px;font-weight:800;color:#0F172A;line-height:1.15">25</div>
+                                </div>
+                            </div>
+                            <div style="border:1px solid #E2ECF5;border-radius:12px;padding:16px;background:white;display:flex;align-items:center;gap:12px">
+                                <div style="width:44px;height:44px;min-width:44px;border-radius:50%;background:#DBEAFE;color:#1473E6;display:flex;align-items:center;justify-content:center;font-size:20px">👥</div>
+                                <div>
+                                    <div style="font-size:12px;font-weight:600;color:#334155">Team Members</div>
+                                    <div style="font-size:26px;font-weight:800;color:#0F172A;line-height:1.15">24</div>
+                                </div>
+                            </div>
+                        </div>
+                        """
+                    ),
+                    unsafe_allow_html=True,
+                )
+
+        st.write("")
+        # --- SECTION 3: REPORT DATA (TABLE VIEW) & SAVED REPORTS ---
+        bot_l, bot_r = st.columns([1.85, 1.05])
+
+        with bot_l, st.container(border=True):
+            th_1, th_2, th_3 = st.columns([1.65, 1.0, 0.85])
+            with th_1:
+                st.markdown("<div style='font-size:15.5px;font-weight:800;color:#0F172A;padding-top:6px'>Report Data (Table View)</div>", unsafe_allow_html=True)
+            with th_2:
+                cr_tbl_q = st.text_input("Search", placeholder="🔍 Search...", key="cr_tbl_search", label_visibility="collapsed")
+            with th_3:
+                st.download_button(
+                    "📗 Export to Excel ▾",
+                    excel_bytes({"Custom Report": custom_proj_df}),
+                    file_name="vektor_custom_report_data.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    key="cr_tbl_excel_btn",
+                    use_container_width=True,
+                )
+
+            tbl_df = custom_proj_df.copy()
+            if cr_tbl_q:
+                tbl_df = tbl_df[tbl_df["Project Name"].str.contains(cr_tbl_q, case=False, na=False)]
+
+            cr_tr = "".join(
+                f"<tr>"
+                f"<td><b>{html.escape(r['Project Name'])}</b></td>"
+                f"<td>{badge_html(r['Project Status'])}</td>"
+                f"<td style='text-align:center'><b>{r['Total Tasks']}</b></td>"
+                f"<td style='text-align:center'>{r['Completed']}</td>"
+                f"<td style='text-align:center'>{r['In Progress']}</td>"
+                f"<td style='text-align:center'>{r['Not Started']}</td>"
+                f"<td style='text-align:center;color:#DC2626;font-weight:700'>{r['Overdue']}</td>"
+                f"<td style='text-align:center'>{r['Total Milestones']}</td>"
+                f"<td style='text-align:center'>{r['Team Members']}</td>"
+                f"</tr>"
+                for _, r in tbl_df.iterrows()
+            )
+            st.markdown(
+                clean_html(
+                    f"""
+                    <div class="vk-table-wrap">
+                        <table class="vk-table">
+                            <thead>
+                                <tr>
+                                    <th>Project Name</th>
+                                    <th>Project Status</th>
+                                    <th style="text-align:center">Total Tasks</th>
+                                    <th style="text-align:center">Completed</th>
+                                    <th style="text-align:center">In Progress</th>
+                                    <th style="text-align:center">Not Started</th>
+                                    <th style="text-align:center">Overdue</th>
+                                    <th style="text-align:center">Total Milestones</th>
+                                    <th style="text-align:center">Team Members</th>
+                                </tr>
+                            </thead>
+                            <tbody>{cr_tr}</tbody>
+                        </table>
+                    </div>
+                    """
+                ),
+                unsafe_allow_html=True,
+            )
+            render_pagination_footer(f"Showing 1 to {len(tbl_df)} of {len(tbl_df)} projects", [1], 1)
+
+        with bot_r, st.container(border=True):
+            sr_h1, sr_h2 = st.columns([1.4, 1.1])
+            with sr_h1:
+                st.markdown("<div style='font-size:15.5px;font-weight:800;color:#0F172A;padding-top:6px'>Saved Reports</div>", unsafe_allow_html=True)
+            with sr_h2:
+                if st.button("＋ Save Current Report", type="primary", key="cr_save_cur_btn", use_container_width=True):
+                    sql(
+                        "INSERT INTO saved_reports(name,report_type,config,last_generated,created_by) VALUES(?,?,?,?,?)",
+                        ("Project Status Summary", "Project", "{}", "Jun 30, 2024", "A. Escabillas"),
+                    )
+                    log_event("Saved", "Custom Report", None, "Project Status Summary")
+                    st.toast("Current report saved!")
+
+            saved_rows = [
+                ("Project Status Summary", "Project", "Jun 30, 2024", "A. Escabillas"),
+                ("Team Workload Overview", "Resource", "Jun 28, 2024", "A. Escabillas"),
+                ("Overdue Tasks Report", "Task", "Jun 25, 2024", "A. Escabillas"),
+                ("Upcoming Milestones", "Milestone", "Jun 20, 2024", "A. Escabillas"),
+                ("Marketing Campaign Details", "Project", "Jun 18, 2024", "A. Escabillas"),
+            ]
+            sr_tr = "".join(
+                f"<tr>"
+                f"<td><b style='color:#0F172A'>{r_nm}</b></td>"
+                f"<td>{r_tp}</td>"
+                f"<td>{r_dt}</td>"
+                f"<td>{r_by}</td>"
+                f"<td style='white-space:nowrap'>"
+                f"<span style='border:1px solid #CBD5E1;border-radius:4px;padding:2px 5px;margin-right:3px;font-size:11px'>👁</span>"
+                f"<span style='border:1px solid #CBD5E1;border-radius:4px;padding:2px 5px;margin-right:3px;font-size:11px'>✎</span>"
+                f"<span style='border:1px solid #FECACA;background:#FEF2F2;color:#DC2626;border-radius:4px;padding:2px 5px;font-size:11px'>🗑</span>"
+                f"</td></tr>"
+                for r_nm, r_tp, r_dt, r_by in saved_rows
+            )
+            st.markdown(
+                clean_html(
+                    f"""
+                    <div class="vk-table-wrap">
+                        <table class="vk-table">
+                            <thead>
+                                <tr>
+                                    <th>Report Name</th>
+                                    <th>Type</th>
+                                    <th>Last Generated</th>
+                                    <th>Created By</th>
+                                    <th>Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody>{sr_tr}</tbody>
+                        </table>
+                    </div>
+                    """
+                ),
+                unsafe_allow_html=True,
+            )
+            render_pagination_footer("Showing 1 to 5 of 5 reports", [1], 1)
+
+
+# ===========================================================================
+# PAGE 8: SETTINGS (Exact Single-Screen Dashboard Replica of Image 34)
+# ===========================================================================
+elif page == "Settings":
+
+    @st.dialog("Add User")
+    def add_user_settings_modal() -> None:
+        st.markdown("<div style='font-size:18px;font-weight:800;color:#0F172A;margin-bottom:8px'>＋ Add User</div>", unsafe_allow_html=True)
+        u_nm = st.text_input("Full Name *", key="set_add_u_nm")
+        u_em = st.text_input("Email *", placeholder="name@hpe.com", key="set_add_u_em")
+        c1, c2 = st.columns(2)
+        with c1:
+            u_rl = st.selectbox("Role", ["Admin", "Project Manager", "Team Member"], index=2, key="set_add_u_rl")
+        with c2:
+            u_tm = st.selectbox("Team", teams_list, key="set_add_u_tm")
+        b1, b2 = st.columns(2)
+        with b1:
+            if st.button("Cancel", key="set_add_u_can", use_container_width=True):
+                st.session_state.pop("settings_modal", None)
+                st.rerun()
+        with b2:
+            if st.button("Save User", type="primary", key="set_add_u_sav", use_container_width=True):
+                if u_nm.strip():
+                    em = u_em.strip() or f"{u_nm.strip().lower().replace(' ', '.')}@hpe.com"
+                    sql(
+                        "INSERT INTO resources(name,email,team,role,status,capacity,notes) VALUES(?,?,?,?,?,?,?)",
+                        (u_nm.strip(), em, u_tm, u_rl, "Available", 100, ""),
+                    )
+                    log_event("Created", "User", None, u_nm.strip())
+                st.session_state.pop("settings_modal", None)
+                st.rerun()
+
+    st.markdown(
+        clean_html(
+            f"""
+            <div style='font-size:28px;font-weight:800;color:{TEXT_COLOR};letter-spacing:-0.03em;line-height:1.15'>Settings</div>
+            <div style='font-size:13.5px;color:#64748B;margin-top:2px;margin-bottom:14px'>Manage workspace, users, defaults, notifications, integrations, and system preferences.</div>
+            """
+        ),
+        unsafe_allow_html=True,
+    )
+
+    # --- ROW 1: WORKSPACE SETTINGS (Left) | USER MANAGEMENT (Right) ---
+    s_r1_l, s_r1_r = st.columns([1.05, 1.35])
+
+    with s_r1_l, st.container(border=True):
+        st.markdown(
+            clean_html(
+                """
+                <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px">
+                    <span style="font-size:22px;color:#0F172A">🏢</span>
+                    <div>
+                        <div style="font-size:16px;font-weight:800;color:#0F172A;line-height:1.15">Workspace Settings</div>
+                        <div style="font-size:12px;color:#64748B">Set up your workspace details and preferences.</div>
+                    </div>
+                </div>
+                """
+            ),
+            unsafe_allow_html=True,
+        )
+
+        ws_c1, ws_c2 = st.columns(2)
+        with ws_c1:
+            ws_name_in = st.text_input("Workspace Name", value=get_setting("workspace_name", "Vektor"), key="set_ws_name")
+            ws_desc_in = st.text_area(
+                "Description",
+                value=get_setting("workspace_description", "Project management workspace for planning, tracking, and delivery."),
+                height=86,
+                key="set_ws_desc",
+            )
+            st.markdown("<div style='font-size:12px;font-weight:700;color:#0F172A;margin-bottom:6px'>Workspace Logo</div>", unsafe_allow_html=True)
+            st.markdown(
+                clean_html(
+                    """
+                    <div style="border:1.5px dashed #CBD5E1;border-radius:10px;padding:14px 12px;background:#F8FAFC;display:flex;align-items:center;justify-content:space-between;gap:10px">
+                        <div style="font-size:23px;font-weight:800;color:#0F172A;letter-spacing:-0.8px;white-space:nowrap">Vektor <span style="color:#00875A">❯❯</span></div>
+                        <div style="font-size:11px;color:#64748B;line-height:1.35">Click to upload logo<br>(Recommended 200 x 60)</div>
+                    </div>
+                    """
+                ),
+                unsafe_allow_html=True,
+            )
+
+        with ws_c2:
+            theme_opts = ["🟩 HPE (Green)", "🟦 Blue", "⬛ Dark"]
+            cur_theme_val = get_setting("theme", "HPE Green")
+            t_idx = 1 if cur_theme_val == "Blue" else (2 if cur_theme_val == "Dark" else 0)
+            sel_theme = st.selectbox("Theme", theme_opts, index=t_idx, key="set_ws_theme")
+            mapped_theme = "Blue" if "Blue" in sel_theme else ("Dark" if "Dark" in sel_theme else "HPE Green")
+            if mapped_theme != cur_theme_val:
+                put_setting("theme", mapped_theme)
+                st.rerun()
+
+            st.selectbox("Language", ["English", "Filipino"], index=0, key="set_ws_lang")
+            st.selectbox("Date Format", ["Apr 24, 2024", "24/04/2024", "04/24/2024"], index=0, key="set_ws_dfmt")
+            land_opts = ["Overview", "Projects", "Gantt Chart", "Task List", "Resources", "Calendar", "Reports"]
+            cur_land = get_setting("default_landing", "Overview")
+            sel_land = st.selectbox("Default Landing Page", land_opts, index=land_opts.index(cur_land) if cur_land in land_opts else 0, key="set_ws_land")
+            if sel_land != cur_land:
+                put_setting("default_landing", sel_land)
+            if ws_name_in != get_setting("workspace_name", "Vektor"):
+                put_setting("workspace_name", ws_name_in)
+            if ws_desc_in != get_setting("workspace_description", ""):
+                put_setting("workspace_description", ws_desc_in)
+
+    with s_r1_r, st.container(border=True):
+        um_h1, um_h2, um_h3 = st.columns([1.65, 1.05, 0.65])
+        with um_h1:
+            st.markdown(
+                clean_html(
+                    """
+                    <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px">
+                        <span style="font-size:22px;color:#0F172A">👥</span>
+                        <div>
+                            <div style="font-size:16px;font-weight:800;color:#0F172A;line-height:1.15">User Management</div>
+                            <div style="font-size:12px;color:#64748B">Manage team members, roles, and access permissions.</div>
+                        </div>
+                    </div>
+                    """
+                ),
+                unsafe_allow_html=True,
+            )
+        with um_h2:
+            um_q = st.text_input("Search users", placeholder="🔍 Search users...", key="set_um_q", label_visibility="collapsed")
+        with um_h3:
+            if st.button("＋ Add User", type="primary", key="set_um_add_btn", use_container_width=True):
+                st.session_state.settings_modal = "add_user"
+                st.rerun()
+
+        um_users = [
+            ("JM", "#0284C7", "James Miller", "james.miller@hpe.com", "Admin", "IT", "Active"),
+            ("SK", "#0284C7", "Sarah Kim", "sarah.kim@hpe.com", "Project Manager", "Design", "Active"),
+            ("AL", "#0F172A", "Alice Morgan", "alice.morgan@hpe.com", "Team Member", "Marketing", "Active"),
+            ("RJ", "#0F172A", "Ryan Cruz", "ryan.cruz@hpe.com", "Team Member", "Operations", "Active"),
+            ("MT", "#0284C7", "Michael Tan", "michael.tan@hpe.com", "Project Manager", "IT", "Active"),
+            ("DP", "#1D4ED8", "Daniel Perez", "daniel.perez@hpe.com", "Team Member", "Operations", "Active"),
+            ("ER", "#EF4444", "Ella Ramirez", "ella.ramirez@hpe.com", "Team Member", "Design", "Inactive"),
+            ("CP", "#0284C7", "Chris Padilla", "chris.padilla@hpe.com", "Team Member", "IT", "Active"),
+        ]
+        if um_q:
+            um_users = [u for u in um_users if um_q.lower() in u[2].lower() or um_q.lower() in u[3].lower() or um_q.lower() in u[4].lower()]
+
+        um_tr = "".join(
+            f"<tr>"
+            f"<td style='padding:7px 10px'><span class='vk-avatar' style='background:{abg}'>{ini}</span><b>{nm}</b></td>"
+            f"<td style='padding:7px 10px;color:#334155'>{em}</td>"
+            f"<td style='padding:7px 10px'>{rl}</td>"
+            f"<td style='padding:7px 10px'>{tm}</td>"
+            f"<td style='padding:7px 10px'><span class='vk-badge {'vk-badge-green' if st_s == 'Active' else 'vk-badge-red'}' style='min-width:64px'>{st_s}</span></td>"
+            f"<td style='padding:7px 10px;white-space:nowrap'>"
+            f"<span style='color:#1E293B;margin-right:10px;cursor:pointer'>✎</span>"
+            f"<span style='color:#EF4444;cursor:pointer'>🗑</span>"
+            f"</td></tr>"
+            for ini, abg, nm, em, rl, tm, st_s in um_users
+        )
+        st.markdown(
+            clean_html(
+                f"""
+                <div class="vk-table-wrap">
+                    <table class="vk-table">
+                        <thead>
+                            <tr><th>Name</th><th>Email</th><th>Role</th><th>Team</th><th>Status</th><th>Actions</th></tr>
+                        </thead>
+                        <tbody>{um_tr}</tbody>
+                    </table>
+                </div>
+                <div style="display:flex;align-items:center;justify-content:space-between;padding-top:10px;font-size:12px;color:#475569">
+                    <div>Showing 1 to {len(um_users)} of 24 users</div>
+                    <div style="display:flex;align-items:center;gap:4px">
+                        <span style="border:1px solid #CBD5E1;border-radius:6px;padding:3px 8px;background:white">‹</span>
+                        <span style="border:1px solid #CBD5E1;border-radius:6px;padding:3px 8px;background:white">‹</span>
+                        <span style="border-radius:6px;padding:3px 10px;background:#00875A;color:white;font-weight:700">1</span>
+                        <span style="border:1px solid #CBD5E1;border-radius:6px;padding:3px 9px;background:white;font-weight:600">2</span>
+                        <span style="border:1px solid #CBD5E1;border-radius:6px;padding:3px 9px;background:white;font-weight:600">3</span>
+                        <span style="border:1px solid #CBD5E1;border-radius:6px;padding:3px 9px;background:white;font-weight:600">3</span>
+                        <span style="border:1px solid #CBD5E1;border-radius:6px;padding:3px 8px;background:white">›</span>
+                    </div>
+                </div>
+                """
+            ),
+            unsafe_allow_html=True,
+        )
+
+    st.write("")
+    # --- ROW 2: PROJECT SETTINGS | TASK SETTINGS | MILESTONE SETTINGS ---
+    s_r2_1, s_r2_2, s_r2_3 = st.columns(3)
+
+    with s_r2_1, st.container(border=True):
+        st.markdown(
+            clean_html(
+                """
+                <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px">
+                    <span style="font-size:20px;color:#0F172A">📁</span>
+                    <div>
+                        <div style="font-size:15.5px;font-weight:800;color:#0F172A;line-height:1.15">Project Settings</div>
+                        <div style="font-size:12px;color:#64748B">Configure default settings for new projects.</div>
+                    </div>
+                </div>
+                """
+            ),
+            unsafe_allow_html=True,
+        )
+        st.selectbox("Default Project Status", ["Not Started", "On Track", "At Risk", "Delayed"], index=0, key="set_ps_stat")
+        st.selectbox("Default Project Template", ["Standard Project", "Software Delivery", "Marketing Campaign", "Infrastructure"], index=0, key="set_ps_tmpl")
+        st.toggle("Enable project key/ID auto-generation", value=True, key="set_ps_t1")
+        st.toggle("Require project description", value=True, key="set_ps_t2")
+        st.toggle("Allow project attachments", value=True, key="set_ps_t3")
+        st.toggle("Enable project archiving", value=False, key="set_ps_t4")
+
+    with s_r2_2, st.container(border=True):
+        st.markdown(
+            clean_html(
+                """
+                <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px">
+                    <span style="font-size:20px;color:#0F172A">☑</span>
+                    <div>
+                        <div style="font-size:15.5px;font-weight:800;color:#0F172A;line-height:1.15">Task Settings</div>
+                        <div style="font-size:12px;color:#64748B">Configure task management options.</div>
+                    </div>
+                </div>
+                """
+            ),
+            unsafe_allow_html=True,
+        )
+        st.selectbox("Default Task Status", ["Not Started", "In Progress", "Completed"], index=0, key="set_ts_stat")
+        st.selectbox("Default Task Priority", ["Medium", "High", "Low"], index=0, key="set_ts_prio")
+        st.toggle("Enable task dependencies", value=True, key="set_ts_t1")
+        st.toggle("Allow subtasks", value=True, key="set_ts_t2")
+        st.toggle("Enable recurring tasks", value=False, key="set_ts_t3")
+        st.toggle("Require assignee", value=True, key="set_ts_t4")
+        st.toggle("Allow task attachments", value=True, key="set_ts_t5")
+
+    with s_r2_3, st.container(border=True):
+        st.markdown(
+            clean_html(
+                """
+                <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px">
+                    <span style="font-size:20px;color:#0F172A">⚑</span>
+                    <div>
+                        <div style="font-size:15.5px;font-weight:800;color:#0F172A;line-height:1.15">Milestone Settings</div>
+                        <div style="font-size:12px;color:#64748B">Configure milestone options.</div>
+                    </div>
+                </div>
+                """
+            ),
+            unsafe_allow_html=True,
+        )
+        st.selectbox("Default Milestone Status", ["Not Started", "In Progress", "Completed"], index=0, key="set_ms_stat")
+        st.write("")
+        st.toggle("Enable milestones", value=True, key="set_ms_t1")
+        st.toggle("Require due date", value=True, key="set_ms_t2")
+        st.toggle("Allow milestone dependencies", value=True, key="set_ms_t3")
+        st.toggle("Auto-notify on milestone updates", value=True, key="set_ms_t4")
+
+    st.write("")
+    # --- ROW 3: NOTIFICATIONS | INTEGRATIONS | SYSTEM SETTINGS ---
+    s_r3_1, s_r3_2, s_r3_3 = st.columns([1.15, 1.0, 0.85])
+
+    with s_r3_1, st.container(border=True):
+        st.markdown(
+            clean_html(
+                """
+                <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px">
+                    <span style="font-size:20px;color:#0F172A">🔔</span>
+                    <div>
+                        <div style="font-size:15.5px;font-weight:800;color:#0F172A;line-height:1.15">Notifications</div>
+                        <div style="font-size:12px;color:#64748B">Configure email and in-app notifications.</div>
+                    </div>
+                </div>
+                """
+            ),
+            unsafe_allow_html=True,
+        )
+        nf_l, nf_r = st.columns([1.35, 1])
+        with nf_l:
+            notif_items = [
+                ("Task assigned to me", True),
+                ("Task due soon", True),
+                ("Task overdue", True),
+                ("Milestone updates", True),
+                ("Project status changes", True),
+                ("Project assignment", True),
+                ("Mention in comments", False),
+                ("Weekly project digest", True),
+            ]
+            for idx, (n_lbl, n_def) in enumerate(notif_items):
+                st.toggle(n_lbl, value=n_def, key=f"set_nf_{idx}")
+        with nf_r:
+            st.markdown("<div style='padding-top:26px'></div>", unsafe_allow_html=True)
+            st.selectbox("Notification Frequency", ["Real-time", "Hourly", "Daily digest", "Weekly digest"], index=0, key="set_nf_freq")
+
+    with s_r3_2, st.container(border=True):
+        st.markdown(
+            clean_html(
+                """
+                <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px">
+                    <span style="font-size:20px;color:#0F172A">🔗</span>
+                    <div>
+                        <div style="font-size:15.5px;font-weight:800;color:#0F172A;line-height:1.15">Integrations</div>
+                        <div style="font-size:12px;color:#64748B">Connect with external tools and services.</div>
+                    </div>
+                </div>
+                """
+            ),
+            unsafe_allow_html=True,
+        )
+        int_services = [
+            ("Microsoft 365", "Connect to sync calendar and teams.", "⊞", "#EA580C"),
+            ("Slack", "Receive notifications in Slack.", "❖", "#E11D48"),
+            ("Teams", "Connect for team collaboration.", "👥", "#4F46E5"),
+            ("OneDrive", "Access project files from OneDrive.", "☁", "#0284C7"),
+        ]
+        for s_nm, s_ds, s_ic, s_cl in int_services:
+            ic1, ic2 = st.columns([2.6, 1.0])
+            with ic1:
+                st.markdown(
+                    clean_html(
+                        f"""
+                        <div style="display:flex;align-items:center;gap:10px;padding:4px 0">
+                            <span style="width:32px;height:32px;min-width:32px;border-radius:8px;background:#F8FAFC;border:1px solid #E2E8F0;color:{s_cl};display:inline-flex;align-items:center;justify-content:center;font-size:18px;font-weight:800">{s_ic}</span>
+                            <div>
+                                <div style="font-size:13px;font-weight:700;color:#0F172A;line-height:1.2">{s_nm}</div>
+                                <div style="font-size:11px;color:#64748B">{s_ds}</div>
+                            </div>
+                        </div>
+                        """
+                    ),
+                    unsafe_allow_html=True,
+                )
+            with ic2:
+                is_c = get_setting(f"int_{s_nm}", "false") == "true"
+                if st.button("Connected" if is_c else "Connect", key=f"set_int_{s_nm}", type="primary" if is_c else "secondary", use_container_width=True):
+                    put_setting(f"int_{s_nm}", "false" if is_c else "true")
+                    st.rerun()
+            st.markdown("<hr style='margin:4px 0;border-color:#F1F5F9'>", unsafe_allow_html=True)
+
+    with s_r3_3, st.container(border=True):
+        st.markdown(
+            clean_html(
+                """
+                <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px">
+                    <span style="font-size:20px;color:#0F172A">⚙</span>
+                    <div>
+                        <div style="font-size:15.5px;font-weight:800;color:#0F172A;line-height:1.15">System Settings</div>
+                        <div style="font-size:12px;color:#64748B">Manage system-wide settings.</div>
+                    </div>
+                </div>
+                """
+            ),
+            unsafe_allow_html=True,
+        )
+        st.toggle("Enable audit logs", value=True, key="set_sys_t1")
+        st.toggle("Allow data export", value=True, key="set_sys_t2")
+        st.toggle("Enable automatic backups", value=True, key="set_sys_t3")
+        st.toggle("Enable maintenance mode", value=False, key="set_sys_t4")
+
+        st_l, st_r = st.columns([1.1, 1.3])
+        with st_l:
+            st.markdown("<div style='font-size:12.5px;font-weight:700;color:#0F172A;padding-top:10px'>Session Timeout</div>", unsafe_allow_html=True)
+        with st_r:
+            st.selectbox("Session Timeout", ["8 hours", "4 hours", "2 hours", "1 hour", "30 minutes"], index=0, key="set_sys_to", label_visibility="collapsed")
+
+        st.write("")
+        if st.button("🗑 Clear Cache", key="set_clear_cache_btn"):
+            st.cache_data.clear()
+            st.toast("Application cache cleared!")
+
+    if st.session_state.get("settings_modal") == "add_user":
+        add_user_settings_modal()
