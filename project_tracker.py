@@ -21,13 +21,16 @@ from pymongo import MongoClient
 # ---------------------------------------------------------------------------
 # MongoDB Atlas Connection Setup
 # ---------------------------------------------------------------------------
+# Database configuration parameters
 DB_NAME = "Vektor"
 COLLECTION_NAME = "Reports"
 
 @st.cache_resource
 def get_mongo_collection():
     try:
-        client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=5000)
+        # Retrieve the hidden URI securely from Streamlit secrets
+        mongo_uri = st.secrets["MONGO_URI"]
+        client = MongoClient(mongo_uri, serverSelectionTimeoutMS=5000)
         db = client[DB_NAME]
         return db[COLLECTION_NAME]
     except Exception as e:
