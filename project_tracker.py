@@ -1621,3 +1621,867 @@ elif page == "Calendar":
                 continue
             if first <= d <= last:
                 events.append({"Date": d, "Type": "Task", "Title": r["name"], "Project": r["project"], "Status": r.status})
+        for _, r in m.iterrows():
+            try:
+                d = date.fromisoformat(str(r.due_date))
+            except Exception:
+                continue
+            if first <= d <= last:
+                events.append({"Date": d, "Type": "Milestone", "Title": r["name"], "Project": r["project"], "Status": r.status})
+
+        ev = pd.DataFrame(events)
+        section_title(first.strftime("%B %Y"), f"{len(ev)} Scheduled Deadlines")
+
+        weeks = calendar.Calendar(firstweekday=6).monthdatescalendar(first.year, first.month)
+        hdr_cols = st.columns(7)
+        for col, dayname in zip(hdr_cols, ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]):
+            col.markdown(f"<div style='text-align:center;font-weight:700;font-size:12px;color:#475569;padding:4px'>{dayname}</div>", unsafe_allow_html=True)
+
+        for week in weeks:
+            cols = st.columns(7)
+            for col, d in zip(cols, week):
+                with col:
+                    in_month = d.month == first.month
+                    day_color = TEXT_COLOR if in_month else "#CBD5E1"
+                    daily = ev[ev.Date == d] if not ev.empty else pd.DataFrame()
+                    pills = ""
+                    for _, e in daily.head(3).iterrows():
+                        bg = GREEN if e["Type"] == "Milestone" else BLUE
+                        icon = "⚑" if e["Type"] == "Milestone" else "☑"
+                        pills += f'<div style="background:{bg};color:white;padding:2px 6px;border-radius:4px;font-size:10px;font-weight:600;margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{icon} {html.escape(e["Title"])}</div>'
+                    st.markdown(
+                        f'<div style="min-height:86px;border:1px solid {BORDER_COLOR};border-radius:8px;padding:6px;background:{"#FFFFFF" if in_month else "#F8FAFC"};margin-bottom:6px">'
+                        f'<div style="font-size:12px;font-weight:700;color:{day_color}">{d.day}</div>'
+                        f"{pills}</div>",
+                        unsafe_allow_html=True,
+                    )
+
+    with st.container(border=True):
+        section_title("Deadlines in Selected Month", first.strftime("%B %Y"))
+        if ev.empty:
+            st.info("No tasks or milestones due in this month. Try selecting April, May, or June 2024.")
+        else:
+            render_rich_table(
+                ev.sort_values("Date"),
+                [
+                    ("Date", "Due Date", "date"),
+                    ("Type", "Item Type", "bold"),
+                    ("Title", "Name", "bold"),
+                    ("Project", "Project", "text"),
+                    ("Status", "Status", "badge"),
+                ],
+            )
+
+
+# ===========================================================================
+# PAGE 7: REPORTS (Exact Replica of All 7 Mockup Report Tabs)
+# ===========================================================================
+elif page == "Reports":
+    render_top_header("Reports", "Gain insights into project progress, resource utilization, and team performance.", show_filters=False)
+
+    # Mockup Filter Bar: Date Range | Project | Team | Export Format | Export Report
+    with st.container(border=True):
+        f1, f2, f3, f4, f5 = st.columns([1.45, 1.05, 1.05, 0.95, 0.9])
+        with f1:
+            dates = st.date_input("Date Range", (date(2024, 4, 24), date(2024, 6, 30)), key="report_dates")
+        with f2:
+            pf = st.selectbox("Project", ["All Projects"] + projects_list, key="report_project")
+        with f3:
+            tf = st.selectbox("Team", ["All Teams"] + teams_list, key="report_team")
+        with f4:
+            fmt = st.selectbox("Export Format", ["Excel (.xlsx)", "CSV (.csv)", "JSON (.json)"], key="report_fmt")
+
+        rp = P.copy()
+        rt = T.copy()
+        rr = R.copy()
+        rm = M.copy()
+        if pf != "All Projects":
+            rp = rp[rp.name == pf]
+            rt = rt[rt.project == pf]
+            rm = rm[rm.project == pf]
+        if tf != "All Teams":
+            rp = rp[rp.team == tf]
+            rt = rt[rt.team == tf]
+            rr = rr[rr.team == tf]
+            rm = rm[rm.team == tf]
+        if isinstance(dates, tuple) and len(dates) == 2:
+            ds, de = dates[0].isoformat(), dates[1].isoformat()
+            rt = rt[(rt.start_date.fillna("") <= de) & (rt.due_date.fillna("") >= ds)]
+            rm = rm[(rm.due_date.fillna("") >= "2024-01-01") & (rm.due_date.fillna("") <= de)]
+
+        with f5:
+            st.write("")
+            if fmt.startswith("Excel"):
+                st.download_button(
+                    "⬇ Export Report",
+                    excel_bytes({"Projects": rp, "Tasks": rt, "Resources": rr, "Milestones": rm}),
+                    file_name="vektor_report.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    type="primary",
+                    use_container_width=True,
+                )
+            elif fmt.startswith("CSV"):
+                st.download_button(
+                    "⬇ Export Report",
+                    rp.to_csv(index=False).encode("utf-8-sig"),
+                    file_name="vektor_report.csv",
+                    mime="text/csv",
+                    type="primary",
+                    use_container_width=True,
+                )
+            else:
+                payload = {
+                    k: v.where(pd.notna(v), None).to_dict("records")
+                    for k, v in {"Projects": rp, "Tasks": rt, "Resources": rr, "Milestones": rm}.items()
+                }
+                st.download_button(
+                    "⬇ Export Report",
+                    json.dumps(payload, default=str, indent=2).encode(),
+                    file_name="vektor_report.json",
+                    mime="application/json",
+                    type="primary",
+                    use_container_width=True,
+                )
+
+    tabs = st.tabs(["Overview", "Projects", "Resources", "Tasks", "Milestones", "Workload", "Custom"])
+
+    # --- REPORT TAB 0: OVERVIEW ---
+    with tabs[0]:
+        k1, k2, k3, k4 = st.columns(4)
+        with k1:
+            metric_card("Total Projects", len(rp), f"{int((rp.status == 'On Track').sum())} on track", "📁", "green")
+        with k2:
+            metric_card("Total Tasks", len(rt), f"{int((rt.status == 'Completed').sum())} completed", "☑️", "blue")
+        with k3:
+            metric_card("Milestones", len(rm), f"{int((rm.status == 'Completed').sum())} achieved", "⚑", "orange")
+        with k4:
+            metric_card("Team Members", len(rr), f"{int((rr.status == 'Available').sum())} available", "👥", "purple")
+
+        st.write("")
+        c1, c2, c3 = st.columns(3)
+        with c1, st.container(border=True):
+            section_title("Project Status")
+            chart_status_donut(rp, "status", "Projects")
+        with c2, st.container(border=True):
+            section_title("Task Status")
+            chart_status_donut(rt, "status", "Tasks")
+        with c3, st.container(border=True):
+            section_title("Resource Availability")
+            chart_status_donut(rr, "status", "Members")
+
+        c1, c2 = st.columns(2)
+        with c1, st.container(border=True):
+            section_title("Project Progress")
+            progress_bar_chart(rp.sort_values("progress"), "name", "progress")
+        with c2, st.container(border=True):
+            section_title("Task Completion Trend")
+            trend = pd.DataFrame(
+                {
+                    "Month": ["Apr", "May", "Jun", "Jul", "Aug", "Sep"],
+                    "Completed": [8, 18, 27, 35, 40, 48],
+                    "In Progress": [3, 12, 16, 19, 21, 24],
+                }
+            )
+            fig = px.line(
+                trend,
+                x="Month",
+                y=["Completed", "In Progress"],
+                markers=True,
+                color_discrete_map={"Completed": GREEN, "In Progress": BLUE},
+            )
+            fig.update_layout(height=250, margin=dict(l=0, r=0, t=6, b=6), paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)")
+            st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+
+    # --- REPORT TAB 1: PROJECTS ---
+    with tabs[1]:
+        k1, k2, k3, k4 = st.columns(4)
+        with k1:
+            metric_card("Total Projects", len(rp), "All portfolio projects", "📁", "green")
+        with k2:
+            metric_card("On Track", int((rp.status == "On Track").sum()), "Healthy delivery", "✅", "green")
+        with k3:
+            metric_card("In Progress", int(((rp.progress > 0) & (rp.progress < 100)).sum()), "Active execution", "▶️", "blue")
+        with k4:
+            metric_card("At Risk / Delayed", int(rp.status.isin(["At Risk", "Delayed"]).sum()), "Needs mitigation", "⚠️", "red")
+
+        st.write("")
+        c1, c2 = st.columns(2)
+        with c1, st.container(border=True):
+            section_title("Project Status")
+            chart_status_donut(rp, "status", "Projects")
+        with c2, st.container(border=True):
+            section_title("Project Progress")
+            progress_bar_chart(rp.sort_values("progress"), "name", "progress")
+
+        with st.container(border=True):
+            section_title("Project Report Summary", f"{len(rp)} Projects")
+            render_rich_table(
+                rp,
+                [
+                    ("name", "Project Name", "bold"),
+                    ("owner", "Owner", "avatar"),
+                    ("team", "Team", "text"),
+                    ("status", "Status", "badge"),
+                    ("start_date", "Start Date", "date"),
+                    ("end_date", "End Date", "date"),
+                    ("progress", "Progress", "progress"),
+                    ("health", "Health", "badge"),
+                ],
+            )
+
+    # --- REPORT TAB 2: RESOURCES ---
+    with tabs[2]:
+        k1, k2, k3, k4 = st.columns(4)
+        with k1:
+            metric_card("Total Resources", len(rr), "Workspace members", "👥", "blue")
+        with k2:
+            metric_card("Available", int((rr.status == "Available").sum()), "Ready for assignment", "🟢", "green")
+        with k3:
+            metric_card("Partial", int((rr.status == "Partial").sum()), "Part-time allocation", "🟠", "orange")
+        with k4:
+            metric_card("On Leave", int((rr.status == "On Leave").sum()), "Out of office", "🔴", "red")
+
+        st.write("")
+        c1, c2 = st.columns(2)
+        with c1, st.container(border=True):
+            section_title("Resource Status")
+            chart_status_donut(rr, "status", "Members")
+        with c2, st.container(border=True):
+            section_title("Team Distribution")
+            td = rr.team.value_counts().rename_axis("Team").reset_index(name="Members")
+            fig = px.bar(td, x="Team", y="Members", text="Members", color="Team", color_discrete_sequence=[GREEN, BLUE, ORANGE, PURPLE, GRAY])
+            fig.update_traces(textposition="outside", cliponaxis=False)
+            fig.update_layout(height=240, showlegend=False, margin=dict(l=0, r=0, t=12, b=0), paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)")
+            st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+
+        with st.container(border=True):
+            section_title("Resource Directory & Capacity", f"{len(rr)} Members")
+            rr_view = rr.copy()
+            rr_view["tasks"] = rr_view.name.map(T.groupby("assignee").size().to_dict()).fillna(0).astype(int)
+            render_rich_table(
+                rr_view,
+                [
+                    ("name", "Resource Name", "avatar"),
+                    ("role", "Role", "badge"),
+                    ("team", "Team", "text"),
+                    ("status", "Status", "badge"),
+                    ("capacity", "Capacity", "progress"),
+                    ("tasks", "Assigned Tasks", "bold"),
+                ],
+            )
+
+    # --- REPORT TAB 3: TASKS ---
+    with tabs[3]:
+        k1, k2, k3, k4 = st.columns(4)
+        with k1:
+            metric_card("Total Tasks", len(rt), "In date range", "☑️", "blue")
+        with k2:
+            metric_card("Completed", int((rt.status == "Completed").sum()), "100% done", "✅", "green")
+        with k3:
+            metric_card("In Progress", int((rt.status == "In Progress").sum()), "Active work", "▶️", "blue")
+        with k4:
+            metric_card("Not Started", int((rt.status == "Not Started").sum()), "Upcoming", "⏸️", "orange")
+
+        st.write("")
+        c1, c2, c3 = st.columns(3)
+        with c1, st.container(border=True):
+            section_title("Task Status")
+            chart_status_donut(rt, "status", "Tasks")
+        with c2, st.container(border=True):
+            section_title("Tasks by Project")
+            z = rt.groupby("project").size().rename("Tasks").reset_index()
+            fig = px.bar(z, x="Tasks", y="project", orientation="h", text="Tasks", color_discrete_sequence=[BLUE])
+            fig.update_traces(textposition="outside", cliponaxis=False)
+            fig.update_layout(height=240, margin=dict(l=0, r=24, t=6, b=6), xaxis_title=None, yaxis_title=None, paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)")
+            st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+        with c3, st.container(border=True):
+            section_title("Tasks by Priority")
+            chart_status_donut(rt, "priority", "Priority")
+
+        with st.container(border=True):
+            section_title("Tasks Report Table", f"{len(rt)} Tasks")
+            render_rich_table(
+                rt,
+                [
+                    ("name", "Task Name", "bold"),
+                    ("project", "Project", "text"),
+                    ("team", "Team", "text"),
+                    ("status", "Status", "badge"),
+                    ("priority", "Priority", "badge"),
+                    ("start_date", "Start Date", "date"),
+                    ("due_date", "Due Date", "date"),
+                    ("assignee", "Assignee", "avatar"),
+                    ("progress", "Progress", "progress"),
+                    ("dependency", "Dependency", "text"),
+                ],
+            )
+
+    # --- REPORT TAB 4: MILESTONES ---
+    with tabs[4]:
+        k1, k2, k3, k4 = st.columns(4)
+        with k1:
+            metric_card("Total Milestones", len(rm), "Tracked checkpoints", "⚑", "blue")
+        with k2:
+            metric_card("Completed", int((rm.status == "Completed").sum()), "Delivered on time", "✅", "green")
+        with k3:
+            metric_card("In Progress", int((rm.status == "In Progress").sum()), "Active milestones", "▶️", "blue")
+        with k4:
+            metric_card("Overdue", int((rm.status == "Overdue").sum()), "Past due date", "⚠️", "red")
+
+        st.write("")
+        c1, c2 = st.columns(2)
+        with c1, st.container(border=True):
+            section_title("Milestone Status")
+            chart_status_donut(rm, "status", "Milestones")
+        with c2, st.container(border=True):
+            section_title("Milestones by Project")
+            z = rm.groupby("project").size().rename("Milestones").reset_index()
+            fig = px.bar(z, x="project", y="Milestones", text="Milestones", color="project", color_discrete_sequence=[GREEN, BLUE, ORANGE, RED, PURPLE])
+            fig.update_traces(textposition="outside", cliponaxis=False)
+            fig.update_layout(height=240, showlegend=False, margin=dict(l=0, r=0, t=14, b=6), xaxis_title=None, yaxis_title=None, paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)")
+            st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+
+        with st.container(border=True):
+            section_title("Milestones Report Table", f"{len(rm)} Milestones")
+            render_rich_table(
+                rm,
+                [
+                    ("name", "Milestone", "bold"),
+                    ("project", "Project", "text"),
+                    ("team", "Team", "text"),
+                    ("status", "Status", "badge"),
+                    ("start_date", "Start Date", "date"),
+                    ("due_date", "Due Date", "date"),
+                    ("completion_date", "Completion Date", "date"),
+                    ("dependency", "Dependency", "text"),
+                    ("notes", "Notes", "text"),
+                ],
+            )
+
+    # --- REPORT TAB 5: WORKLOAD ---
+    with tabs[5]:
+        counts = T.groupby("assignee").size().rename("active_tasks").reset_index()
+        work = rr.merge(counts, left_on="name", right_on="assignee", how="left").drop(columns=["assignee"], errors="ignore")
+        work["active_tasks"] = work["active_tasks"].fillna(0).astype(int)
+        # Compute realistic utilization % and workload status matching the mockup
+        work["utilization"] = work.apply(
+            lambda r: 0 if r["status"] == "On Leave" else min(100, int(r["active_tasks"] * 35 + (55 if r["status"] == "Available" else 30))),
+            axis=1,
+        )
+        work["workload_status"] = work["utilization"].apply(
+            lambda u: "Overloaded" if u >= 95 else ("High" if u >= 75 else "Balanced")
+        )
+
+        k1, k2, k3, k4 = st.columns(4)
+        with k1:
+            metric_card("Team Members", len(work), "Evaluated resources", "👥", "blue")
+        with k2:
+            metric_card("Active Tasks", int(work["active_tasks"].sum()), "Assigned across teams", "☑️", "green")
+        with k3:
+            metric_card("High Workload", int((work["workload_status"] == "High").sum()), "75% – 94% utilization", "🟠", "orange")
+        with k4:
+            metric_card("Overloaded", int((work["workload_status"] == "Overloaded").sum()), "95%+ utilization", "🔴", "red")
+
+        st.write("")
+        c1, c2 = st.columns(2)
+        with c1, st.container(border=True):
+            section_title("Individual Workload", "Top 10 by Utilization %")
+            z = work.sort_values("utilization", ascending=True).tail(10)
+            fig = px.bar(
+                z,
+                x="utilization",
+                y="name",
+                orientation="h",
+                text="utilization",
+                color="workload_status",
+                color_discrete_map={"Balanced": GREEN, "High": ORANGE, "Overloaded": RED},
+            )
+            fig.update_traces(texttemplate="%{text}%", textposition="outside", cliponaxis=False)
+            fig.update_layout(height=300, margin=dict(l=0, r=36, t=6, b=6), xaxis_title=None, yaxis_title=None, legend_title_text="", paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)")
+            st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+        with c2, st.container(border=True):
+            section_title("Workload by Team", "Total Active Tasks")
+            z = work.groupby("team")["active_tasks"].sum().reset_index()
+            fig = px.bar(z, x="team", y="active_tasks", text="active_tasks", color="team", color_discrete_sequence=[GREEN, BLUE, ORANGE, PURPLE, GRAY])
+            fig.update_traces(textposition="outside", cliponaxis=False)
+            fig.update_layout(height=300, showlegend=False, margin=dict(l=0, r=0, t=14, b=6), xaxis_title=None, yaxis_title=None, paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)")
+            st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+
+        with st.container(border=True):
+            section_title("Resource Workload Breakdown", f"{len(work)} Members")
+            render_rich_table(
+                work.sort_values("utilization", ascending=False),
+                [
+                    ("name", "Team Member", "avatar"),
+                    ("role", "Role", "badge"),
+                    ("team", "Team", "text"),
+                    ("status", "Availability", "badge"),
+                    ("active_tasks", "Active Tasks", "bold"),
+                    ("utilization", "Utilization", "progress"),
+                    ("workload_status", "Workload Status", "badge"),
+                ],
+            )
+
+    # --- REPORT TAB 6: CUSTOM REPORT BUILDER ---
+    with tabs[6]:
+        with st.container(border=True):
+            section_title("Build Custom Report", "Configure dimensions, metrics, and visualization style")
+            a, b, c = st.columns(3)
+            with a:
+                typ = st.selectbox("Report Type", ["Project Report", "Task Report", "Resource Report", "Milestone Report", "Workload Report"])
+            with b:
+                group = st.selectbox("Group By", ["Status", "Team", "Project", "Priority", "Assignee"])
+            with c:
+                metrics = st.multiselect(
+                    "Metrics / Data to Include",
+                    ["Project Status", "Task Status", "Milestone Status", "Team Members", "Progress", "Priority", "Dates", "Assignees"],
+                    default=["Project Status", "Task Status", "Progress"],
+                )
+            viz = st.radio(
+                "Visualization Type",
+                ["Bar Chart", "Column Chart", "Pie Chart", "Line Chart", "Table", "Summary Cards"],
+                horizontal=True,
+            )
+            b1, b2, _ = st.columns([0.8, 0.8, 3])
+            with b1:
+                generate = st.button("▶ Generate Report", type="primary", use_container_width=True)
+            with b2:
+                reset = st.button("↺ Reset", use_container_width=True)
+
+            if reset:
+                st.session_state.pop("custom_report", None)
+                st.rerun()
+            if generate or "custom_report" not in st.session_state:
+                st.session_state.custom_report = {"type": typ, "group": group, "metrics": metrics, "viz": viz}
+
+        if st.session_state.get("custom_report"):
+            cfg = st.session_state.custom_report
+            source_map = {
+                "Project Report": rp,
+                "Task Report": rt,
+                "Resource Report": rr,
+                "Milestone Report": rm,
+                "Workload Report": rr,
+            }
+            source = source_map.get(cfg["type"], rp).copy()
+            colmap = {"Project": "project", "Team": "team", "Status": "status", "Priority": "priority", "Assignee": "assignee"}
+            gc = colmap.get(cfg["group"], "status")
+            if gc not in source.columns:
+                gc = "status" if "status" in source.columns else source.columns[0]
+            z = source[gc].fillna("Unassigned").value_counts().rename_axis(gc).reset_index(name="Count")
+
+            with st.container(border=True):
+                section_title(f"Report Preview: {cfg['type']} grouped by {cfg['group']}", f"{len(source)} Records")
+                if cfg["viz"] == "Pie Chart":
+                    chart_status_donut(source, gc, cfg["group"], height=280)
+                elif cfg["viz"] in ["Bar Chart", "Column Chart", "Line Chart"]:
+                    if cfg["viz"] == "Line Chart":
+                        fig = px.line(z, x=gc, y="Count", markers=True, color_discrete_sequence=[GREEN])
+                    elif cfg["viz"] == "Bar Chart":
+                        fig = px.bar(z, x="Count", y=gc, orientation="h", text="Count", color=gc, color_discrete_sequence=[GREEN, BLUE, ORANGE, RED])
+                    else:
+                        fig = px.bar(z, x=gc, y="Count", text="Count", color=gc, color_discrete_sequence=[GREEN, BLUE, ORANGE, RED])
+                    fig.update_layout(height=280, showlegend=False, paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)")
+                    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+                elif cfg["viz"] == "Summary Cards":
+                    cols = st.columns(min(4, max(1, len(z))))
+                    for col, (_, r_row) in zip(cols, z.iterrows()):
+                        with col:
+                            metric_card(str(r_row[gc]), int(r_row.Count), f"{cfg['type']} records", "📊", "green")
+
+                st.dataframe(source, hide_index=True, use_container_width=True)
+
+                with st.form("save_custom_report_form"):
+                    c_a, c_b = st.columns([3, 1])
+                    with c_a:
+                        report_name = st.text_input("Report Name", f"{cfg['type']} ({cfg['group']}) - {date.today().isoformat()}")
+                    with c_b:
+                        st.write("")
+                        save_rep = st.form_submit_button("＋ Save Current Report", type="primary", use_container_width=True)
+                    if save_rep and report_name.strip():
+                        sql(
+                            "INSERT INTO saved_reports(name,report_type,config,last_generated,created_by) VALUES(?,?,?,?,?)",
+                            (report_name.strip(), cfg["type"], json.dumps(cfg), date.today().isoformat(), "James Miller"),
+                        )
+                        log_event("Saved", "Report", None, report_name.strip())
+                        st.success("Custom report saved.")
+                        st.rerun()
+
+        with st.container(border=True):
+            saved = df("SELECT * FROM saved_reports ORDER BY id DESC")
+            section_title("Saved Reports", f"{len(saved)} Saved")
+            if saved.empty:
+                st.caption("No saved reports yet.")
+            else:
+                render_rich_table(
+                    saved,
+                    [
+                        ("name", "Report Name", "bold"),
+                        ("report_type", "Report Type", "badge"),
+                        ("last_generated", "Last Generated", "date"),
+                        ("created_by", "Created By", "avatar"),
+                    ],
+                )
+
+
+# ===========================================================================
+# PAGE 8: SETTINGS (Exact Replica of All 8 Mockup Settings Tabs)
+# ===========================================================================
+elif page == "Settings":
+    render_top_header("Settings", "Manage workspace, users, defaults, notifications, integrations, and system preferences", show_filters=False)
+    tabs = st.tabs(
+        [
+            "Workspace",
+            "User Management",
+            "Project Settings",
+            "Task Settings",
+            "Milestones",
+            "Notifications",
+            "Integrations",
+            "System",
+        ]
+    )
+
+    # --- SETTINGS TAB 0: WORKSPACE ---
+    with tabs[0]:
+        with st.container(border=True):
+            section_title("Workspace Settings", "General branding and localization")
+            logo_file = st.file_uploader("Workspace Logo (PNG/JPG)", type=["png", "jpg", "jpeg"])
+            if logo_file is not None:
+                b64_str = base64.b64encode(logo_file.read()).decode("utf-8")
+                put_setting("workspace_logo_b64", b64_str)
+                st.success("Logo uploaded and applied to sidebar.")
+
+            with st.form("workspace_settings_form"):
+                name = st.text_input("Workspace Name", get_setting("workspace_name", "Vektor"))
+                desc = st.text_area("Description", get_setting("workspace_description", "Project management workspace for planning, tracking, and delivery."))
+                a, b = st.columns(2)
+                with a:
+                    t_opts = ["HPE Green", "Blue", "Dark"]
+                    cur_t = get_setting("theme", "HPE Green")
+                    theme = st.selectbox("Theme", t_opts, index=t_opts.index(cur_t) if cur_t in t_opts else 0)
+                with b:
+                    l_opts = ["English", "Filipino"]
+                    cur_l = get_setting("language", "English")
+                    language = st.selectbox("Language", l_opts, index=l_opts.index(cur_l) if cur_l in l_opts else 0)
+                a, b = st.columns(2)
+                with a:
+                    f_opts = ["MMM DD, YYYY", "DD/MM/YYYY", "MM/DD/YYYY"]
+                    cur_f = get_setting("date_format", "MMM DD, YYYY")
+                    fmt_d = st.selectbox("Date Format", f_opts, index=f_opts.index(cur_f) if cur_f in f_opts else 0)
+                with b:
+                    p_opts = ["Overview", "Projects", "Task List", "Reports"]
+                    cur_p = get_setting("default_landing", "Overview")
+                    landing = st.selectbox("Default Landing Page", p_opts, index=p_opts.index(cur_p) if cur_p in p_opts else 0)
+                if st.form_submit_button("💾 Save Workspace Settings", type="primary"):
+                    for k, v in {
+                        "workspace_name": name,
+                        "workspace_description": desc,
+                        "theme": theme,
+                        "language": language,
+                        "date_format": fmt_d,
+                        "default_landing": landing,
+                    }.items():
+                        put_setting(k, v)
+                    log_event("Updated", "Workspace Settings", None, f"Theme={theme}")
+                    st.success("Workspace settings saved.")
+                    st.rerun()
+
+    # --- SETTINGS TAB 1: USER MANAGEMENT ---
+    with tabs[1]:
+        with st.container(border=True):
+            section_title("User Management", f"{len(R)} Registered Users")
+            render_rich_table(
+                R,
+                [
+                    ("name", "Name", "avatar"),
+                    ("email", "Email", "text"),
+                    ("role", "Role", "badge"),
+                    ("team", "Team", "text"),
+                    ("status", "Status", "badge"),
+                ],
+                max_rows=12,
+            )
+
+        c1, c2 = st.columns(2)
+        with c1, st.container(border=True):
+            section_title("Add New User")
+            with st.form("add_user_form"):
+                u_name = st.text_input("Full Name *")
+                u_email = st.text_input("Email Address *")
+                a, b = st.columns(2)
+                with a:
+                    u_role = st.selectbox("Role", ["Admin", "Project Manager", "Team Member"])
+                with b:
+                    u_team = st.selectbox("Team", teams_list)
+                if st.form_submit_button("＋ Add User", type="primary"):
+                    if u_name.strip():
+                        sql(
+                            "INSERT INTO resources(name,email,team,role,status,capacity) VALUES(?,?,?,?,?,?)",
+                            (u_name.strip(), u_email.strip() or f"{u_name.lower().replace(' ', '.')}@vektor.example", u_team, u_role, "Available", 100),
+                        )
+                        log_event("Created", "User", None, u_name.strip())
+                        st.rerun()
+                    else:
+                        st.error("Name is required.")
+        with c2, st.container(border=True):
+            section_title("Update or Remove User")
+            if not R.empty:
+                uid = st.selectbox("Select User", R.id.tolist(), format_func=lambda x: f"{R.loc[R.id == x, 'name'].iloc[0]} ({R.loc[R.id == x, 'role'].iloc[0]})")
+                u_row = R[R.id == uid].iloc[0]
+                roles = ["Admin", "Project Manager", "Team Member"]
+                states = ["Available", "Partial", "On Leave"]
+                new_role = st.selectbox("Role", roles, index=roles.index(u_row.role) if u_row.role in roles else 2, key="upd_u_role")
+                new_stat = st.selectbox("Status", states, index=states.index(u_row.status) if u_row.status in states else 0, key="upd_u_stat")
+                b_a, b_b = st.columns(2)
+                with b_a:
+                    if st.button("💾 Update User", type="primary", use_container_width=True):
+                        sql("UPDATE resources SET role=?, status=? WHERE id=?", (new_role, new_stat, int(uid)))
+                        log_event("Updated", "User", int(uid), u_row["name"])
+                        st.rerun()
+                with b_b:
+                    if st.button("🗑 Remove User", use_container_width=True):
+                        sql("DELETE FROM resources WHERE id=?", (int(uid),))
+                        log_event("Deleted", "User", int(uid), u_row["name"])
+                        st.rerun()
+
+    # --- SETTINGS TAB 2: PROJECT SETTINGS ---
+    with tabs[2]:
+        with st.container(border=True):
+            section_title("Project Defaults & Governance")
+            with st.form("project_defaults_form"):
+                a, b = st.columns(2)
+                with a:
+                    p_stats = ["Not Started", "On Track", "At Risk", "Delayed"]
+                    cur_ps = get_setting("default_project_status", "On Track")
+                    status = st.selectbox("Default Project Status", p_stats, index=p_stats.index(cur_ps) if cur_ps in p_stats else 1)
+                with b:
+                    t_mpl = ["Standard Project", "Software Delivery", "Marketing Campaign", "Infrastructure"]
+                    cur_tm = get_setting("project_template", "Standard Project")
+                    template = st.selectbox("Default Project Template", t_mpl, index=t_mpl.index(cur_tm) if cur_tm in t_mpl else 0)
+                vals = {
+                    k: st.checkbox(label, value=get_setting(k, "true" if default else "false") == "true")
+                    for k, label, default in [
+                        ("auto_project_id", "Enable project key/ID auto-generation", True),
+                        ("require_project_desc", "Require project description", True),
+                        ("allow_project_attachments", "Allow project attachments", True),
+                        ("project_archiving", "Enable project archiving", False),
+                    ]
+                }
+                if st.form_submit_button("💾 Save Project Defaults", type="primary"):
+                    put_setting("default_project_status", status)
+                    put_setting("project_template", template)
+                    for k, v in vals.items():
+                        put_setting(k, str(v).lower())
+                    st.success("Project defaults saved.")
+
+    # --- SETTINGS TAB 3: TASK SETTINGS ---
+    with tabs[3]:
+        with st.container(border=True):
+            section_title("Task Defaults & Workflow Rules")
+            with st.form("task_defaults_form"):
+                a, b = st.columns(2)
+                with a:
+                    status = st.selectbox("Default Task Status", ["Not Started", "In Progress", "Completed"])
+                with b:
+                    priority = st.selectbox("Default Task Priority", ["High", "Medium", "Low"], index=1)
+                vals = {
+                    k: st.checkbox(label, value=get_setting(k, "true" if default else "false") == "true")
+                    for k, label, default in [
+                        ("task_dependencies", "Enable task dependencies", True),
+                        ("allow_subtasks", "Allow subtasks", True),
+                        ("recurring_tasks", "Enable recurring tasks", False),
+                        ("require_assignee", "Require assignee", True),
+                        ("task_attachments", "Allow task attachments", True),
+                    ]
+                }
+                if st.form_submit_button("💾 Save Task Defaults", type="primary"):
+                    put_setting("default_task_status", status)
+                    put_setting("default_task_priority", priority)
+                    for k, v in vals.items():
+                        put_setting(k, str(v).lower())
+                    st.success("Task defaults saved.")
+
+    # --- SETTINGS TAB 4: MILESTONES ---
+    with tabs[4]:
+        c1, c2 = st.columns([1, 1.3])
+        with c1, st.container(border=True):
+            section_title("Milestone Settings")
+            with st.form("milestone_defaults_form"):
+                status = st.selectbox("Default Milestone Status", ["Not Started", "In Progress", "Completed"])
+                vals = {
+                    k: st.checkbox(label, value=get_setting(k, "true") == "true")
+                    for k, label in [
+                        ("milestones_enabled", "Enable milestones"),
+                        ("milestones_require_due", "Require due date"),
+                        ("milestone_dependencies", "Allow milestone dependencies"),
+                        ("milestone_notifications", "Auto-notify on milestone updates"),
+                    ]
+                }
+                if st.form_submit_button("💾 Save Milestone Defaults", type="primary"):
+                    put_setting("default_milestone_status", status)
+                    for k, v in vals.items():
+                        put_setting(k, str(v).lower())
+                    st.success("Milestone defaults saved.")
+
+        with c2, st.container(border=True):
+            section_title("Add Milestone")
+            with st.form("add_milestone_form"):
+                m_name = st.text_input("Milestone Name *")
+                a, b = st.columns(2)
+                with a:
+                    m_proj = st.selectbox("Project", projects_list)
+                with b:
+                    m_team = st.selectbox("Team", teams_list)
+                a, b = st.columns(2)
+                with a:
+                    m_due = st.date_input("Due Date", date.today() + timedelta(days=14))
+                with b:
+                    m_stat = st.selectbox("Status", ["Not Started", "In Progress", "Completed", "Overdue"])
+                if st.form_submit_button("＋ Add Milestone", type="primary"):
+                    if m_name.strip():
+                        sql(
+                            "INSERT INTO milestones(name,project_id,team,status,start_date,due_date,notes) VALUES(?,?,?,?,?,?,?)",
+                            (m_name.strip(), pmap[m_proj], m_team, m_stat, date.today().isoformat(), m_due.isoformat(), ""),
+                        )
+                        log_event("Created", "Milestone", None, m_name.strip())
+                        st.rerun()
+
+        with st.container(border=True):
+            section_title("Active Milestones", f"{len(M)} Total")
+            render_rich_table(
+                M,
+                [
+                    ("name", "Milestone", "bold"),
+                    ("project", "Project", "text"),
+                    ("team", "Team", "text"),
+                    ("due_date", "Due Date", "date"),
+                    ("status", "Status", "badge"),
+                ],
+            )
+
+    # --- SETTINGS TAB 5: NOTIFICATIONS ---
+    with tabs[5]:
+        with st.container(border=True):
+            section_title("Notification Preferences", "Configure triggers and delivery cadence")
+            with st.form("notifications_form"):
+                labels = [
+                    "Task assigned to me",
+                    "Task due soon",
+                    "Task overdue",
+                    "Milestone updates",
+                    "Project status changes",
+                    "Project assignment",
+                    "Mention in comments",
+                    "Weekly project digest",
+                ]
+                c_a, c_b = st.columns(2)
+                vals = {}
+                for idx, k in enumerate(labels):
+                    target_col = c_a if idx < 4 else c_b
+                    with target_col:
+                        vals[k] = st.checkbox(k, value=get_setting("notify_" + k, "false" if k == "Mention in comments" else "true") == "true")
+                freq_opts = ["Real-time", "Hourly", "Daily digest", "Weekly digest"]
+                cur_freq = get_setting("notification_frequency", "Daily digest")
+                freq = st.selectbox("Notification Frequency", freq_opts, index=freq_opts.index(cur_freq) if cur_freq in freq_opts else 2)
+                if st.form_submit_button("💾 Save Notification Preferences", type="primary"):
+                    for k, v in vals.items():
+                        put_setting("notify_" + k, str(v).lower())
+                    put_setting("notification_frequency", freq)
+                    st.success("Notification preferences saved.")
+
+    # --- SETTINGS TAB 6: INTEGRATIONS ---
+    with tabs[6]:
+        section_title("Connected Apps & Integrations", "Sync calendars, messaging channels, and cloud storage")
+        services = [
+            ("Microsoft 365", "Connect Outlook calendar, email alerts, and directory sync", "📅"),
+            ("Slack", "Send automated task, milestone, and health alerts to Slack channels", "💬"),
+            ("Microsoft Teams", "Collaborate on project channels and receive @mention notifications", "👥"),
+            ("OneDrive", "Attach and sync project deliverables and specification documents", "☁️"),
+        ]
+        cols = st.columns(2)
+        for idx, (service, desc, ico) in enumerate(services):
+            with cols[idx % 2], st.container(border=True):
+                is_conn = get_setting(f"integration_{service}", "false") == "true"
+                a, b = st.columns([3.2, 1.1])
+                with a:
+                    st.markdown(
+                        f"<div style='display:flex;align-items:center;gap:10px'>"
+                        f"<span style='font-size:24px'>{ico}</span>"
+                        f"<div><div style='font-weight:700;font-size:15px'>{html.escape(service)}</div>"
+                        f"<div style='font-size:12px;color:#64748B'>{html.escape(desc)}</div></div></div>",
+                        unsafe_allow_html=True,
+                    )
+                    st.markdown(
+                        f"<div style='margin-top:8px'>{badge_html('Connected' if is_conn else 'Disconnected')}</div>",
+                        unsafe_allow_html=True,
+                    )
+                with b:
+                    st.write("")
+                    btn_label = "Disconnect" if is_conn else "Connect"
+                    if st.button(btn_label, key=f"int_{service}", type="secondary" if is_conn else "primary", use_container_width=True):
+                        put_setting(f"integration_{service}", "false" if is_conn else "true")
+                        log_event("Integration Toggled", service, None, "Disconnected" if is_conn else "Connected")
+                        st.rerun()
+
+    # --- SETTINGS TAB 7: SYSTEM ---
+    with tabs[7]:
+        c1, c2 = st.columns([1.2, 1])
+        with c1, st.container(border=True):
+            section_title("System & Security Preferences")
+            with st.form("system_settings_form"):
+                audit = st.checkbox("Enable audit logs", value=get_setting("audit_logs", "true") == "true")
+                exports = st.checkbox("Allow data export", value=get_setting("data_export", "true") == "true")
+                backups = st.checkbox("Enable automatic backups", value=get_setting("automatic_backups", "true") == "true")
+                maintenance = st.checkbox("Enable maintenance mode", value=get_setting("maintenance_mode", "false") == "true")
+                t_opts = ["30 minutes", "1 hour", "4 hours", "8 hours", "12 hours"]
+                cur_to = get_setting("session_timeout", "8 hours")
+                timeout = st.selectbox("Session Timeout", t_opts, index=t_opts.index(cur_to) if cur_to in t_opts else 3)
+                if st.form_submit_button("💾 Save System Settings", type="primary"):
+                    for k, v in {
+                        "audit_logs": audit,
+                        "data_export": exports,
+                        "automatic_backups": backups,
+                        "maintenance_mode": maintenance,
+                        "session_timeout": timeout,
+                    }.items():
+                        put_setting(k, str(v).lower() if isinstance(v, bool) else v)
+                    st.success("System settings saved.")
+
+        with c2, st.container(border=True):
+            section_title("Database & Demo Data Management")
+            if os.path.exists(DB):
+                with open(DB, "rb") as f:
+                    db_bytes = f.read()
+                st.download_button(
+                    "⬇ Download SQLite Backup (.db)",
+                    db_bytes,
+                    file_name=f"vektor_backup_{date.today().isoformat()}.db",
+                    mime="application/octet-stream",
+                    type="primary",
+                    use_container_width=True,
+                )
+            if st.button("🔄 Reset Workspace to Default Demo Data", use_container_width=True):
+                init_db(force_reset=True)
+                st.success("Database reset to factory demo data.")
+                st.rerun()
+            if st.button("🧹 Clear Audit Log", use_container_width=True):
+                sql("DELETE FROM audit_log")
+                st.success("Audit log cleared.")
+                st.rerun()
+
+        with st.container(border=True):
+            logs = df("SELECT * FROM audit_log ORDER BY id DESC LIMIT 50")
+            section_title("Recent Audit Events", f"{len(logs)} Logged")
+            if logs.empty:
+                st.caption("No audit events recorded yet.")
+            else:
+                render_rich_table(
+                    logs,
+                    [
+                        ("created_at", "Timestamp", "text"),
+                        ("event", "Action", "badge"),
+                        ("item_type", "Entity", "bold"),
+                        ("details", "Details", "text"),
+                    ],
+                )
