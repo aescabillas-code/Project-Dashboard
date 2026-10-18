@@ -1129,6 +1129,11 @@ page = st.session_state.page
 # ===========================================================================
 # PROJECT MODALS (View Project, Edit Project, Delete Project, New Project)
 # ===========================================================================
+def clean_html(raw: str) -> str:
+    """Collapse indentation so Streamlit Markdown never renders HTML as a code block."""
+    return "".join(line.strip() for line in raw.splitlines() if line.strip())
+
+
 def render_timeline_stepper_html() -> str:
     steps = [
         ("Project Start", "Apr 24", "done", "Project kick-off", "Completed", "#DCFCE7", "#15803D"),
@@ -1141,11 +1146,23 @@ def render_timeline_stepper_html() -> str:
     nodes_html = ""
     for idx, (st_title, st_date, state, box_title, box_sub, box_bg, box_fg) in enumerate(steps):
         if state == "done":
-            circle = '<div style="width:24px;height:24px;border-radius:50%;background:#00875A;color:white;display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:800;z-index:2">✓</div>'
+            circle = (
+                '<div style="width:24px;height:24px;border-radius:50%;background:#00875A;'
+                'color:white;display:flex;align-items:center;justify-content:center;'
+                'font-size:13px;font-weight:800;z-index:2;position:relative">✓</div>'
+            )
         elif state == "current":
-            circle = '<div style="width:24px;height:24px;border-radius:50%;background:#1473E6;border:3px solid #BFDBFE;color:white;display:flex;align-items:center;justify-content:center;font-size:10px;z-index:2">●</div>'
+            circle = (
+                '<div style="width:24px;height:24px;border-radius:50%;background:#1473E6;'
+                'border:3px solid #BFDBFE;color:white;display:flex;align-items:center;'
+                'justify-content:center;font-size:10px;z-index:2;position:relative">●</div>'
+            )
         else:
-            circle = '<div style="width:22px;height:22px;border-radius:50%;background:#94A3B8;color:white;display:flex;align-items:center;justify-content:center;font-size:10px;z-index:2"></div>'
+            circle = (
+                '<div style="width:22px;height:22px;border-radius:50%;background:#94A3B8;'
+                'color:white;display:flex;align-items:center;justify-content:center;'
+                'font-size:10px;z-index:2;position:relative"></div>'
+            )
 
         line_color = "#00875A" if idx < 2 else ("#1473E6" if idx == 2 else "#CBD5E1")
         line_right = (
@@ -1153,18 +1170,20 @@ def render_timeline_stepper_html() -> str:
             if idx < len(steps) - 1
             else ""
         )
-        nodes_html += f"""
-        <div style="flex:1;position:relative;display:flex;flex-direction:column;align-items:center;text-align:center;padding:0 4px">
-            {line_right}
-            <div style="font-size:11.5px;font-weight:700;color:#1E293B">{st_title}</div>
-            <div style="font-size:10.5px;color:#64748B;margin-bottom:6px">{st_date}</div>
-            {circle}
-            <div style="margin-top:10px;background:{box_bg};border-radius:6px;padding:6px 6px;width:94%;min-height:44px">
-                <div style="font-size:10.5px;font-weight:600;color:{box_fg}">{box_title}</div>
-                <div style="font-size:10.5px;font-weight:700;color:{box_fg}">{box_sub}</div>
+        nodes_html += clean_html(
+            f"""
+            <div style="flex:1;position:relative;display:flex;flex-direction:column;align-items:center;text-align:center;padding:0 4px">
+                {line_right}
+                <div style="font-size:11.5px;font-weight:700;color:#1E293B">{st_title}</div>
+                <div style="font-size:10.5px;color:#64748B;margin-bottom:6px">{st_date}</div>
+                {circle}
+                <div style="margin-top:10px;background:{box_bg};border-radius:6px;padding:6px 6px;width:94%;min-height:44px">
+                    <div style="font-size:10.5px;font-weight:600;color:{box_fg}">{box_title}</div>
+                    <div style="font-size:10.5px;font-weight:700;color:{box_fg}">{box_sub}</div>
+                </div>
             </div>
-        </div>
-        """
+            """
+        )
     return f'<div style="display:flex;align-items:flex-start;justify-content:space-between;padding:8px 0 4px 0">{nodes_html}</div>'
 
 
@@ -1213,58 +1232,51 @@ def view_project_modal(pid: int) -> None:
     )
     pct = int(r.progress or 0)
 
-    # Dark Teal Header Banner
     st.markdown(
-        f"""
-        <div style="background:{DARK_TEAL_HEADER};color:white;padding:16px 22px;border-radius:10px;margin-bottom:14px;display:flex;align-items:center;gap:12px">
-            <div style="font-size:26px">📄</div>
-            <div>
-                <div style="font-size:19px;font-weight:800;color:white">View Project</div>
-                <div style="font-size:12px;color:#CBD5E1">Project details and overall progress at a glance.</div>
+        clean_html(
+            f"""
+            <div style="background:{DARK_TEAL_HEADER};color:white;padding:16px 22px;border-radius:10px;margin-bottom:14px;display:flex;align-items:center;gap:12px">
+                <div style="font-size:26px">📄</div>
+                <div>
+                    <div style="font-size:19px;font-weight:800;color:white">View Project</div>
+                    <div style="font-size:12px;color:#CBD5E1">Project details and overall progress at a glance.</div>
+                </div>
             </div>
-        </div>
-        <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;margin-bottom:4px">
-            <div style="display:flex;align-items:center;gap:10px">
-                <span style="font-size:21px;font-weight:800;color:#0F172A">{html.escape(r['name'])}</span>
-                {badge_html(r.status)}
+            <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;margin-bottom:4px">
+                <div style="display:flex;align-items:center;gap:10px">
+                    <span style="font-size:21px;font-weight:800;color:#0F172A">{html.escape(r['name'])}</span>
+                    {badge_html(r.status)}
+                </div>
+                <div>{tags_html}</div>
             </div>
-            <div>{tags_html}</div>
-        </div>
-        <div style="font-size:13px;color:#475569;margin-bottom:14px">{html.escape(full_desc)}</div>
-        """,
+            <div style="font-size:13px;color:#475569;margin-bottom:14px">{html.escape(full_desc)}</div>
+            <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:10px;margin-bottom:14px">
+                <div style="border:1px solid #E2E8F0;border-radius:10px;padding:10px 12px;display:flex;align-items:center;gap:10px;background:white">
+                    <div style="width:36px;height:36px;border-radius:50%;background:#DCFCE7;color:#00875A;display:flex;align-items:center;justify-content:center;font-size:16px">👤</div>
+                    <div><div style="font-size:11px;color:#64748B">Project Manager</div><div style="font-size:13px;font-weight:700;color:#0F172A">{html.escape(str(r.owner))}</div></div>
+                </div>
+                <div style="border:1px solid #E2E8F0;border-radius:10px;padding:10px 12px;display:flex;align-items:center;gap:10px;background:white">
+                    <div style="width:36px;height:36px;border-radius:50%;background:#DCFCE7;color:#00875A;display:flex;align-items:center;justify-content:center;font-size:16px">🌐</div>
+                    <div><div style="font-size:11px;color:#64748B">Project Category</div><div style="font-size:13px;font-weight:700;color:#0F172A">{html.escape(str(r.category or 'Web Development'))}</div></div>
+                </div>
+                <div style="border:1px solid #E2E8F0;border-radius:10px;padding:10px 12px;display:flex;align-items:center;gap:10px;background:white">
+                    <div style="width:36px;height:36px;border-radius:50%;background:#DCFCE7;color:#00875A;display:flex;align-items:center;justify-content:center;font-size:16px">📅</div>
+                    <div><div style="font-size:11px;color:#64748B">Start Date</div><div style="font-size:13px;font-weight:700;color:#0F172A">{fmt_date(r.start_date)}</div></div>
+                </div>
+                <div style="border:1px solid #E2E8F0;border-radius:10px;padding:10px 12px;display:flex;align-items:center;gap:10px;background:white">
+                    <div style="width:36px;height:36px;border-radius:50%;background:#DCFCE7;color:#00875A;display:flex;align-items:center;justify-content:center;font-size:16px">📅</div>
+                    <div><div style="font-size:11px;color:#64748B">Target End Date</div><div style="font-size:13px;font-weight:700;color:#0F172A">{fmt_date(r.end_date)}</div></div>
+                </div>
+                <div style="border:1px solid #E2E8F0;border-radius:10px;padding:10px 12px;display:flex;align-items:center;gap:10px;background:white">
+                    <div style="width:36px;height:36px;border-radius:50%;background:#DCFCE7;color:#00875A;display:flex;align-items:center;justify-content:center;font-size:16px">🕒</div>
+                    <div><div style="font-size:11px;color:#64748B">Days Left</div><div style="font-size:18px;font-weight:800;color:#00875A;line-height:1">{int(r.days_left or 45)}</div><div style="font-size:10px;color:#64748B">Days remaining</div></div>
+                </div>
+            </div>
+            """
+        ),
         unsafe_allow_html=True,
     )
 
-    # 5 Info Cards Row
-    st.markdown(
-        f"""
-        <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:10px;margin-bottom:14px">
-            <div style="border:1px solid #E2E8F0;border-radius:10px;padding:10px 12px;display:flex;align-items:center;gap:10px;background:white">
-                <div style="width:36px;height:36px;border-radius:50%;background:#DCFCE7;color:#00875A;display:flex;align-items:center;justify-content:center;font-size:16px">👤</div>
-                <div><div style="font-size:11px;color:#64748B">Project Manager</div><div style="font-size:13px;font-weight:700;color:#0F172A">{html.escape(str(r.owner))}</div></div>
-            </div>
-            <div style="border:1px solid #E2E8F0;border-radius:10px;padding:10px 12px;display:flex;align-items:center;gap:10px;background:white">
-                <div style="width:36px;height:36px;border-radius:50%;background:#DCFCE7;color:#00875A;display:flex;align-items:center;justify-content:center;font-size:16px">🌐</div>
-                <div><div style="font-size:11px;color:#64748B">Project Category</div><div style="font-size:13px;font-weight:700;color:#0F172A">{html.escape(str(r.category or 'Web Development'))}</div></div>
-            </div>
-            <div style="border:1px solid #E2E8F0;border-radius:10px;padding:10px 12px;display:flex;align-items:center;gap:10px;background:white">
-                <div style="width:36px;height:36px;border-radius:50%;background:#DCFCE7;color:#00875A;display:flex;align-items:center;justify-content:center;font-size:16px">📅</div>
-                <div><div style="font-size:11px;color:#64748B">Start Date</div><div style="font-size:13px;font-weight:700;color:#0F172A">{fmt_date(r.start_date)}</div></div>
-            </div>
-            <div style="border:1px solid #E2E8F0;border-radius:10px;padding:10px 12px;display:flex;align-items:center;gap:10px;background:white">
-                <div style="width:36px;height:36px;border-radius:50%;background:#DCFCE7;color:#00875A;display:flex;align-items:center;justify-content:center;font-size:16px">📅</div>
-                <div><div style="font-size:11px;color:#64748B">Target End Date</div><div style="font-size:13px;font-weight:700;color:#0F172A">{fmt_date(r.end_date)}</div></div>
-            </div>
-            <div style="border:1px solid #E2E8F0;border-radius:10px;padding:10px 12px;display:flex;align-items:center;gap:10px;background:white">
-                <div style="width:36px;height:36px;border-radius:50%;background:#DCFCE7;color:#00875A;display:flex;align-items:center;justify-content:center;font-size:16px">🕒</div>
-                <div><div style="font-size:11px;color:#64748B">Days Left</div><div style="font-size:18px;font-weight:800;color:#00875A;line-height:1">{int(r.days_left or 45)}</div><div style="font-size:10px;color:#64748B">Days remaining</div></div>
-            </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-    # Row: Project Progress + Timeline
     c_left, c_right = st.columns([1.05, 1.95])
     with c_left, st.container(border=True):
         section_title("📄 Project Progress")
@@ -1273,45 +1285,48 @@ def view_project_modal(pid: int) -> None:
             st.plotly_chart(render_project_progress_donut(pct, 165), use_container_width=True, config={"displayModeBar": False})
         with d2:
             st.markdown(
-                """
-                <div style="font-size:12px;line-height:2.1;padding-top:14px">
-                    <div style="display:flex;justify-content:space-between"><span><span style="color:#00875A">●</span> Completed</span><b>14 (70%)</b></div>
-                    <div style="display:flex;justify-content:space-between"><span><span style="color:#1473E6">●</span> In Progress</span><b>4 (20%)</b></div>
-                    <div style="display:flex;justify-content:space-between"><span><span style="color:#F28C00">●</span> On Hold</span><b>1 (5%)</b></div>
-                    <div style="display:flex;justify-content:space-between"><span><span style="color:#64748B">●</span> Not Started</span><b>1 (5%)</b></div>
-                </div>
-                """,
+                clean_html(
+                    """
+                    <div style="font-size:12px;line-height:2.1;padding-top:14px">
+                        <div style="display:flex;justify-content:space-between"><span><span style="color:#00875A">●</span> Completed</span><b>14 (70%)</b></div>
+                        <div style="display:flex;justify-content:space-between"><span><span style="color:#1473E6">●</span> In Progress</span><b>4 (20%)</b></div>
+                        <div style="display:flex;justify-content:space-between"><span><span style="color:#F28C00">●</span> On Hold</span><b>1 (5%)</b></div>
+                        <div style="display:flex;justify-content:space-between"><span><span style="color:#64748B">●</span> Not Started</span><b>1 (5%)</b></div>
+                    </div>
+                    """
+                ),
                 unsafe_allow_html=True,
             )
     with c_right, st.container(border=True):
         section_title("⏳ Timeline", "View Full Timeline →")
         st.markdown(render_timeline_stepper_html(), unsafe_allow_html=True)
 
-    # Bottom Row: Project Information + Key Milestones & Recent Activity
     b_left, b_right = st.columns([1.05, 1.95])
     with b_left, st.container(border=True):
         section_title("📄 Project Information")
         st.markdown(
-            f"""
-            <div style="font-size:12.5px;line-height:1.95">
-                <div style="display:grid;grid-template-columns:115px 1fr;gap:6px"><span style="color:#64748B">Project Name</span><span style="font-weight:600">{html.escape(r['name'])}</span></div>
-                <div style="display:grid;grid-template-columns:115px 1fr;gap:6px;line-height:1.4;margin:4px 0"><span style="color:#64748B">Description</span><span>{html.escape(full_desc)}</span></div>
-                <div style="display:grid;grid-template-columns:115px 1fr;gap:6px"><span style="color:#64748B">Category</span><span>{html.escape(str(r.category or 'Web Development'))}</span></div>
-                <div style="display:grid;grid-template-columns:115px 1fr;gap:6px"><span style="color:#64748B">Status</span><span>{badge_html(r.status)}</span></div>
-                <div style="display:grid;grid-template-columns:115px 1fr;gap:6px"><span style="color:#64748B">Priority</span><span>{badge_html(r.priority or 'High')}</span></div>
-                <div style="display:grid;grid-template-columns:115px 1fr;gap:6px"><span style="color:#64748B">Project Manager</span><span>{html.escape(str(r.owner))}</span></div>
-                <div style="display:grid;grid-template-columns:115px 1fr;gap:6px"><span style="color:#64748B">Start Date</span><span>{fmt_date(r.start_date)}</span></div>
-                <div style="display:grid;grid-template-columns:115px 1fr;gap:6px"><span style="color:#64748B">Target End Date</span><span>{fmt_date(r.end_date)}</span></div>
-                <div style="display:grid;grid-template-columns:115px 1fr;gap:6px"><span style="color:#64748B">Duration</span><span>67 days</span></div>
-                <div style="display:grid;grid-template-columns:115px 1fr;gap:6px"><span style="color:#64748B">Days Left</span><span style="color:#00875A;font-weight:700">{int(r.days_left or 45)} days</span></div>
-                <div style="display:grid;grid-template-columns:115px 1fr;gap:6px;margin-top:4px"><span style="color:#64748B">Tags</span><span>{tags_html}</span></div>
-            </div>
-            <hr style="border-color:#EEF2F6;margin:12px 0">
-            <div style="font-size:13.5px;font-weight:700;color:#0F172A;margin-bottom:6px">📄 Project Summary</div>
-            <div style="font-size:11.5px;color:#64748B;line-height:1.55">
-                The {html.escape(r['name'])} project aims to deliver a modern, user-friendly corporate website with improved performance, enhanced user experience, and updated content. The project is currently on track with {pct}% completion. Key development activities are in progress and the team is aligned for the upcoming milestones.
-            </div>
-            """,
+            clean_html(
+                f"""
+                <div style="font-size:12.5px;line-height:1.95">
+                    <div style="display:grid;grid-template-columns:115px 1fr;gap:6px"><span style="color:#64748B">Project Name</span><span style="font-weight:600">{html.escape(r['name'])}</span></div>
+                    <div style="display:grid;grid-template-columns:115px 1fr;gap:6px;line-height:1.4;margin:4px 0"><span style="color:#64748B">Description</span><span>{html.escape(full_desc)}</span></div>
+                    <div style="display:grid;grid-template-columns:115px 1fr;gap:6px"><span style="color:#64748B">Category</span><span>{html.escape(str(r.category or 'Web Development'))}</span></div>
+                    <div style="display:grid;grid-template-columns:115px 1fr;gap:6px"><span style="color:#64748B">Status</span><span>{badge_html(r.status)}</span></div>
+                    <div style="display:grid;grid-template-columns:115px 1fr;gap:6px"><span style="color:#64748B">Priority</span><span>{badge_html(r.priority or 'High')}</span></div>
+                    <div style="display:grid;grid-template-columns:115px 1fr;gap:6px"><span style="color:#64748B">Project Manager</span><span>{html.escape(str(r.owner))}</span></div>
+                    <div style="display:grid;grid-template-columns:115px 1fr;gap:6px"><span style="color:#64748B">Start Date</span><span>{fmt_date(r.start_date)}</span></div>
+                    <div style="display:grid;grid-template-columns:115px 1fr;gap:6px"><span style="color:#64748B">Target End Date</span><span>{fmt_date(r.end_date)}</span></div>
+                    <div style="display:grid;grid-template-columns:115px 1fr;gap:6px"><span style="color:#64748B">Duration</span><span>67 days</span></div>
+                    <div style="display:grid;grid-template-columns:115px 1fr;gap:6px"><span style="color:#64748B">Days Left</span><span style="color:#00875A;font-weight:700">{int(r.days_left or 45)} days</span></div>
+                    <div style="display:grid;grid-template-columns:115px 1fr;gap:6px;margin-top:4px"><span style="color:#64748B">Tags</span><span>{tags_html}</span></div>
+                </div>
+                <hr style="border-color:#EEF2F6;margin:12px 0">
+                <div style="font-size:13.5px;font-weight:700;color:#0F172A;margin-bottom:6px">📄 Project Summary</div>
+                <div style="font-size:11.5px;color:#64748B;line-height:1.55">
+                    The {html.escape(r['name'])} project aims to deliver a modern, user-friendly corporate website with improved performance, enhanced user experience, and updated content. The project is currently on track with {pct}% completion. Key development activities are in progress and the team is aligned for the upcoming milestones.
+                </div>
+                """
+            ),
             unsafe_allow_html=True,
         )
 
@@ -1376,15 +1391,17 @@ def edit_project_modal(pid: int | None = None) -> None:
     sub_txt = "Create a new project, schedule, and milestones." if is_new else "Update project details, schedule, and milestones."
 
     st.markdown(
-        f"""
-        <div style="background:{DARK_TEAL_HEADER};color:white;padding:16px 22px;border-radius:10px;margin-bottom:14px;display:flex;align-items:center;gap:12px">
-            <div style="font-size:26px">📝</div>
-            <div>
-                <div style="font-size:19px;font-weight:800;color:white">{title_txt}</div>
-                <div style="font-size:12px;color:#CBD5E1">{sub_txt}</div>
+        clean_html(
+            f"""
+            <div style="background:{DARK_TEAL_HEADER};color:white;padding:16px 22px;border-radius:10px;margin-bottom:14px;display:flex;align-items:center;gap:12px">
+                <div style="font-size:26px">📝</div>
+                <div>
+                    <div style="font-size:19px;font-weight:800;color:white">{title_txt}</div>
+                    <div style="font-size:12px;color:#CBD5E1">{sub_txt}</div>
+                </div>
             </div>
-        </div>
-        """,
+            """
+        ),
         unsafe_allow_html=True,
     )
 
@@ -1438,14 +1455,16 @@ def edit_project_modal(pid: int | None = None) -> None:
         pct_val = int(r.progress) if r is not None else 70
         st.plotly_chart(render_project_progress_donut(pct_val, 185), use_container_width=True, config={"displayModeBar": False})
         st.markdown(
-            """
-            <div style="font-size:12px;line-height:2.1;padding:4px 8px">
-                <div style="display:flex;justify-content:space-between"><span><span style="color:#00875A">●</span> Completed</span><b>14 (70%)</b></div>
-                <div style="display:flex;justify-content:space-between"><span><span style="color:#1473E6">●</span> In Progress</span><b>4 (20%)</b></div>
-                <div style="display:flex;justify-content:space-between"><span><span style="color:#F28C00">●</span> On Hold</span><b>1 (5%)</b></div>
-                <div style="display:flex;justify-content:space-between"><span><span style="color:#64748B">●</span> Not Started</span><b>1 (5%)</b></div>
-            </div>
-            """,
+            clean_html(
+                """
+                <div style="font-size:12px;line-height:2.1;padding:4px 8px">
+                    <div style="display:flex;justify-content:space-between"><span><span style="color:#00875A">●</span> Completed</span><b>14 (70%)</b></div>
+                    <div style="display:flex;justify-content:space-between"><span><span style="color:#1473E6">●</span> In Progress</span><b>4 (20%)</b></div>
+                    <div style="display:flex;justify-content:space-between"><span><span style="color:#F28C00">●</span> On Hold</span><b>1 (5%)</b></div>
+                    <div style="display:flex;justify-content:space-between"><span><span style="color:#64748B">●</span> Not Started</span><b>1 (5%)</b></div>
+                </div>
+                """
+            ),
             unsafe_allow_html=True,
         )
 
@@ -1521,26 +1540,28 @@ def delete_project_modal(pid: int) -> None:
     tags_html = "".join(tag_pill_html(t) for t in str(r.tags or "").split(",") if t.strip())
 
     st.markdown(
-        f"""
-        <div style="text-align:center;padding:8px 12px 14px 12px">
-            <div style="width:64px;height:64px;border-radius:50%;background:#FEE2E2;color:#DC2626;display:inline-flex;align-items:center;justify-content:center;font-size:30px;margin-bottom:10px">🗑</div>
-            <div style="font-size:22px;font-weight:800;color:#0F172A;margin-bottom:6px">Delete Project</div>
-            <div style="font-size:13.5px;font-weight:600;color:#334155;margin-bottom:6px">Are you sure you want to delete this project?</div>
-            <div style="font-size:12.5px;color:#64748B;line-height:1.5;max-width:440px;margin:0 auto 16px auto">
-                This action cannot be undone. All project information, including tasks, milestones, and associated data, will be permanently removed.
+        clean_html(
+            f"""
+            <div style="text-align:center;padding:8px 12px 14px 12px">
+                <div style="width:64px;height:64px;border-radius:50%;background:#FEE2E2;color:#DC2626;display:inline-flex;align-items:center;justify-content:center;font-size:30px;margin-bottom:10px">🗑</div>
+                <div style="font-size:22px;font-weight:800;color:#0F172A;margin-bottom:6px">Delete Project</div>
+                <div style="font-size:13.5px;font-weight:600;color:#334155;margin-bottom:6px">Are you sure you want to delete this project?</div>
+                <div style="font-size:12.5px;color:#64748B;line-height:1.5;max-width:440px;margin:0 auto 16px auto">
+                    This action cannot be undone. All project information, including tasks, milestones, and associated data, will be permanently removed.
+                </div>
             </div>
-        </div>
-        <div style="border:1px solid #E2E8F0;border-left:5px solid {r.bar_color or GREEN};border-radius:10px;padding:14px 16px;background:#F8FAFC;margin-bottom:18px">
-            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
-                <span style="font-size:15.5px;font-weight:800;color:#0F172A">{html.escape(r['name'])}</span>
-                {badge_html(r.status)}
+            <div style="border:1px solid #E2E8F0;border-left:5px solid {r.bar_color or GREEN};border-radius:10px;padding:14px 16px;background:#F8FAFC;margin-bottom:18px">
+                <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
+                    <span style="font-size:15.5px;font-weight:800;color:#0F172A">{html.escape(r['name'])}</span>
+                    {badge_html(r.status)}
+                </div>
+                <div style="font-size:12.5px;color:#475569;margin-bottom:10px">{html.escape(str(r.description or ''))}</div>
+                <div style="margin-bottom:10px">{tags_html}</div>
+                <div style="font-size:12px;color:#334155;margin-bottom:6px">📅 &nbsp; {fmt_date(r.start_date)} – {fmt_date(r.end_date)}</div>
+                <div style="font-size:12px;color:#334155">👤 &nbsp; {avatar_html(r.owner)}</div>
             </div>
-            <div style="font-size:12.5px;color:#475569;margin-bottom:10px">{html.escape(str(r.description or ''))}</div>
-            <div style="margin-bottom:10px">{tags_html}</div>
-            <div style="font-size:12px;color:#334155;margin-bottom:6px">📅 &nbsp; {fmt_date(r.start_date)} – {fmt_date(r.end_date)}</div>
-            <div style="font-size:12px;color:#334155">👤 &nbsp; {avatar_html(r.owner)}</div>
-        </div>
-        """,
+            """
+        ),
         unsafe_allow_html=True,
     )
 
@@ -1557,7 +1578,6 @@ def delete_project_modal(pid: int) -> None:
             log_event("Deleted", "Project", pid, r["name"])
             st.session_state.pop("active_modal", None)
             st.rerun()
-
 
 # ===========================================================================
 # PAGE 1: PROJECT OVERVIEW (Exact Replica of Image 2)
