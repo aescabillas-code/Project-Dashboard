@@ -24,13 +24,13 @@ COLLECTION_NAME = "Reports"
 @st.cache_resource
 def get_mongo_collection():
     try:
+        # Securely retrieve the connection string from Streamlit secrets
         mongo_uri = st.secrets["MONGO_URI"]
         
-        # Use modern PyMongo v4+ TLS arguments
+        # Initialize MongoClient with connection timeout
         client = MongoClient(
             mongo_uri, 
-            serverSelectionTimeoutMS=5000,
-            tlsAllowInvalidCertificates=True  # Bypasses local SSL certificate verification blockups
+            serverSelectionTimeoutMS=5000
         )
         db = client[DB_NAME]
         return db[COLLECTION_NAME]
