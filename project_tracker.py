@@ -1,5 +1,5 @@
 """
-Project Tracker Pro — a Microsoft Project-inspired Streamlit project planning app.
+Vektor — Direction + Velocity. A Microsoft Project-inspired Streamlit project planning app.
 
 Run:
     pip install streamlit pandas plotly openpyxl
@@ -256,12 +256,12 @@ def fmt_money(value):
         return "$0.00"
 
 
-st.set_page_config(page_title="Project Tracker Pro", page_icon="📊", layout="wide")
+st.set_page_config(page_title="Vektor | Direction + Velocity", page_icon="📊", layout="wide")
 init_db()
 
 st.markdown("""
 <style>
-    :root { --pt-navy:#003B5C; --pt-blue:#007A53; --pt-green:#00B388; --pt-teal:#00A982; --pt-line:#d9e5df; --pt-ink:#173b35; }
+    :root { --pt-navy:#003B5C; --pt-blue:#01A982; --pt-green:#01A982; --pt-teal:#01A982; --pt-line:#d9e5df; --pt-ink:#173b35; }
     .block-container {padding: 1.1rem 1.35rem 2rem; max-width: 1900px;}
     [data-testid="stMetric"] {background:linear-gradient(145deg,#ffffff,#f3fbf7); border:1px solid var(--pt-line); padding:14px 16px; border-radius:14px; box-shadow:0 2px 8px rgba(0,59,92,.06);}
     [data-testid="stMetricLabel"] {color:#536b63; font-weight:650;}
@@ -276,11 +276,11 @@ st.markdown("""
     [data-testid="stSidebarCollapseButton"], [data-testid="collapsedControl"], button[kind="header"] {display:none !important;}
     div[data-testid="stSidebar"] [data-testid="stRadio"] label {padding:7px 9px; border-radius:8px; font-weight:550;}
     div[data-testid="stSidebar"] [data-testid="stRadio"] label:hover {background:#d8f2e7;}
-    div[data-testid="stButton"] > button, div[data-testid="stDownloadButton"] > button {border-radius:9px; font-weight:650; min-height:2.55rem; border-color:#007A53; color:#006747;}
-    div[data-testid="stButton"] > button[kind="primary"] {background:#007A53; color:#ffffff; border-color:#007A53;}
-    div[data-testid="stButton"] > button:hover, div[data-testid="stDownloadButton"] > button:hover {background:#e3f7ee; border-color:#00B388; color:#003B5C;}
-    [data-testid="stProgressBar"] > div > div {background-color:#00B388;}
-    a {color:#007A53;}
+    div[data-testid="stButton"] > button, div[data-testid="stDownloadButton"] > button {border-radius:9px; font-weight:650; min-height:2.55rem; border-color:#01A982; color:#007F63;}
+    div[data-testid="stButton"] > button[kind="primary"] {background:#01A982; color:#ffffff; border-color:#01A982;}
+    div[data-testid="stButton"] > button:hover, div[data-testid="stDownloadButton"] > button:hover {background:#e3f7ee; border-color:#01A982; color:#003B5C;}
+    [data-testid="stProgressBar"] > div > div {background-color:#01A982;}
+    a {color:#01A982;}
     div[data-testid="stPlotlyChart"] {border:1px solid #dce9e2; border-radius:12px; padding:5px; background:#fff;}
     @media (max-width: 900px) {
       .block-container {padding: .7rem .7rem 1.5rem;}
@@ -298,7 +298,8 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-st.markdown('<div class="project-title">PROJECT TRACKER</div>', unsafe_allow_html=True)
+st.markdown('<div class="project-title">VEKTOR</div>', unsafe_allow_html=True)
+st.markdown('<div style="font-size:1rem;font-weight:700;letter-spacing:.12em;color:#01A982;margin-top:-.35rem;margin-bottom:.25rem;">DIRECTION PLUS VELOCITY</div>', unsafe_allow_html=True)
 st.caption("Plan • Schedule • Execute • Monitor — a responsive project workspace inspired by Microsoft Project.")
 
 projects = get_projects()
@@ -362,7 +363,7 @@ if page == "Overview":
                 lambda r: "Overdue" if r["end_date"] < today and r["status"] != "Completed"
                 else ("Completed" if r["status"] == "Completed" else "In Progress"), axis=1)
             fig = px.timeline(gantt, x_start="Start", x_end="Finish", y="Task label", color="Health",
-                              color_discrete_map={"Overdue": "#D64545", "Completed": "#00B388", "In Progress": "#007A53"},
+                              color_discrete_map={"Overdue": "#D64545", "Completed": "#01A982", "In Progress": "#01A982"},
                               hover_data=["owner", "progress", "priority", "status"])
             fig.update_yaxes(autorange="reversed", title="")
             fig.update_layout(height=max(320, min(650, 36 * total + 100)), margin=dict(l=10, r=10, t=20, b=10),
@@ -392,7 +393,7 @@ if page == "Overview":
         if total:
             status_df = tasks.groupby("status", dropna=False).size().reset_index(name="Tasks")
             st.plotly_chart(px.pie(status_df, names="status", values="Tasks", hole=.55,
-                                   color_discrete_sequence=["#007A53", "#00B388", "#003B5C", "#8ACDB5", "#D64545"]), use_container_width=True)
+                                   color_discrete_sequence=["#01A982", "#01A982", "#003B5C", "#8ACDB5", "#D64545"]), use_container_width=True)
 
 elif page == "Task Plan & Gantt":
     st.subheader("Task plan and Gantt chart")
@@ -417,7 +418,7 @@ elif page == "Task Plan & Gantt":
             plot_df["Task"] = plot_df.apply(lambda r: f"{r['task_id']} · {r['wbs']} {r['task_name']}".strip(), axis=1)
             plot_df["Schedule"] = plot_df["task_id"].apply(lambda x: "Critical path" if int(x) in critical_ids else "Standard")
             fig = px.timeline(plot_df, x_start="Start", x_end="Finish", y="Task", color="Schedule",
-                              color_discrete_map={"Critical path": "#00B388", "Standard": "#003B5C"},
+                              color_discrete_map={"Critical path": "#01A982", "Standard": "#003B5C"},
                               hover_data=["owner", "progress", "status", "priority", "predecessors"])
             fig.update_yaxes(autorange="reversed", title="")
             fig.update_layout(height=max(360, min(850, 34 * len(plot_df) + 100)), margin=dict(l=10, r=10, t=20, b=10))
