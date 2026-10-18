@@ -3236,203 +3236,1512 @@ elif page == "Task List":
 
 
 # ===========================================================================
-# PAGE 5: RESOURCES
+# PAGE 5: RESOURCES (Exact Replica of Main View + Calendar, Assignments, Add & 7 Action Modals)
 # ===========================================================================
 elif page == "Resources":
-    render_top_header("Resources", "Manage team members, capacity, availability, and project assignments", show_filters=True)
-    r = apply_global_filters(R, "none")
 
-    k1, k2, k3, k4 = st.columns(4)
-    with k1:
-        metric_card("Total Resources", len(r), "Team directory", "👥", "blue")
-    with k2:
-        metric_card("Available", int((r.status == "Available").sum()), "100% capacity", "🟢", "green")
-    with k3:
-        metric_card("Partial Allocation", int((r.status == "Partial").sum()), "50% capacity", "🟠", "orange")
-    with k4:
-        metric_card("On Leave", int((r.status == "On Leave").sum()), "Currently unavailable", "🔴", "red")
+    @st.dialog("Add Resource", width="large")
+    def add_resource_modal() -> None:
+        st.markdown(
+            clean_html(
+                """
+                <div style="display:flex;align-items:center;gap:12px;padding-bottom:12px;border-bottom:1px solid #E2E8F0;margin-bottom:14px">
+                    <div style="width:40px;height:40px;border-radius:50%;background:#00875A;color:white;display:flex;align-items:center;justify-content:center;font-size:18px;font-weight:700">👥+</div>
+                    <div>
+                        <div style="font-size:20px;font-weight:800;color:#0F172A;line-height:1.1">Add Resource</div>
+                        <div style="font-size:12.5px;color:#64748B">Add a new team member to the resource pool.</div>
+                    </div>
+                </div>
+                """
+            ),
+            unsafe_allow_html=True,
+        )
+
+        top_l, top_r = st.columns([2.1, 1])
+        with top_l, st.container(border=True):
+            st.markdown("<div style='font-size:14px;font-weight:700;color:#0F172A;margin-bottom:8px'>👤 &nbsp;Basic Information</div>", unsafe_allow_html=True)
+            b1, b2 = st.columns(2)
+            with b1:
+                r_name = st.text_input("Full Name *", placeholder="Enter full name", key="ar_name")
+            with b2:
+                r_email = st.text_input("Email Address *", placeholder="name@hpe.com", key="ar_email")
+            b3, b4, b5 = st.columns(3)
+            with b3:
+                r_role = st.selectbox(
+                    "Role *",
+                    ["Select role", "UX Designer", "Business Analyst", "Frontend Developer", "Project Manager", "Backend Developer", "QA Engineer", "Content Specialist", "DevOps Engineer", "IT Support", "Data Analyst"],
+                    key="ar_role",
+                )
+            with b4:
+                st.selectbox("Employment Type *", ["Employee", "Contractor", "Part-Time"], key="ar_emp_type")
+            with b5:
+                r_stat = st.selectbox("Status *", ["Available", "Allocated", "On Leave"], key="ar_stat")
+
+        with top_r, st.container(border=True):
+            st.markdown(
+                clean_html(
+                    """
+                    <div style="font-size:13.5px;font-weight:700;color:#0F172A;margin-bottom:8px">👤 &nbsp;Profile Photo <span style="font-weight:400;color:#64748B;font-size:12px">(Optional)</span></div>
+                    <div style="text-align:center;padding:6px 0">
+                        <div style="width:74px;height:74px;border-radius:50%;background:#94A3B8;color:white;display:inline-flex;align-items:center;justify-content:center;font-size:34px;margin-bottom:10px">👤</div>
+                    </div>
+                    """
+                ),
+                unsafe_allow_html=True,
+            )
+            st.file_uploader("Upload Photo", type=["jpg", "jpeg", "png"], key="ar_photo", label_visibility="collapsed")
+            st.markdown(
+                "<div style='text-align:center;font-size:11px;color:#64748B;line-height:1.4'>JPG, PNG (Max 2MB)<br>Recommended size: 200 x 200</div>",
+                unsafe_allow_html=True,
+            )
+
+        mid_l, mid_r = st.columns([1.15, 1])
+        with mid_l, st.container(border=True):
+            st.markdown("<div style='font-size:14px;font-weight:700;color:#0F172A;margin-bottom:8px'>⚙ &nbsp;Skills</div>", unsafe_allow_html=True)
+            skill_pool = ["UI/UX", "Figma", "React", "JavaScript", "Python", "API", "Testing", "Automation", "Content", "SEO", "Azure", "CI/CD", "Analysis", "Requirements", "Planning", "Stakeholder", "Infrastructure", "Support", "Power BI", "Excel"]
+            st.multiselect("Select Skills *", skill_pool, default=[], placeholder="🔍 Search or select skills...", key="ar_skills")
+            chips_preview = "".join(
+                f'<span class="vk-tag" style="background:{"#DBEAFE" if i % 2 == 0 else "#F1F5F9"};color:{"#1D4ED8" if i % 2 == 0 else "#334155"};margin-bottom:6px">{s}</span>'
+                for i, s in enumerate(["UI/UX", "Figma", "React", "JavaScript", "Python", "API", "Testing", "Automation", "Content", "SEO", "Azure", "CI/CD"])
+            )
+            st.markdown(
+                clean_html(
+                    f"""
+                    <div style="margin-top:6px;margin-bottom:8px">{chips_preview}</div>
+                    <div style="font-size:12px;font-weight:600;color:#1473E6;cursor:pointer">＋ Add Custom Skill</div>
+                    """
+                ),
+                unsafe_allow_html=True,
+            )
+
+        with mid_r, st.container(border=True):
+            st.markdown("<div style='font-size:14px;font-weight:700;color:#0F172A;margin-bottom:8px'>💼 &nbsp;Project Assignment</div>", unsafe_allow_html=True)
+            st.multiselect("Assign to Project(s)", projects_list, placeholder="Select project(s)", key="ar_projs")
+            al_c1, al_c2 = st.columns([3.5, 0.7])
+            with al_c1:
+                r_alloc = st.number_input("Allocation (%) ⓘ", min_value=0, max_value=200, value=100, step=10, key="ar_alloc")
+            with al_c2:
+                st.markdown("<div style='margin-top:28px;border:1px solid #CBD5E1;border-radius:6px;padding:7px 10px;text-align:center;font-weight:600;background:#F8FAFC'>%</div>", unsafe_allow_html=True)
+            st.markdown(
+                clean_html(
+                    """
+                    <div style="background:#EFF6FF;border:1px solid #BFDBFE;border-radius:8px;padding:10px 12px;margin-top:8px;display:flex;align-items:center;gap:10px;font-size:12px;color:#1D4ED8">
+                        <span style="font-size:16px">ℹ</span>
+                        <span>You can assign this resource to multiple projects and set the allocation for each project.</span>
+                    </div>
+                    """
+                ),
+                unsafe_allow_html=True,
+            )
+
+        bot_l, bot_r = st.columns([1.15, 1])
+        with bot_l, st.container(border=True):
+            st.markdown("<div style='font-size:14px;font-weight:700;color:#0F172A;margin-bottom:8px'>📅 &nbsp;Availability</div>", unsafe_allow_html=True)
+            av1, av2 = st.columns(2)
+            with av1:
+                st.date_input("Availability Start Date *", date(2024, 4, 24), key="ar_av_start")
+            with av2:
+                st.text_input("Availability End Date", placeholder="📅 Optional", key="ar_av_end")
+            av3, av4 = st.columns(2)
+            with av3:
+                st.number_input("Working Hours (per day)", min_value=1, max_value=24, value=8, key="ar_hrs")
+            with av4:
+                r_cap = st.number_input("Default Workload Capacity (%)", min_value=0, max_value=200, value=100, step=10, key="ar_cap")
+
+        with bot_r, st.container(border=True):
+            st.markdown("<div style='font-size:14px;font-weight:700;color:#0F172A;margin-bottom:8px'>📄 &nbsp;Additional Information</div>", unsafe_allow_html=True)
+            r_notes = st.text_area(
+                "Notes (Optional)",
+                placeholder="Enter additional notes about this resource (e.g. expertise, location, etc.)",
+                height=105,
+                key="ar_notes",
+            )
+            st.markdown(f"<div style='text-align:right;font-size:11px;color:#64748B;margin-top:-6px'>{len(r_notes)}/500</div>", unsafe_allow_html=True)
+
+        f_sp, f_can, f_add = st.columns([3.6, 0.9, 1.2])
+        with f_can:
+            if st.button("Cancel", key="ar_cancel_btn", use_container_width=True):
+                st.session_state.pop("res_modal", None)
+                st.rerun()
+        with f_add:
+            if st.button("👥+ Add Resource", type="primary", key="ar_submit_btn", use_container_width=True):
+                if r_name.strip():
+                    role_clean = "Team Member" if r_role == "Select role" else r_role
+                    email_clean = r_email.strip() or f"{r_name.strip().lower().replace(' ', '.')}@hpe.com"
+                    sql(
+                        "INSERT INTO resources(name,email,team,role,status,capacity,notes) VALUES(?,?,?,?,?,?,?)",
+                        (r_name.strip(), email_clean, "IT", role_clean, r_stat, int(r_cap), r_notes),
+                    )
+                    log_event("Created", "Resource", None, r_name.strip())
+                st.session_state.pop("res_modal", None)
+                st.rerun()
+
+    @st.dialog("Resource Calendar", width="large")
+    def resource_calendar_modal(res_rec: dict) -> None:
+        rname = res_rec.get("name", "James Miller")
+        rrole = res_rec.get("role", "UX Designer")
+        remail = res_rec.get("email", "james.miller@hpe.com")
+        rini = res_rec.get("ini", "JM")
+        rcolor = res_rec.get("av_col", "#0284C7")
+        ralloc = int(res_rec.get("alloc", 100))
+        rstat = res_rec.get("status", "Allocated")
+
+        st.markdown(
+            clean_html(
+                f"""
+                <div style="display:flex;align-items:center;gap:12px;padding-bottom:12px;border-bottom:1px solid #E2E8F0;margin-bottom:12px">
+                    <div style="width:40px;height:40px;border-radius:50%;background:#00875A;color:white;display:flex;align-items:center;justify-content:center;font-size:19px">📅</div>
+                    <div>
+                        <div style="font-size:20px;font-weight:800;color:#0F172A;line-height:1.1">Resource Calendar</div>
+                        <div style="font-size:12.5px;color:#64748B">View availability, leave, and project assignments for this resource.</div>
+                    </div>
+                </div>
+                <div style="border:1px solid #E2E8F0;border-radius:10px;padding:12px 18px;background:#F8FAFC;display:grid;grid-template-columns:1.8fr 1fr 1fr 1.2fr 1fr;align-items:center;gap:12px;margin-bottom:12px">
+                    <div style="display:flex;align-items:center;gap:12px">
+                        <div style="width:46px;height:46px;border-radius:50%;background:{rcolor};color:white;display:flex;align-items:center;justify-content:center;font-weight:800;font-size:16px">{rini}</div>
+                        <div>
+                            <div style="font-size:15px;font-weight:800;color:#0F172A">{html.escape(rname)}</div>
+                            <div style="font-size:12px;color:#475569">{html.escape(rrole)}</div>
+                            <div style="font-size:11.5px;color:#64748B">{html.escape(remail)}</div>
+                        </div>
+                    </div>
+                    <div style="border-left:1px solid #E2E8F0;padding-left:14px">
+                        <div style="font-size:11px;color:#64748B">Working Hours</div>
+                        <div style="font-size:15px;font-weight:800;color:#0F172A">8 hrs/day</div>
+                    </div>
+                    <div style="border-left:1px solid #E2E8F0;padding-left:14px">
+                        <div style="font-size:11px;color:#64748B">Default Capacity</div>
+                        <div style="font-size:15px;font-weight:800;color:#0F172A">100%</div>
+                    </div>
+                    <div style="border-left:1px solid #E2E8F0;padding-left:14px">
+                        <div style="font-size:11px;color:#64748B">Current Allocation</div>
+                        <div style="font-size:15px;font-weight:800;color:#0F172A">{ralloc}%</div>
+                        <div style="height:7px;background:#E2E8F0;border-radius:99px;overflow:hidden;margin-top:3px"><div style="width:{min(100, ralloc)}%;height:100%;background:#00875A"></div></div>
+                    </div>
+                    <div style="border-left:1px solid #E2E8F0;padding-left:14px">
+                        <div style="font-size:11px;color:#64748B;margin-bottom:3px">Availability Status</div>
+                        {badge_html(rstat)}
+                    </div>
+                </div>
+                """
+            ),
+            unsafe_allow_html=True,
+        )
+
+        if "rc_scale" not in st.session_state:
+            st.session_state.rc_scale = "Month"
+
+        tb1, tb2, tb3, tb4, tb5, tb6 = st.columns([1.4, 0.65, 1.1, 0.55, 0.55, 0.95])
+        with tb1:
+            st.markdown(
+                clean_html(
+                    """
+                    <div style="display:flex;align-items:center;gap:10px;padding-top:4px">
+                        <span style="border:1px solid #CBD5E1;border-radius:6px;padding:4px 10px;background:white;font-weight:700">‹</span>
+                        <span style="font-size:15px;font-weight:800;color:#0F172A">May 2024</span>
+                        <span style="border:1px solid #CBD5E1;border-radius:6px;padding:4px 10px;background:white;font-weight:700">›</span>
+                    </div>
+                    """
+                ),
+                unsafe_allow_html=True,
+            )
+        with tb2:
+            st.button("Today", key="rc_today_btn", use_container_width=True)
+        with tb3:
+            tile_toggle("", ["Month", "Week", "Day"], key="rc_scale", default="Month")
+        with tb6:
+            st.button("＋ Add Event ▾", type="primary", key="rc_add_ev_btn", use_container_width=True)
+
+        cal_l, cal_r = st.columns([2.55, 1.05])
+        with cal_l:
+            rc_weeks = [
+                [("28", False, []), ("29", False, []), ("30", False, []), ("1", True, [("Website Revamp", "(50%)", "g"), ("Design Review", "(2 hrs)", "p")]), ("2", True, [("Website Revamp", "(50%)", "g")]), ("3", True, [("Website Revamp", "(50%)", "g")]), ("4", True, [])],
+                [("5", True, []), ("6", True, [("Marketing Campaign", "(30%)", "g")]), ("7", True, [("Marketing Campaign", "(30%)", "g")]), ("8", True, [("Marketing Campaign", "(30%)", "g")]), ("9", True, [("Website Revamp", "(50%)", "g")]), ("10", True, [("Website Revamp", "(50%)", "g")]), ("11", True, [])],
+                [("12", True, []), ("13", True, [("IT Infrastructure", "(20%)", "g")]), ("14", True, [("IT Infrastructure", "(20%)", "g")]), ("15", True, [("IT Infrastructure", "(20%)", "g"), ("Team Meeting", "(1 hr)", "p")]), ("16", True, [("IT Infrastructure", "(20%)", "g")]), ("17", True, [("IT Infrastructure", "(20%)", "g")]), ("18", True, [])],
+                [("19", True, []), ("20", True, [("Annual Leave", "(Full Day)", "r")]), ("21", True, [("Annual Leave", "(Full Day)", "r")]), ("22", True, [("Annual Leave", "(Full Day)", "r")]), ("23", True, []), ("24", True, [("Website Revamp", "(50%)", "g")]), ("25", True, [])],
+                [("26", True, []), ("27", True, [("Website Revamp", "(50%)", "g")]), ("28", True, [("Website Revamp", "(50%)", "g")]), ("29", True, [("Website Revamp", "(50%)", "g")]), ("30", True, [("Website Revamp", "(50%)", "g")]), ("31", True, [("Website Revamp", "(50%)", "g")]), ("1", False, [])],
+            ]
+            pill_styles = {
+                "g": ("#DCFCE7", "#15803D"),
+                "p": ("#F3E8FF", "#7C3AED"),
+                "r": ("#FEE2E2", "#B91C1C"),
+            }
+            grid_rows_html = ""
+            for wk in rc_weeks:
+                cells_html = ""
+                for d_str, in_m, ev_list in wk:
+                    is_sel = in_m and d_str == "9"
+                    bdr = "2px solid #3B82F6" if is_sel else "1px solid #EDF2F7"
+                    cbg = "#EFF6FF" if is_sel else ("#FFFFFF" if in_m else "#F8FAFC")
+                    dcol = "#1D4ED8" if is_sel else ("#0F172A" if in_m else "#94A3B8")
+                    ev_pills = ""
+                    for etitle, esub, etone in ev_list:
+                        pbg, pfg = pill_styles[etone]
+                        ev_pills += f'<div style="background:{pbg};color:{pfg};border-radius:5px;padding:3px 6px;font-size:10px;font-weight:600;margin-top:3px;line-height:1.25">{etitle}<br>{esub}</div>'
+                    cells_html += f'<div style="min-height:84px;border:{bdr};background:{cbg};padding:5px 6px"><div style="font-size:11.5px;font-weight:700;color:{dcol}">{d_str}</div>{ev_pills}</div>'
+                grid_rows_html += f'<div style="display:grid;grid-template-columns:repeat(7,1fr)">{cells_html}</div>'
+
+            st.markdown(
+                clean_html(
+                    f"""
+                    <div style="border:1px solid #E2E8F0;border-radius:10px;overflow:hidden;background:white">
+                        <div style="display:grid;grid-template-columns:repeat(7,1fr);background:#F8FAFC;border-bottom:1px solid #E2E8F0;text-align:center;font-size:11.5px;font-weight:700;color:#1E293B;padding:7px 0">
+                            <div>Sun</div><div>Mon</div><div>Tue</div><div>Wed</div><div>Thu</div><div>Fri</div><div>Sat</div>
+                        </div>
+                        {grid_rows_html}
+                    </div>
+                    """
+                ),
+                unsafe_allow_html=True,
+            )
+
+        with cal_r:
+            st.markdown(
+                clean_html(
+                    """
+                    <div style="border:1px solid #E2E8F0;border-radius:10px;padding:12px 14px;background:white;margin-bottom:10px">
+                        <div style="font-size:13px;font-weight:700;color:#0F172A;margin-bottom:8px">Legend</div>
+                        <div style="font-size:12px;line-height:2.0;color:#334155">
+                            <div><span style="color:#00875A;font-size:14px">●</span> &nbsp;Project Assignment</div>
+                            <div><span style="color:#9333EA;font-size:14px">●</span> &nbsp;Meeting / Event</div>
+                            <div><span style="color:#EF4444;font-size:14px">●</span> &nbsp;Leave</div>
+                            <div><span style="color:#60A5FA;font-size:14px">■</span> &nbsp;Selected Date</div>
+                            <div><span style="color:#CBD5E1;font-size:14px">●</span> &nbsp;Non-Working Day</div>
+                        </div>
+                    </div>
+                    <div style="border:1px solid #E2E8F0;border-radius:10px;padding:12px 14px;background:white;margin-bottom:10px">
+                        <div style="font-size:13px;font-weight:700;color:#0F172A;margin-bottom:8px">Selected Date</div>
+                        <div style="font-size:13px;font-weight:700;color:#0F172A;margin-bottom:8px">📅 &nbsp;Thu, May 9, 2024</div>
+                        <div style="font-size:12.5px;color:#0F172A;font-weight:700"><span style="color:#00875A">●</span> &nbsp;Website Revamp</div>
+                        <div style="font-size:11.5px;color:#64748B;padding-left:18px;margin-bottom:10px">9:00 AM - 5:00 PM<br>50% allocation</div>
+                        <div style="background:#EFF6FF;border:1px solid #BFDBFE;color:#1D4ED8;border-radius:7px;padding:7px;text-align:center;font-size:12px;font-weight:700">＋ Add Event for this Date</div>
+                    </div>
+                    <div style="border:1px solid #E2E8F0;border-radius:10px;padding:12px 14px;background:white">
+                        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+                            <span style="font-size:13px;font-weight:700;color:#0F172A">Upcoming Events</span>
+                            <span style="font-size:11.5px;color:#1473E6;font-weight:600">View All</span>
+                        </div>
+                        <div style="display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid #F1F5F9;font-size:12px">
+                            <div><span style="color:#EF4444">📅</span> &nbsp;<b>Annual Leave</b><br><span style="font-size:11px;color:#64748B;padding-left:20px">May 20 – May 22, 2024</span></div>
+                            <span>⋮</span>
+                        </div>
+                        <div style="display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid #F1F5F9;font-size:12px">
+                            <div><span style="color:#9333EA">📅</span> &nbsp;<b>Design Review</b><br><span style="font-size:11px;color:#64748B;padding-left:20px">May 1, 2024 2:00 PM – 4:00 PM</span></div>
+                            <span>⋮</span>
+                        </div>
+                        <div style="display:flex;justify-content:space-between;align-items:center;padding:6px 0;font-size:12px">
+                            <div><span style="color:#9333EA">📅</span> &nbsp;<b>Team Meeting</b><br><span style="font-size:11px;color:#64748B;padding-left:20px">May 15, 2024 10:00 AM – 11:00 AM</span></div>
+                            <span>⋮</span>
+                        </div>
+                    </div>
+                    """
+                ),
+                unsafe_allow_html=True,
+            )
+
+        f_sp, f_cl = st.columns([4.5, 0.8])
+        with f_cl:
+            if st.button("Close", key="rc_close_btn", use_container_width=True):
+                st.session_state.pop("res_modal", None)
+                st.rerun()
+
+    @st.dialog("Project Assignments", width="large")
+    def project_assignments_modal(res_rec: dict) -> None:
+        rname = res_rec.get("name", "James Miller")
+        rrole = res_rec.get("role", "UX Designer")
+        remail = res_rec.get("email", "james.miller@hpe.com")
+        rini = res_rec.get("ini", "JM")
+        rcolor = res_rec.get("av_col", "#0284C7")
+        ralloc = int(res_rec.get("alloc", 100))
+        rstat = res_rec.get("status", "Allocated")
+
+        st.markdown(
+            clean_html(
+                f"""
+                <div style="display:flex;align-items:center;gap:12px;padding-bottom:12px;border-bottom:1px solid #E2E8F0;margin-bottom:12px">
+                    <div style="width:40px;height:40px;border-radius:50%;background:#00875A;color:white;display:flex;align-items:center;justify-content:center;font-size:18px;font-weight:700">👥</div>
+                    <div>
+                        <div style="font-size:20px;font-weight:800;color:#0F172A;line-height:1.1">Project Assignments</div>
+                        <div style="font-size:12.5px;color:#64748B">View and manage project assignments for this resource.</div>
+                    </div>
+                </div>
+                <div style="border:1px solid #E2E8F0;border-radius:10px;padding:12px 18px;background:#F8FAFC;display:grid;grid-template-columns:1.8fr 1fr 1fr 1fr 1.2fr;align-items:center;gap:12px;margin-bottom:14px">
+                    <div style="display:flex;align-items:center;gap:12px">
+                        <div style="width:46px;height:46px;border-radius:50%;background:{rcolor};color:white;display:flex;align-items:center;justify-content:center;font-weight:800;font-size:16px">{rini}</div>
+                        <div>
+                            <div style="font-size:15px;font-weight:800;color:#0F172A">{html.escape(rname)}</div>
+                            <div style="font-size:12px;color:#475569">{html.escape(rrole)}</div>
+                            <div style="font-size:11.5px;color:#64748B">{html.escape(remail)}</div>
+                        </div>
+                    </div>
+                    <div style="border-left:1px solid #E2E8F0;padding-left:14px">
+                        <div style="font-size:11px;color:#64748B;margin-bottom:3px">Availability Status</div>
+                        {badge_html(rstat)}
+                    </div>
+                    <div style="border-left:1px solid #E2E8F0;padding-left:14px">
+                        <div style="font-size:11px;color:#64748B">Working Hours</div>
+                        <div style="font-size:15px;font-weight:800;color:#0F172A">8 hrs/day</div>
+                    </div>
+                    <div style="border-left:1px solid #E2E8F0;padding-left:14px">
+                        <div style="font-size:11px;color:#64748B">Default Capacity</div>
+                        <div style="font-size:15px;font-weight:800;color:#0F172A">100%</div>
+                    </div>
+                    <div style="border-left:1px solid #E2E8F0;padding-left:14px">
+                        <div style="font-size:11px;color:#64748B">Total Allocation</div>
+                        <div style="font-size:15px;font-weight:800;color:#0F172A">{ralloc}%</div>
+                        <div style="height:7px;background:#E2E8F0;border-radius:99px;overflow:hidden;margin-top:3px"><div style="width:{min(100, ralloc)}%;height:100%;background:#00875A"></div></div>
+                    </div>
+                </div>
+                """
+            ),
+            unsafe_allow_html=True,
+        )
+
+        pa_h1, pa_h2 = st.columns([3.5, 1.1])
+        with pa_h1:
+            st.markdown("<div style='font-size:14.5px;font-weight:700;color:#0F172A;padding-top:6px'>💼 &nbsp;Current Project Assignments (3)</div>", unsafe_allow_html=True)
+        with pa_h2:
+            if st.button("＋ Assign to Project", type="primary", key="pa_assign_btn", use_container_width=True):
+                st.session_state.res_modal = ("assign", res_rec)
+                st.rerun()
+
+        st.markdown(
+            clean_html(
+                f"""
+                <div class="vk-table-wrap" style="margin-top:6px;margin-bottom:14px">
+                    <table class="vk-table">
+                        <thead>
+                            <tr><th>Project</th><th>Role</th><th>Allocation</th><th>Start Date</th><th>End Date</th><th>Status</th><th>Primary Task(s)</th><th style="text-align:center">Actions</th></tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td><span style="color:#1473E6;font-weight:700">Website Revamp</span></td>
+                                <td>UX Designer</td>
+                                <td>{progress_html(50, GREEN)}</td>
+                                <td>Apr 24, 2024</td>
+                                <td>Jun 30, 2024</td>
+                                <td>{badge_html('In Progress')}</td>
+                                <td>Wireframes, UI/UX design</td>
+                                <td style="text-align:center;font-weight:700">⋮</td>
+                            </tr>
+                            <tr>
+                                <td><span style="color:#1473E6;font-weight:700">Marketing Campaign</span></td>
+                                <td>UI Designer</td>
+                                <td>{progress_html(30, GREEN)}</td>
+                                <td>May 6, 2024</td>
+                                <td>Jun 25, 2024</td>
+                                <td>{badge_html('In Progress')}</td>
+                                <td>Landing pages, creatives</td>
+                                <td style="text-align:center;font-weight:700">⋮</td>
+                            </tr>
+                            <tr>
+                                <td><span style="color:#1473E6;font-weight:700">IT Infrastructure Upgrade</span></td>
+                                <td>UX Support</td>
+                                <td>{progress_html(20, GREEN)}</td>
+                                <td>Jun 1, 2024</td>
+                                <td>Jun 20, 2024</td>
+                                <td>{badge_html('In Progress')}</td>
+                                <td>UI assets, documentation</td>
+                                <td style="text-align:center;font-weight:700">⋮</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+                """
+            ),
+            unsafe_allow_html=True,
+        )
+
+        with st.container(border=True):
+            st.markdown("<div style='font-size:14.5px;font-weight:700;color:#0F172A;margin-bottom:6px'>🕒 &nbsp;Workload Overview</div>", unsafe_allow_html=True)
+            wo_l, wo_m, wo_r = st.columns([0.9, 1.15, 1.85])
+            with wo_l:
+                fig_pa = go.Figure(
+                    go.Pie(
+                        values=[50, 30, 20],
+                        labels=["Website Revamp", "Marketing Campaign", "IT Infrastructure Upgrade"],
+                        hole=0.68,
+                        sort=False,
+                        marker=dict(colors=[GREEN, BLUE, PURPLE]),
+                        textinfo="none",
+                    )
+                )
+                fig_pa.update_layout(
+                    height=165,
+                    margin=dict(l=4, r=4, t=4, b=4),
+                    showlegend=False,
+                    paper_bgcolor="rgba(0,0,0,0)",
+                    annotations=[
+                        dict(
+                            text="<b style='font-size:18px;color:#0F172A'>100%</b><br><span style='font-size:10px;color:#64748B'>Total Allocation</span>",
+                            x=0.5,
+                            y=0.5,
+                            showarrow=False,
+                        )
+                    ],
+                )
+                st.plotly_chart(fig_pa, use_container_width=True, config={"displayModeBar": False})
+            with wo_m:
+                st.markdown(
+                    clean_html(
+                        """
+                        <div style="font-size:12px;line-height:2.3;padding-top:26px">
+                            <div style="display:flex;justify-content:space-between"><span><span style="color:#00875A">●</span> &nbsp;Website Revamp</span><b>50%</b></div>
+                            <div style="display:flex;justify-content:space-between"><span><span style="color:#1473E6">●</span> &nbsp;Marketing Campaign</span><b>30%</b></div>
+                            <div style="display:flex;justify-content:space-between"><span><span style="color:#7C3AED">●</span> &nbsp;IT Infrastructure Upgrade</span><b>20%</b></div>
+                        </div>
+                        """
+                    ),
+                    unsafe_allow_html=True,
+                )
+            with wo_r:
+                st.markdown("<div style='font-size:12.5px;font-weight:700;color:#0F172A;margin-bottom:2px'>Weekly Allocation</div>", unsafe_allow_html=True)
+                wk_df = pd.DataFrame(
+                    {
+                        "Day": ["Mon", "Tue", "Wed", "Thu", "Fri"],
+                        "Website Revamp": [50, 50, 50, 50, 50],
+                        "Marketing Campaign": [30, 30, 30, 30, 30],
+                        "IT Infrastructure": [20, 20, 20, 20, 20],
+                    }
+                )
+                fig_wk = px.bar(
+                    wk_df,
+                    x="Day",
+                    y=["Website Revamp", "Marketing Campaign", "IT Infrastructure"],
+                    color_discrete_map={"Website Revamp": GREEN, "Marketing Campaign": BLUE, "IT Infrastructure": PURPLE},
+                )
+                fig_wk.update_layout(
+                    height=155,
+                    margin=dict(l=0, r=0, t=4, b=0),
+                    showlegend=False,
+                    xaxis_title=None,
+                    yaxis=dict(title=None, range=[0, 150], ticksuffix="%"),
+                    paper_bgcolor="rgba(0,0,0,0)",
+                    plot_bgcolor="rgba(0,0,0,0)",
+                )
+                st.plotly_chart(fig_wk, use_container_width=True, config={"displayModeBar": False})
+
+        pa_tabs = st.tabs(["📅 Assigned Tasks (8)", "☆ Milestones (2)", "🕒 Time Allocation"])
+        with pa_tabs[0]:
+            st.markdown(
+                clean_html(
+                    f"""
+                    <div class="vk-table-wrap">
+                        <table class="vk-table">
+                            <thead>
+                                <tr><th>ID</th><th>Task Name</th><th>Project</th><th>Start Date</th><th>End Date</th><th>Status</th><th>Priority</th><th>% Complete</th><th>Due In</th></tr>
+                            </thead>
+                            <tbody>
+                                <tr><td>1.1</td><td><b>Define project scope</b></td><td>Website Revamp</td><td>Apr 24, 2024</td><td>Apr 26, 2024</td><td>{badge_html('Completed')}</td><td>{badge_html('Medium')}</td><td>{progress_html(100, GREEN)}</td><td>-</td></tr>
+                                <tr><td>1.3</td><td><b>Create wireframes</b></td><td>Website Revamp</td><td>May 6, 2024</td><td>May 12, 2024</td><td>{badge_html('Completed')}</td><td>{badge_html('High')}</td><td>{progress_html(100, GREEN)}</td><td>-</td></tr>
+                                <tr><td>1.4</td><td><b>UI/UX design</b></td><td>Website Revamp</td><td>May 13, 2024</td><td>May 20, 2024</td><td>{badge_html('In Progress')}</td><td>{badge_html('High')}</td><td>{progress_html(70, BLUE)}</td><td><b>5 days</b></td></tr>
+                                <tr><td>4.1</td><td><b>Content creation</b></td><td>Marketing Campaign</td><td>May 6, 2024</td><td>May 20, 2024</td><td>{badge_html('In Progress')}</td><td>{badge_html('Medium')}</td><td>{progress_html(50, BLUE)}</td><td><b>8 days</b></td></tr>
+                                <tr><td>4.2</td><td><b>Campaign setup</b></td><td>Marketing Campaign</td><td>May 21, 2024</td><td>Jun 10, 2024</td><td>{badge_html('Not Started')}</td><td>{badge_html('Low')}</td><td>{progress_html(0, GRAY)}</td><td><b>21 days</b></td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                    <div style="font-size:12px;font-weight:700;color:#1473E6;margin-top:8px">☰ &nbsp;View All Tasks (8)</div>
+                    """
+                ),
+                unsafe_allow_html=True,
+            )
+        with pa_tabs[1]:
+            st.info("2 Milestones linked to James Miller: Design Sign-off (Apr 30, 2024) and UAT Completion (Jun 15, 2024).")
+        with pa_tabs[2]:
+            st.info("Weekly allocation: 40 hrs/week (20 hrs Website Revamp, 12 hrs Marketing Campaign, 8 hrs IT Infrastructure Upgrade).")
+
+        f_sp, f_cl = st.columns([4.5, 0.8])
+        with f_cl:
+            if st.button("Close", key="pa_close_btn", use_container_width=True):
+                st.session_state.pop("res_modal", None)
+                st.rerun()
+
+    @st.dialog("Resource Action")
+    def resource_action_submodal(act_mode: str, res_rec: dict) -> None:
+        rname = res_rec.get("name", "James Miller")
+        rrole = res_rec.get("role", "UX Designer")
+        remail = res_rec.get("email", "james.miller@hpe.com")
+        rini = res_rec.get("ini", "JM")
+        rcolor = res_rec.get("av_col", "#0284C7")
+        rskills = res_rec.get("skills", ["UI/UX", "Figma"])
+        rproj = res_rec.get("project", "Website Revamp")
+        ralloc = int(res_rec.get("alloc", 100))
+
+        header_titles = {
+            "view": ("👁", "View Resource"),
+            "edit": ("👥", "Edit Resource"),
+            "assign": ("👥", "Assign to Project"),
+            "skills": ("⚙", "Manage Skills"),
+            "availability": ("📅", "Change Availability"),
+            "leave": ("👤", "Set on Leave"),
+            "delete": ("🗑", "Delete Resource"),
+        }
+        ico, h_title = header_titles.get(act_mode, ("👤", "Resource Details"))
+
+        if act_mode == "delete":
+            st.markdown(
+                clean_html(
+                    f"""
+                    <div style="padding:10px 6px">
+                        <div style="width:52px;height:52px;border-radius:50%;background:#EF4444;color:white;display:flex;align-items:center;justify-content:center;font-size:24px;margin-bottom:12px">🗑</div>
+                        <div style="font-size:20px;font-weight:800;color:#0F172A;margin-bottom:6px">Delete Resource</div>
+                        <div style="font-size:13.5px;color:#334155;line-height:1.5;margin-bottom:18px">
+                            Are you sure you want to delete <b>{html.escape(rname)}</b>?<br>
+                            <span style="color:#DC2626;font-weight:600">This action cannot be undone.</span>
+                        </div>
+                    </div>
+                    """
+                ),
+                unsafe_allow_html=True,
+            )
+            c1, c2 = st.columns(2)
+            with c1:
+                if st.button("Cancel", key="sub_del_can", use_container_width=True):
+                    st.session_state.pop("res_modal", None)
+                    st.rerun()
+            with c2:
+                if st.button("Delete", type="primary", key="sub_del_ok", use_container_width=True):
+                    sql("DELETE FROM resources WHERE name=?", (rname,))
+                    log_event("Deleted", "Resource", None, rname)
+                    st.session_state.pop("res_modal", None)
+                    st.rerun()
+            return
+
+        # Common Mini Header + Avatar Banner for the other 6 Sub-Modals
+        st.markdown(
+            clean_html(
+                f"""
+                <div style="display:flex;align-items:center;gap:8px;padding-bottom:10px;border-bottom:1px solid #E2E8F0;margin-bottom:12px">
+                    <span style="width:26px;height:26px;border-radius:50%;background:#0284C7;color:white;display:inline-flex;align-items:center;justify-content:center;font-size:13px">{ico}</span>
+                    <span style="font-size:16px;font-weight:800;color:#0F172A">{h_title}</span>
+                </div>
+                <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px">
+                    <div style="width:38px;height:38px;border-radius:50%;background:{rcolor};color:white;display:flex;align-items:center;justify-content:center;font-weight:800;font-size:14px">{rini}</div>
+                    <div>
+                        <div style="font-size:14px;font-weight:800;color:#0F172A">{html.escape(rname)}</div>
+                        <div style="font-size:11.5px;color:#64748B">{html.escape(rrole)}</div>
+                    </div>
+                </div>
+                """
+            ),
+            unsafe_allow_html=True,
+        )
+
+        if act_mode == "view":
+            sk_badges = "".join(f'<span class="vk-tag" style="background:#DBEAFE;color:#1D4ED8">{html.escape(s)}</span>' for s in rskills)
+            st.markdown(
+                clean_html(
+                    f"""
+                    <div style="font-size:12.5px;line-height:2.0;margin-bottom:12px">
+                        <div style="font-weight:700;color:#0F172A;margin-bottom:2px">Basic Information</div>
+                        <div style="display:grid;grid-template-columns:110px 1fr"><span style="color:#64748B">Email</span><span>{html.escape(remail)}</span></div>
+                        <div style="display:grid;grid-template-columns:110px 1fr"><span style="color:#64748B">Role</span><span>{html.escape(rrole)}</span></div>
+                        <div style="display:grid;grid-template-columns:110px 1fr"><span style="color:#64748B">Status</span><span style="color:#1473E6;font-weight:700">{html.escape(res_rec.get('status', 'Allocated'))}</span></div>
+                        <div style="display:grid;grid-template-columns:110px 1fr"><span style="color:#64748B">Employment Type</span><span>Employee</span></div>
+                        <div style="font-weight:700;color:#0F172A;margin-top:8px;margin-bottom:4px">Skills</div>
+                        <div>{sk_badges}</div>
+                        <div style="font-weight:700;color:#0F172A;margin-top:8px;margin-bottom:2px">Current Projects</div>
+                        <div>{html.escape(rproj)} ({ralloc}%)</div>
+                        <div style="font-weight:700;color:#0F172A;margin-top:8px;margin-bottom:2px">Working Hours</div>
+                        <div>8 hrs/day</div>
+                    </div>
+                    """
+                ),
+                unsafe_allow_html=True,
+            )
+            if st.button("Close", key="sub_v_close", use_container_width=True):
+                st.session_state.pop("res_modal", None)
+                st.rerun()
+
+        elif act_mode == "edit":
+            new_nm = st.text_input("Full Name *", value=rname, key="sub_ed_nm")
+            new_em = st.text_input("Email Address *", value=remail, key="sub_ed_em")
+            roles_opt = ["UX Designer", "Business Analyst", "Frontend Developer", "Project Manager", "Backend Developer", "QA Engineer", "Content Specialist", "DevOps Engineer", "IT Support", "Data Analyst"]
+            new_rl = st.selectbox("Role *", roles_opt, index=roles_opt.index(rrole) if rrole in roles_opt else 0, key="sub_ed_rl")
+            c1, c2 = st.columns(2)
+            with c1:
+                if st.button("Cancel", key="sub_ed_can", use_container_width=True):
+                    st.session_state.pop("res_modal", None)
+                    st.rerun()
+            with c2:
+                if st.button("Save Changes", type="primary", key="sub_ed_sav", use_container_width=True):
+                    sql("UPDATE resources SET name=?, email=?, role=? WHERE name=?", (new_nm.strip(), new_em.strip(), new_rl, rname))
+                    log_event("Updated", "Resource", None, new_nm.strip())
+                    st.session_state.pop("res_modal", None)
+                    st.rerun()
+
+        elif act_mode == "assign":
+            st.markdown("<div style='font-size:12.5px;font-weight:700;color:#0F172A;margin-bottom:6px'>Select Project(s) *</div>", unsafe_allow_html=True)
+            st.checkbox("Website Revamp", value=True, key="sub_as_p1")
+            st.checkbox("Marketing Campaign", value=False, key="sub_as_p2")
+            st.checkbox("Sustainability Initiative", value=False, key="sub_as_p3")
+            st.checkbox("IT Infrastructure Upgrade", value=False, key="sub_as_p4")
+            st.number_input("Allocation (%)", min_value=0, max_value=200, value=ralloc, step=10, key="sub_as_pct")
+            c1, c2 = st.columns(2)
+            with c1:
+                if st.button("Cancel", key="sub_as_can", use_container_width=True):
+                    st.session_state.pop("res_modal", None)
+                    st.rerun()
+            with c2:
+                if st.button("Assign", type="primary", key="sub_as_ok", use_container_width=True):
+                    log_event("Assigned", "Resource", None, rname)
+                    st.session_state.pop("res_modal", None)
+                    st.rerun()
+
+        elif act_mode == "skills":
+            st.text_input("Select Skills", placeholder="🔍 Search skills...", key="sub_sk_q")
+            sk_c1, sk_c2 = st.columns(2)
+            with sk_c1:
+                st.checkbox("UI/UX", value=True, key="sk_1")
+                st.checkbox("React", value=False, key="sk_2")
+                st.checkbox("API", value=False, key="sk_3")
+                st.checkbox("Testing", value=False, key="sk_4")
+            with sk_c2:
+                st.checkbox("Figma", value=True, key="sk_5")
+                st.checkbox("JavaScript", value=False, key="sk_6")
+                st.checkbox("Testing ", value=False, key="sk_7")
+                st.checkbox("Automation", value=False, key="sk_8")
+            c1, c2 = st.columns(2)
+            with c1:
+                if st.button("Cancel", key="sub_sk_can", use_container_width=True):
+                    st.session_state.pop("res_modal", None)
+                    st.rerun()
+            with c2:
+                if st.button("Save Skills", type="primary", key="sub_sk_ok", use_container_width=True):
+                    log_event("Updated Skills", "Resource", None, rname)
+                    st.session_state.pop("res_modal", None)
+                    st.rerun()
+
+        elif act_mode == "availability":
+            st.date_input("Availability Start Date *", date(2024, 4, 24), key="sub_av_st")
+            st.text_input("Availability End Date", placeholder="📅 Optional", key="sub_av_en")
+            av_a, av_b = st.columns(2)
+            with av_a:
+                st.number_input("Working Hours (per day)", min_value=1, max_value=24, value=8, key="sub_av_hr")
+            with av_b:
+                new_cap = st.number_input("Default Capacity (%)", min_value=0, max_value=200, value=100, step=10, key="sub_av_cp")
+            c1, c2 = st.columns(2)
+            with c1:
+                if st.button("Cancel", key="sub_av_can", use_container_width=True):
+                    st.session_state.pop("res_modal", None)
+                    st.rerun()
+            with c2:
+                if st.button("Update", type="primary", key="sub_av_ok", use_container_width=True):
+                    sql("UPDATE resources SET capacity=? WHERE name=?", (int(new_cap), rname))
+                    log_event("Updated Availability", "Resource", None, rname)
+                    st.session_state.pop("res_modal", None)
+                    st.rerun()
+
+        elif act_mode == "leave":
+            lv1, lv2 = st.columns(2)
+            with lv1:
+                st.date_input("Leave Start Date *", date(2024, 5, 1), key="sub_lv_st")
+            with lv2:
+                st.date_input("Leave End Date *", date(2024, 5, 10), key="sub_lv_en")
+            st.selectbox("Reason (Optional)", ["Vacation", "Sick Leave", "Personal Leave", "Training"], key="sub_lv_rs")
+            st.text_input("Notes (Optional)", placeholder="Enter notes...", key="sub_lv_nt")
+            c1, c2 = st.columns(2)
+            with c1:
+                if st.button("Cancel", key="sub_lv_can", use_container_width=True):
+                    st.session_state.pop("res_modal", None)
+                    st.rerun()
+            with c2:
+                if st.button("Set on Leave", type="primary", key="sub_lv_ok", use_container_width=True):
+                    sql("UPDATE resources SET status='On Leave', capacity=0 WHERE name=?", (rname,))
+                    log_event("Set on Leave", "Resource", None, rname)
+                    st.session_state.pop("res_modal", None)
+                    st.rerun()
+
+    # --- RESOURCES TOP HEADER ROW ---
+    rh_l, rh_s, rh_d, rh_b = st.columns([1.9, 1.05, 0.95, 0.7])
+    with rh_l:
+        st.markdown(
+            clean_html(
+                f"""
+                <div style='font-size:28px;font-weight:800;color:{TEXT_COLOR};letter-spacing:-0.03em;line-height:1.15'>Resources</div>
+                <div style='font-size:13.5px;color:#64748B;margin-top:2px'>Manage team members, roles, skills and workload across all projects.</div>
+                """
+            ),
+            unsafe_allow_html=True,
+        )
+    with rh_s:
+        res_top_q = st.text_input("Search", placeholder="🔍 Search team members, skills, or projects...", key="res_q_top", label_visibility="collapsed")
+    with rh_d:
+        st.date_input("Date Range", (date(2024, 4, 24), date(2024, 6, 30)), key="res_d_top", label_visibility="collapsed")
+    with rh_b:
+        if st.button("＋ Add Resource", type="primary", use_container_width=True, key="res_btn_add_top"):
+            st.session_state.res_modal = ("add", None)
+            st.rerun()
 
     st.write("")
-    c1, c2 = st.columns(2)
-    with c1, st.container(border=True):
-        section_title("Resource Availability", f"{len(r)} Members")
-        chart_status_donut(r, "status", "Members")
-    with c2, st.container(border=True):
-        section_title("Assignments by Project", "Active Task Distribution")
-        cnt = T.groupby("project").size().rename("Assignments").reset_index()
-        if not cnt.empty:
-            fig = px.bar(
-                cnt,
-                x="Assignments",
-                y="project",
-                orientation="h",
-                text="Assignments",
-                color="Assignments",
-                color_continuous_scale=[BLUE, GREEN],
+    # --- 5 KPI CARDS ROW (Exact Match to Image 20) ---
+    rk1, rk2, rk3, rk4, rk5 = st.columns(5)
+    res_kpis = [
+        (rk1, "#1473E6", "👥", "Total Resources", "#334155", "24", ""),
+        (rk2, "#00875A", "✓", "Available", "#334155", "8", "(33%)"),
+        (rk3, "#1473E6", "🕒", "Allocated", "#334155", "14", "(58%)"),
+        (rk4, "#F28C00", "!", "Overallocated", "#DC2626", "2", "(8%)"),
+        (rk5, "#64748B", "👤", "On Leave", "#334155", "0", "(0%)"),
+    ]
+    for col, ibg, ico, lbl, lcol, val, pct_s in res_kpis:
+        with col:
+            st.markdown(
+                clean_html(
+                    f"""
+                    <div class="vk-kpi-card" style="min-height:86px;padding:14px 16px">
+                        <div style="width:44px;height:44px;min-width:44px;border-radius:50%;background:{ibg};color:white;display:flex;align-items:center;justify-content:center;font-size:19px;font-weight:800">{ico}</div>
+                        <div>
+                            <div style="font-size:12px;font-weight:600;color:{lcol}">{lbl}</div>
+                            <div style="font-size:23px;font-weight:800;color:#0F172A;line-height:1.2">{val} <span style="font-size:18px;font-weight:800">{pct_s}</span></div>
+                        </div>
+                    </div>
+                    """
+                ),
+                unsafe_allow_html=True,
             )
-            fig.update_traces(textposition="outside", cliponaxis=False)
-            fig.update_layout(
-                height=240,
-                margin=dict(l=0, r=28, t=6, b=6),
-                xaxis_title=None,
-                yaxis_title=None,
-                coloraxis_showscale=False,
-                paper_bgcolor="rgba(0,0,0,0)",
-                plot_bgcolor="rgba(0,0,0,0)",
-            )
-            st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
-    ta, tb = st.tabs(["👥 Resource Directory", "＋ Add / Edit Resource"])
-    with ta:
-        with st.container(border=True):
-            q = st.text_input("🔍 Search resources by name, email, role, or team")
-            v = r.copy()
-            if q:
-                v = v[v.astype(str).apply(lambda s: s.str.contains(q, case=False, na=False)).any(axis=1)]
-            v["active_tasks"] = v.name.map(T.groupby("assignee").size().to_dict()).fillna(0).astype(int)
-            render_rich_table(
-                v,
-                [
-                    ("name", "Team Member", "avatar"),
-                    ("email", "Email", "text"),
-                    ("team", "Team", "text"),
-                    ("role", "Role", "badge"),
-                    ("status", "Availability", "badge"),
-                    ("capacity", "Capacity", "progress"),
-                    ("active_tasks", "Active Tasks", "bold"),
+    st.write("")
+    # --- 3 ANALYTICS CHARTS ROW (Exact Match to Image 20) ---
+    rc_1, rc_2, rc_3 = st.columns([1.15, 1.05, 1.05])
+    with rc_1, st.container(border=True):
+        st.markdown(
+            clean_html(
+                """
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+                    <span style="font-size:15px;font-weight:700;color:#0F172A">Resource Allocation</span>
+                    <div style="font-size:11.5px;color:#475569;display:flex;gap:12px">
+                        <span><span style="color:#00875A">●</span> Billable</span>
+                        <span><span style="color:#1473E6">●</span> Non-Billable</span>
+                        <span><span style="color:#94A3B8">●</span> Leave</span>
+                    </div>
+                </div>
+                """
+            ),
+            unsafe_allow_html=True,
+        )
+        ra_df = pd.DataFrame(
+            {
+                "Month": ["Apr 2024", "May 2024", "Jun 2024"],
+                "Billable": [6, 6.2, 6.8],
+                "Non-Billable": [3.5, 4.2, 4.5],
+                "Leave": [2, 2.2, 2.2],
+            }
+        )
+        fig_ra = px.bar(
+            ra_df,
+            x="Month",
+            y=["Billable", "Non-Billable", "Leave"],
+            color_discrete_map={"Billable": GREEN, "Non-Billable": BLUE, "Leave": "#94A3B8"},
+        )
+        fig_ra.update_layout(
+            height=195,
+            margin=dict(l=0, r=0, t=6, b=0),
+            showlegend=False,
+            xaxis_title=None,
+            yaxis=dict(title=None, range=[0, 16]),
+            paper_bgcolor="rgba(0,0,0,0)",
+            plot_bgcolor="rgba(0,0,0,0)",
+            bargap=0.45,
+        )
+        st.plotly_chart(fig_ra, use_container_width=True, config={"displayModeBar": False})
+
+    with rc_2, st.container(border=True):
+        st.markdown("<div style='font-size:15px;font-weight:700;color:#0F172A;margin-bottom:6px'>Utilization</div>", unsafe_allow_html=True)
+        u_l, u_r = st.columns([1.15, 1])
+        with u_l:
+            fig_ut = go.Figure(
+                go.Pie(
+                    values=[58, 25, 17],
+                    labels=["Billable", "Non-Billable", "Available"],
+                    hole=0.66,
+                    sort=False,
+                    direction="clockwise",
+                    marker=dict(colors=[GREEN, BLUE, "#94A3B8"]),
+                    textinfo="none",
+                )
+            )
+            fig_ut.update_layout(
+                height=195,
+                margin=dict(l=4, r=4, t=4, b=4),
+                showlegend=False,
+                paper_bgcolor="rgba(0,0,0,0)",
+                annotations=[
+                    dict(
+                        text="<b style='font-size:20px;color:#0F172A'>58%</b><br><span style='font-size:10.5px;color:#475569'>Team Utilization</span>",
+                        x=0.5,
+                        y=0.5,
+                        showarrow=False,
+                    )
                 ],
             )
-            st.write("")
-            st.download_button(
-                "⬇ Export Resources CSV",
-                v.to_csv(index=False).encode("utf-8-sig"),
-                file_name="vektor_resources.csv",
-                mime="text/csv",
+            st.plotly_chart(fig_ut, use_container_width=True, config={"displayModeBar": False})
+        with u_r:
+            st.markdown(
+                clean_html(
+                    """
+                    <div style="font-size:12.5px;line-height:2.4;padding-top:32px">
+                        <div style="display:flex;justify-content:space-between"><span><span style="color:#00875A">●</span> &nbsp;Billable</span><b>58%</b></div>
+                        <div style="display:flex;justify-content:space-between"><span><span style="color:#1473E6">●</span> &nbsp;Non-Billable</span><b>25%</b></div>
+                        <div style="display:flex;justify-content:space-between"><span><span style="color:#94A3B8">●</span> &nbsp;Available</span><b>17%</b></div>
+                    </div>
+                    """
+                ),
+                unsafe_allow_html=True,
             )
 
-    with tb:
-        with st.container(border=True):
-            mode = tile_toggle("Resource Action", ["Add Resource", "Edit Resource"], key="res_action_mode")
-            row = None
-            if mode == "Edit Resource" and not R.empty:
-                opts = {f"{x['name']} ({x['team']})": int(x.id) for _, x in R.iterrows()}
-                rid = opts[st.selectbox("Select Resource", list(opts.keys()))]
-                row = R[R.id == rid].iloc[0]
-            with st.form("resource_crud_form"):
-                a, b = st.columns(2)
-                with a:
-                    name = st.text_input("Full Name *", str(row["name"]) if row is not None else "")
-                with b:
-                    email = st.text_input("Email", str(row.email) if row is not None else "")
-                a, b, c = st.columns(3)
-                with a:
-                    td = str(row.team) if row is not None else teams_list[0]
-                    team = st.selectbox("Team", teams_list, index=teams_list.index(td) if td in teams_list else 0)
-                with b:
-                    roles = ["Admin", "Project Manager", "Team Member"]
-                    rd = str(row.role) if row is not None else "Team Member"
-                    role = st.selectbox("Role", roles, index=roles.index(rd) if rd in roles else 2)
-                with c:
-                    states = ["Available", "Partial", "On Leave"]
-                    sd = str(row.status) if row is not None else "Available"
-                    status = st.selectbox("Availability", states, index=states.index(sd) if sd in states else 0)
-                capacity = st.slider("Capacity (%)", 0, 100, int(row.capacity or 100) if row is not None else 100)
-                notes = st.text_area("Notes", str(row.notes or "") if row is not None else "")
-                save = st.form_submit_button("💾 Save Resource", type="primary")
-                if save:
-                    if not name.strip():
-                        st.error("Name is required.")
-                    elif mode == "Add Resource":
-                        sql(
-                            "INSERT INTO resources(name,email,team,role,status,capacity,notes) VALUES(?,?,?,?,?,?,?)",
-                            (name.strip(), email.strip(), team, role, status, capacity, notes),
-                        )
-                        log_event("Created", "Resource", None, name.strip())
+    with rc_3, st.container(border=True):
+        st.markdown("<div style='font-size:15px;font-weight:700;color:#0F172A;margin-bottom:12px'>Resource Status</div>", unsafe_allow_html=True)
+        rs_bars = [
+            ("Available", 8, 42, "#6EE7B7"),
+            ("Allocated", 14, 78, "#1473E6"),
+            ("Overallocated", 2, 16, "#F87171"),
+            ("On Leave", 0, 0, "#E2E8F0"),
+        ]
+        rs_html = ""
+        for r_lbl, r_cnt, r_w, r_c in rs_bars:
+            rs_html += f"""
+            <div style="display:grid;grid-template-columns:95px 1fr 28px;align-items:center;gap:10px;margin-bottom:14px;font-size:12.5px">
+                <span style="color:#334155;font-weight:500">{r_lbl}</span>
+                <div style="height:14px;background:#F1F5F9;border-radius:4px;overflow:hidden">
+                    <div style="width:{r_w}%;height:100%;background:{r_c};border-radius:4px"></div>
+                </div>
+                <span style="text-align:right;font-weight:700;color:#0F172A">{r_cnt}</span>
+            </div>
+            """
+        st.markdown(clean_html(rs_html), unsafe_allow_html=True)
+
+    # --- FILTER ROW ---
+    rf_q, rf_rl, rf_sk, rf_st, rf_pr, rf_mr = st.columns([1.55, 0.9, 0.9, 0.9, 0.9, 0.72])
+    with rf_q:
+        st.markdown("<div style='font-size:11.5px;margin-bottom:3px'>&nbsp;</div>", unsafe_allow_html=True)
+        res_sub_q = st.text_input("Search", placeholder="🔍 Search by name, role, skill or project...", key="res_q_sub", label_visibility="collapsed")
+    with rf_rl:
+        st.markdown("<div style='font-size:11.5px;font-weight:600;color:#475569;margin-bottom:3px'>Role</div>", unsafe_allow_html=True)
+        res_role_f = st.selectbox("Role", ["All Roles", "UX Designer", "Business Analyst", "Frontend Developer", "Project Manager", "Backend Developer", "QA Engineer", "Content Specialist", "DevOps Engineer", "IT Support", "Data Analyst"], key="res_f_role", label_visibility="collapsed")
+    with rf_sk:
+        st.markdown("<div style='font-size:11.5px;font-weight:600;color:#475569;margin-bottom:3px'>Skill</div>", unsafe_allow_html=True)
+        res_skill_f = st.selectbox("Skill", ["All Skills", "UI/UX", "Figma", "Analysis", "React", "Planning", "Python", "Testing", "Content", "Azure", "Infrastructure", "Power BI"], key="res_f_skill", label_visibility="collapsed")
+    with rf_st:
+        st.markdown("<div style='font-size:11.5px;font-weight:600;color:#475569;margin-bottom:3px'>Status</div>", unsafe_allow_html=True)
+        res_stat_f = st.selectbox("Status", ["All Statuses", "Allocated", "Available", "Overallocated", "On Leave"], key="res_f_stat", label_visibility="collapsed")
+    with rf_pr:
+        st.markdown("<div style='font-size:11.5px;font-weight:600;color:#475569;margin-bottom:3px'>Project</div>", unsafe_allow_html=True)
+        res_proj_f = st.selectbox("Project", ["All Projects", "Website Revamp", "Sustainability Initiative", "Marketing Campaign", "IT Infrastructure Upgrade", "Internal Operations"], key="res_f_proj", label_visibility="collapsed")
+    with rf_mr:
+        st.markdown("<div style='font-size:11.5px;margin-bottom:3px'>&nbsp;</div>", unsafe_allow_html=True)
+        if st.button("▽ More Filters", key="res_btn_more", use_container_width=True):
+            for k, v in [("res_f_role", "All Roles"), ("res_f_skill", "All Skills"), ("res_f_stat", "All Statuses"), ("res_f_proj", "All Projects"), ("res_q_top", ""), ("res_q_sub", "")]:
+                st.session_state[k] = v
+            st.rerun()
+
+    st.write("")
+    # --- RESOURCES DIRECTORY TABLE (Exact 10 Rows from Image 20 & 25) ---
+    res_directory = [
+        {"id": 1, "ini": "JM", "av_col": "#0284C7", "name": "James Miller", "email": "james.miller@hpe.com", "role": "UX Designer", "skills": ["UI/UX", "Figma"], "sk_cols": [("#DBEAFE", "#1D4ED8"), ("#F3E8FF", "#7C3AED")], "project": "Website Revamp", "alloc": 100, "avail": "0%", "status": "Allocated"},
+        {"id": 2, "ini": "EC", "av_col": "#0284C7", "name": "Emily Rodriguez", "email": "emily.rodriguez@hpe.com", "role": "Business Analyst", "skills": ["Analysis", "Requirements"], "sk_cols": [("#DBEAFE", "#1D4ED8"), ("#F1F5F9", "#334155")], "project": "Sustainability Initiative", "alloc": 80, "avail": "20%", "status": "Allocated"},
+        {"id": 3, "ini": "SL", "av_col": "#0369A1", "name": "Sarah Kim", "email": "sarah.kim@hpe.com", "role": "Frontend Developer", "skills": ["React", "JavaScript"], "sk_cols": [("#DBEAFE", "#1D4ED8"), ("#F1F5F9", "#334155")], "project": "Website Revamp", "alloc": 100, "avail": "0%", "status": "Allocated"},
+        {"id": 4, "ini": "AL", "av_col": "#0284C7", "name": "Alice Morgan", "email": "alice.morgan@hpe.com", "role": "Project Manager", "skills": ["Planning", "Stakeholder"], "sk_cols": [("#DBEAFE", "#1D4ED8"), ("#F1F5F9", "#334155")], "project": "Marketing Campaign", "alloc": 50, "avail": "50%", "status": "Available"},
+        {"id": 5, "ini": "RJ", "av_col": "#0369A1", "name": "Ryan Cruz", "email": "ryan.cruz@hpe.com", "role": "Backend Developer", "skills": ["Python", "API"], "sk_cols": [("#DBEAFE", "#1D4ED8"), ("#F1F5F9", "#334155")], "project": "IT Infrastructure Upgrade", "alloc": 90, "avail": "10%", "status": "Allocated"},
+        {"id": 6, "ini": "MT", "av_col": "#0284C7", "name": "Michael Tan", "email": "michael.tan@hpe.com", "role": "QA Engineer", "skills": ["Testing", "Automation"], "sk_cols": [("#DBEAFE", "#1D4ED8"), ("#F1F5F9", "#334155")], "project": "IT Infrastructure Upgrade", "alloc": 120, "avail": "-20%", "status": "Overallocated"},
+        {"id": 7, "ini": "DS", "av_col": "#00875A", "name": "Dana Scott", "email": "dana.scott@hpe.com", "role": "Content Specialist", "skills": ["Content", "SEO"], "sk_cols": [("#DBEAFE", "#1D4ED8"), ("#F1F5F9", "#334155")], "project": "Marketing Campaign", "alloc": 40, "avail": "60%", "status": "Available"},
+        {"id": 8, "ini": "KL", "av_col": "#0284C7", "name": "Karen Lim", "email": "karen.lim@hpe.com", "role": "DevOps Engineer", "skills": ["Azure", "CI/CD"], "sk_cols": [("#DBEAFE", "#1D4ED8"), ("#F1F5F9", "#334155")], "project": "IT Infrastructure Upgrade", "alloc": 100, "avail": "0%", "status": "Allocated"},
+        {"id": 9, "ini": "NP", "av_col": "#475569", "name": "Noah Park", "email": "noah.park@hpe.com", "role": "IT Support", "skills": ["Infrastructure", "Support"], "sk_cols": [("#DBEAFE", "#1D4ED8"), ("#F1F5F9", "#334155")], "project": "Internal Operations", "alloc": 60, "avail": "40%", "status": "Available"},
+        {"id": 10, "ini": "CT", "av_col": "#EA580C", "name": "Chloe Tan", "email": "chloe.tan@hpe.com", "role": "Data Analyst", "skills": ["Power BI", "Excel"], "sk_cols": [("#DBEAFE", "#1D4ED8"), ("#DCFCE7", "#15803D")], "project": "Sustainability Initiative", "alloc": 100, "avail": "0%", "status": "Allocated"},
+    ]
+
+    q_res = (res_top_q + " " + res_sub_q).strip().lower()
+    filtered_res = []
+    for item in res_directory:
+        if res_role_f != "All Roles" and item["role"] != res_role_f:
+            continue
+        if res_skill_f != "All Skills" and res_skill_f not in item["skills"]:
+            continue
+        if res_stat_f != "All Statuses" and item["status"] != res_stat_f:
+            continue
+        if res_proj_f != "All Projects" and item["project"] != res_proj_f:
+            continue
+        if q_res and not (q_res in item["name"].lower() or q_res in item["role"].lower() or q_res in item["project"].lower() or any(q_res in s.lower() for s in item["skills"])):
+            continue
+        filtered_res.append(item)
+
+    with st.container(border=True):
+        r_weights = [0.3, 1.85, 1.15, 1.35, 1.35, 1.25, 0.75, 0.9, 1.05]
+        h_cols = st.columns(r_weights)
+        for c, h_lbl in zip(h_cols, ["☐", "Name", "Role", "Skills", "Current Project(s)", "Allocation", "Availability", "Status", "Actions"]):
+            c.markdown(f"<div style='font-size:11.5px;font-weight:700;color:#1E293B;padding-bottom:6px'>{h_lbl}</div>", unsafe_allow_html=True)
+        st.markdown("<hr style='margin:0 0 8px 0;border-color:#E2E8F0'>", unsafe_allow_html=True)
+
+        for r_item in filtered_res:
+            rid = r_item["id"]
+            rc = st.columns(r_weights)
+            with rc[0]:
+                st.markdown("<div style='padding-top:10px;color:#64748B;font-size:13px'>☐</div>", unsafe_allow_html=True)
+            with rc[1]:
+                st.markdown(
+                    clean_html(
+                        f"""
+                        <div style="display:flex;align-items:center;gap:10px;padding-top:2px">
+                            <div style="width:34px;height:34px;min-width:34px;border-radius:50%;background:{r_item['av_col']};color:white;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:12px">{r_item['ini']}</div>
+                            <div>
+                                <div style="font-size:13px;font-weight:700;color:#0F172A;line-height:1.2">{html.escape(r_item['name'])}</div>
+                                <div style="font-size:11px;color:#64748B">{html.escape(r_item['email'])}</div>
+                            </div>
+                        </div>
+                        """
+                    ),
+                    unsafe_allow_html=True,
+                )
+            with rc[2]:
+                st.markdown(f"<div style='padding-top:9px;font-size:12.5px;color:#334155'>{html.escape(r_item['role'])}</div>", unsafe_allow_html=True)
+            with rc[3]:
+                sk_html = "".join(
+                    f'<span class="vk-tag" style="background:{bg};color:{fg}">{html.escape(sk)}</span>'
+                    for sk, (bg, fg) in zip(r_item["skills"], r_item["sk_cols"])
+                )
+                st.markdown(f"<div style='padding-top:7px'>{sk_html}</div>", unsafe_allow_html=True)
+            with rc[4]:
+                st.markdown(f"<div style='padding-top:9px;font-size:12.5px;color:#334155'>{html.escape(r_item['project'])}</div>", unsafe_allow_html=True)
+            with rc[5]:
+                al_val = r_item["alloc"]
+                al_col = RED if al_val > 100 else GREEN
+                st.markdown(
+                    clean_html(
+                        f"""
+                        <div style="display:flex;align-items:center;gap:8px;padding-top:9px">
+                            <span style="font-size:12px;font-weight:600;color:#1E293B;min-width:34px">{al_val}%</span>
+                            <div style="flex:1;height:8px;background:#E2E8F0;border-radius:99px;overflow:hidden">
+                                <div style="width:{min(100, al_val)}%;height:100%;background:{al_col};border-radius:99px"></div>
+                            </div>
+                        </div>
+                        """
+                    ),
+                    unsafe_allow_html=True,
+                )
+            with rc[6]:
+                av_str = r_item["avail"]
+                av_color = "#DC2626" if av_str.startswith("-") else "#1E293B"
+                st.markdown(f"<div style='padding-top:9px;font-size:12.5px;font-weight:600;color:{av_color}'>{av_str}</div>", unsafe_allow_html=True)
+            with rc[7]:
+                st_str = r_item["status"]
+                st_cls = "vk-badge-blue" if st_str == "Allocated" else ("vk-badge-green" if st_str == "Available" else "vk-badge-red")
+                st.markdown(f"<div style='padding-top:7px'><span class='vk-badge {st_cls}' style='min-width:86px'>{st_str}</span></div>", unsafe_allow_html=True)
+            with rc[8]:
+                ac1, ac2, ac3 = st.columns(3)
+                with ac1:
+                    if st.button("📅", key=f"res_cal_{rid}", help="Resource Calendar"):
+                        st.session_state.res_modal = ("calendar", r_item)
                         st.rerun()
-                    else:
-                        sql(
-                            "UPDATE resources SET name=?,email=?,team=?,role=?,status=?,capacity=?,notes=? WHERE id=?",
-                            (name.strip(), email.strip(), team, role, status, capacity, notes, int(row.id)),
-                        )
-                        log_event("Updated", "Resource", int(row.id), name.strip())
+                with ac2:
+                    if st.button("👥", key=f"res_pa_{rid}", help="Project Assignments"):
+                        st.session_state.res_modal = ("assignments", r_item)
                         st.rerun()
+                with ac3:
+                    with st.popover("⋮"):
+                        if st.button("👁 View Details", key=f"rm_v_{rid}", use_container_width=True):
+                            st.session_state.res_modal = ("view", r_item)
+                            st.rerun()
+                        if st.button("✎ Edit Resource", key=f"rm_e_{rid}", use_container_width=True):
+                            st.session_state.res_modal = ("edit", r_item)
+                            st.rerun()
+                        if st.button("💼 Assign to Project", key=f"rm_a_{rid}", use_container_width=True):
+                            st.session_state.res_modal = ("assign", r_item)
+                            st.rerun()
+                        if st.button("⚙ Manage Skills", key=f"rm_s_{rid}", use_container_width=True):
+                            st.session_state.res_modal = ("skills", r_item)
+                            st.rerun()
+                        if st.button("📅 Change Availability", key=f"rm_c_{rid}", use_container_width=True):
+                            st.session_state.res_modal = ("availability", r_item)
+                            st.rerun()
+                        if st.button("👤 Set on Leave", key=f"rm_l_{rid}", use_container_width=True):
+                            st.session_state.res_modal = ("leave", r_item)
+                            st.rerun()
+                        if st.button("🗑 Delete Resource", key=f"rm_d_{rid}", use_container_width=True):
+                            st.session_state.res_modal = ("delete", r_item)
+                            st.rerun()
+            st.markdown("<hr style='margin:5px 0;border-color:#F1F5F9'>", unsafe_allow_html=True)
+
+        # Pagination Footer
+        st.markdown(
+            clean_html(
+                """
+                <div style="display:flex;align-items:center;justify-content:space-between;padding-top:10px;font-size:12.5px;color:#475569">
+                    <div style="display:flex;align-items:center;gap:8px">
+                        <span>Show</span>
+                        <span style="border:1px solid #CBD5E1;border-radius:6px;padding:3px 10px;background:white;font-weight:600;color:#0F172A">10 &nbsp;▾</span>
+                        <span>entries</span>
+                    </div>
+                    <div style="display:flex;align-items:center;gap:6px">
+                        <span style="border:1px solid #CBD5E1;border-radius:6px;padding:4px 10px;background:white">‹</span>
+                        <span style="border-radius:6px;padding:4px 11px;background:#00875A;color:white;font-weight:700">1</span>
+                        <span style="border:1px solid #CBD5E1;border-radius:6px;padding:4px 11px;background:white;font-weight:600">2</span>
+                        <span style="border:1px solid #CBD5E1;border-radius:6px;padding:4px 11px;background:white;font-weight:600">3</span>
+                        <span style="border:1px solid #CBD5E1;border-radius:6px;padding:4px 10px;background:white">›</span>
+                    </div>
+                </div>
+                """
+            ),
+            unsafe_allow_html=True,
+        )
+
+    if "res_modal" in st.session_state:
+        rm_type, rm_payload = st.session_state.res_modal
+        if rm_type == "add":
+            add_resource_modal()
+        elif rm_type == "calendar":
+            resource_calendar_modal(rm_payload)
+        elif rm_type == "assignments":
+            project_assignments_modal(rm_payload)
+        else:
+            resource_action_submodal(rm_type, rm_payload)
 
 
 # ===========================================================================
-# PAGE 6: CALENDAR
+# PAGE 6: CALENDAR (Exact Replica of Main Calendar + Inspector + Add Event Modal)
 # ===========================================================================
 elif page == "Calendar":
-    render_top_header("Calendar", "View project dates, task due dates, and milestone deadlines", show_filters=True)
-    t = apply_global_filters(T, "project")
-    m = apply_global_filters(M, "project")
 
-    with st.container(border=True):
-        c1, _ = st.columns([1, 2.5])
-        with c1:
-            month_pick = st.date_input("Select Calendar Month", date(2024, 5, 1))
-        first = month_pick.replace(day=1)
-        last = month_pick.replace(day=calendar.monthrange(month_pick.year, month_pick.month)[1])
+    @st.dialog("Add Event")
+    def add_event_modal() -> None:
+        st.markdown(
+            clean_html(
+                """
+                <div style="display:flex;align-items:center;gap:12px;padding-bottom:12px;border-bottom:1px solid #E2E8F0;margin-bottom:14px">
+                    <div style="width:40px;height:40px;border-radius:50%;background:#00875A;color:white;display:flex;align-items:center;justify-content:center;font-size:22px;font-weight:700">＋</div>
+                    <div>
+                        <div style="font-size:20px;font-weight:800;color:#0F172A;line-height:1.1">Add Event</div>
+                        <div style="font-size:12.5px;color:#64748B">Create a new event, task, or availability entry.</div>
+                    </div>
+                </div>
+                """
+            ),
+            unsafe_allow_html=True,
+        )
 
-        events = []
-        for _, r in t.iterrows():
-            try:
-                d = date.fromisoformat(str(r.due_date))
-            except Exception:
-                continue
-            if first <= d <= last:
-                events.append({"Date": d, "Type": "Task", "Title": r["name"], "Project": r["project"], "Status": r.status})
-        for _, r in m.iterrows():
-            try:
-                d = date.fromisoformat(str(r.due_date))
-            except Exception:
-                continue
-            if first <= d <= last:
-                events.append({"Date": d, "Type": "Milestone", "Title": r["name"], "Project": r["project"], "Status": r.status})
+        e1, e2 = st.columns(2)
+        with e1:
+            ev_type = st.selectbox("Event Type *", ["🟢 Project Assignment", "🔵 Meeting / Event", "🔴 Leave", "🟣 Milestone"], key="ae_type")
+        with e2:
+            ev_title = st.text_input("Title *", placeholder="Enter event title", key="ae_title")
 
-        ev = pd.DataFrame(events)
-        section_title(first.strftime("%B %Y"), f"{len(ev)} Scheduled Deadlines")
+        e3, e4 = st.columns(2)
+        with e3:
+            ev_proj = st.selectbox("Project *", ["Select project"] + projects_list, key="ae_proj")
+        with e4:
+            st.selectbox("Task (Optional)", ["Select task (optional)"] + T.name.tolist(), key="ae_task")
 
-        weeks = calendar.Calendar(firstweekday=6).monthdatescalendar(first.year, first.month)
-        hdr_cols = st.columns(7)
-        for col, dayname in zip(hdr_cols, ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]):
-            col.markdown(f"<div style='text-align:center;font-weight:700;font-size:12px;color:#475569;padding:4px'>{dayname}</div>", unsafe_allow_html=True)
+        st.multiselect(
+            "Resource(s) *",
+            ["James Miller", "Sarah Kim", "Alice Morgan", "Ryan Cruz", "Michael Tan", "Emily Rodriguez", "Dana Scott"],
+            default=["James Miller", "Sarah Kim"],
+            key="ae_res",
+        )
 
-        for week in weeks:
-            cols = st.columns(7)
-            for col, d in zip(cols, week):
-                with col:
-                    in_month = d.month == first.month
-                    day_color = TEXT_COLOR if in_month else "#CBD5E1"
-                    daily = ev[ev.Date == d] if not ev.empty else pd.DataFrame()
-                    pills = ""
-                    for _, e in daily.head(3).iterrows():
-                        bg = GREEN if e["Type"] == "Milestone" else BLUE
-                        icon = "⚑" if e["Type"] == "Milestone" else "☑"
-                        pills += f'<div style="background:{bg};color:white;padding:2px 6px;border-radius:4px;font-size:10px;font-weight:600;margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{icon} {html.escape(e["Title"])}</div>'
-                    st.markdown(
-                        f'<div style="min-height:86px;border:1px solid {BORDER_COLOR};border-radius:8px;padding:6px;background:{"#FFFFFF" if in_month else "#F8FAFC"};margin-bottom:6px">'
-                        f'<div style="font-size:12px;font-weight:700;color:{day_color}">{d.day}</div>'
-                        f"{pills}</div>",
-                        unsafe_allow_html=True,
-                    )
+        dt1, dt2, dt3, dt4 = st.columns([1.2, 0.9, 1.2, 0.9])
+        with dt1:
+            ev_start_d = st.date_input("Start Date & Time *", date(2024, 5, 9), key="ae_sd")
+        with dt2:
+            st.markdown("<div style='font-size:12.5px;margin-bottom:4px'>&nbsp;</div>", unsafe_allow_html=True)
+            st.selectbox("Start Time", ["09:00 AM", "10:00 AM", "01:00 PM", "02:00 PM"], index=0, key="ae_st", label_visibility="collapsed")
+        with dt3:
+            ev_end_d = st.date_input("End Date & Time *", date(2024, 5, 9), key="ae_ed")
+        with dt4:
+            st.markdown("<div style='font-size:12.5px;margin-bottom:4px'>&nbsp;</div>", unsafe_allow_html=True)
+            st.selectbox("End Time", ["05:00 PM", "11:00 AM", "03:00 PM", "04:00 PM"], index=0, key="ae_et", label_visibility="collapsed")
 
-    with st.container(border=True):
-        section_title("Deadlines in Selected Month", first.strftime("%B %Y"))
-        if ev.empty:
-            st.info("No tasks or milestones due in this month. Try selecting April, May, or June 2024.")
-        else:
-            render_rich_table(
-                ev.sort_values("Date"),
-                [
-                    ("Date", "Due Date", "date"),
-                    ("Type", "Item Type", "bold"),
-                    ("Title", "Name", "bold"),
-                    ("Project", "Project", "text"),
-                    ("Status", "Status", "badge"),
-                ],
+        al1, al2, rp_col = st.columns([1.5, 0.45, 1.95])
+        with al1:
+            st.text_input("Allocation (Optional)", value="50", key="ae_alloc")
+            st.markdown("<div style='font-size:11px;color:#64748B;margin-top:-6px'>Enter allocation percentage for this assignment.</div>", unsafe_allow_html=True)
+        with al2:
+            st.markdown("<div style='margin-top:28px;border:1px solid #CBD5E1;border-radius:6px;padding:7px 8px;text-align:center;font-weight:600;background:#F8FAFC'>%</div>", unsafe_allow_html=True)
+        with rp_col:
+            st.selectbox("Repeat (Optional)", ["Does not repeat", "Daily", "Weekly", "Monthly"], key="ae_rep")
+
+        ev_desc = st.text_area(
+            "Description (Optional)",
+            placeholder="Enter event description, meeting agenda, or additional details...",
+            height=95,
+            key="ae_desc",
+        )
+        st.markdown(f"<div style='text-align:right;font-size:11px;color:#64748B;margin-top:-6px;margin-bottom:10px'>{len(ev_desc)}/500</div>", unsafe_allow_html=True)
+
+        f_sp, f_can, f_cr = st.columns([2.2, 1, 1.2])
+        with f_can:
+            if st.button("Cancel", key="ae_can_btn", use_container_width=True):
+                st.session_state.pop("cal_modal", None)
+                st.rerun()
+        with f_cr:
+            if st.button("Create Event", type="primary", key="ae_save_btn", use_container_width=True):
+                log_event("Created", "Calendar Event", None, ev_title or ev_type)
+                st.session_state.pop("cal_modal", None)
+                st.rerun()
+
+    # --- CALENDAR TOP HEADER & FILTER BAR ---
+    ch_l, ch_f1, ch_f2, ch_f3, ch_f4, ch_btn = st.columns([2.15, 0.72, 0.72, 0.72, 0.78, 0.68])
+    with ch_l:
+        st.markdown(
+            clean_html(
+                f"""
+                <div style='font-size:28px;font-weight:800;color:{TEXT_COLOR};letter-spacing:-0.03em;line-height:1.15'>Calendar</div>
+                <div style='font-size:13.5px;color:#64748B;margin-top:2px'>View project timelines, task schedules, team availability, and resource assignments.</div>
+                """
+            ),
+            unsafe_allow_html=True,
+        )
+    with ch_f1:
+        st.markdown("<div style='font-size:11px;font-weight:600;color:#475569;margin-bottom:2px'>Project</div>", unsafe_allow_html=True)
+        cal_proj_f = st.selectbox("Project", ["All Projects"] + projects_list, key="cal_f_proj", label_visibility="collapsed")
+    with ch_f2:
+        st.markdown("<div style='font-size:11px;font-weight:600;color:#475569;margin-bottom:2px'>Team</div>", unsafe_allow_html=True)
+        cal_team_f = st.selectbox("Team", ["All Teams"] + teams_list, key="cal_f_team", label_visibility="collapsed")
+    with ch_f3:
+        st.markdown("<div style='font-size:11px;font-weight:600;color:#475569;margin-bottom:2px'>Resource</div>", unsafe_allow_html=True)
+        cal_res_f = st.selectbox("Resource", ["All Resources", "James Miller", "Sarah Kim", "Alice Morgan", "Ryan Cruz", "Michael Tan"], key="cal_f_res", label_visibility="collapsed")
+    with ch_f4:
+        st.markdown("<div style='font-size:11px;font-weight:600;color:#475569;margin-bottom:2px'>Event Type</div>", unsafe_allow_html=True)
+        cal_type_f = st.selectbox("Event Type", ["All Event Types", "Project Assignment", "Meeting / Event", "Leave", "Milestone"], key="cal_f_type", label_visibility="collapsed")
+    with ch_btn:
+        st.markdown("<div style='font-size:11px;margin-bottom:2px'>&nbsp;</div>", unsafe_allow_html=True)
+        if st.button("＋ Add Event", type="primary", key="cal_top_add_btn", use_container_width=True):
+            st.session_state.cal_modal = "add_event"
+            st.rerun()
+
+    st.write("")
+    # --- SUB-TOOLBAR ROW: Month | Week | Day | Agenda + < May 2024 > + Today + Search + More Filters ---
+    if "cal_view_mode" not in st.session_state:
+        st.session_state.cal_view_mode = "Month"
+
+    ct_v, ct_nav, ct_tod, ct_sp, ct_q, ct_mf = st.columns([1.55, 1.0, 0.48, 0.65, 1.55, 0.65])
+    with ct_v:
+        tile_toggle("", ["Month", "Week", "Day", "Agenda"], key="cal_view_mode", default="Month")
+    with ct_nav:
+        st.markdown(
+            clean_html(
+                """
+                <div style="display:flex;align-items:center;justify-content:center;gap:12px;border:1px solid #DCE8F3;border-radius:8px;padding:6px 10px;background:white">
+                    <span style="font-weight:700;color:#475569;cursor:pointer">‹</span>
+                    <span style="font-size:14.5px;font-weight:800;color:#0F172A">May 2024</span>
+                    <span style="font-weight:700;color:#475569;cursor:pointer">›</span>
+                </div>
+                """
+            ),
+            unsafe_allow_html=True,
+        )
+    with ct_tod:
+        st.button("Today", key="cal_tod_btn", use_container_width=True)
+    with ct_q:
+        cal_search_q = st.text_input("Search", placeholder="🔍 Search events, tasks, or team members...", key="cal_q_box", label_visibility="collapsed")
+    with ct_mf:
+        if st.button("▽ More Filters", key="cal_more_btn", use_container_width=True):
+            st.session_state["cal_q_box"] = ""
+            st.rerun()
+
+    st.write("")
+    # --- MAIN SPLIT: LEFT (Calendar Grid + 4 Bottom Cards) | RIGHT (Thu, May 9, 2024 Inspector) ---
+    main_l, main_r = st.columns([2.75, 1.1])
+
+    with main_l:
+        cal_weeks = [
+            [
+                ("28", False, []),
+                ("29", False, []),
+                ("30", False, []),
+                ("1", True, [("● Website Revamp", "9:00 AM – 5:00 PM<br>(50%)", "g"), ("● Design Review", "2:00 PM – 4:00 PM", "b")]),
+                ("2", True, [("● Website Revamp", "9:00 AM – 5:00 PM<br>(50%)", "g")]),
+                ("3", True, [("● Website Revamp", "9:00 AM – 5:00 PM<br>(50%)", "g")]),
+                ("4", True, []),
+            ],
+            [
+                ("5", True, []),
+                ("6", True, [("● Marketing Campaign", "9:00 AM – 5:00 PM<br>(30%)", "g")]),
+                ("7", True, [("● Marketing Campaign", "9:00 AM – 5:00 PM<br>(30%)", "g")]),
+                ("8", True, [("● Marketing Campaign", "9:00 AM – 5:00 PM<br>(30%)", "g")]),
+                ("9", True, [("● Website Revamp", "9:00 AM – 5:00 PM<br>(50%)", "g"), ("● Team Meeting", "10:00 AM – 11:00 AM", "b")]),
+                ("10", True, [("● Website Revamp", "9:00 AM – 5:00 PM<br>(50%)", "g")]),
+                ("11", True, []),
+            ],
+            [
+                ("12", True, []),
+                ("13", True, [("● IT Infrastructure", "9:00 AM – 5:00 PM<br>(20%)", "g")]),
+                ("14", True, [("● IT Infrastructure", "9:00 AM – 5:00 PM<br>(20%)", "g")]),
+                ("15", True, [("● IT Infrastructure", "9:00 AM – 5:00 PM<br>(20%)", "g"), ("● Documentation Review", "2:00 PM – 3:00 PM", "b")]),
+                ("16", True, [("● IT Infrastructure", "9:00 AM – 5:00 PM<br>(20%)", "g")]),
+                ("17", True, [("● IT Infrastructure", "9:00 AM – 5:00 PM<br>(20%)", "g")]),
+                ("18", True, []),
+            ],
+            [
+                ("19", True, []),
+                ("20", True, [("📅 Annual Leave", "(Full Day)", "r")]),
+                ("21", True, [("📅 Annual Leave", "(Full Day)", "r")]),
+                ("22", True, [("📅 Annual Leave", "(Full Day)", "r")]),
+                ("23", True, []),
+                ("24", True, [("● Website Revamp", "9:00 AM – 5:00 PM<br>(50%)", "g")]),
+                ("25", True, []),
+            ],
+            [
+                ("26", True, []),
+                ("27", True, [("● Website Revamp", "9:00 AM – 5:00 PM<br>(50%)", "g")]),
+                ("28", True, [("● Website Revamp", "9:00 AM – 5:00 PM<br>(50%)", "g")]),
+                ("29", True, [("● Website Revamp", "9:00 AM – 5:00 PM<br>(50%)", "g")]),
+                ("30", True, [("● Website Revamp", "9:00 AM – 5:00 PM<br>(50%)", "g")]),
+                ("31", True, [("● Website Revamp", "9:00 AM – 5:00 PM<br>(50%)", "g")]),
+                ("1", False, []),
+            ],
+        ]
+
+        ev_box_tones = {
+            "g": ("#DCFCE7", "#065F46"),
+            "b": ("#DBEAFE", "#1D4ED8"),
+            "r": ("#FEE2E2", "#B91C1C"),
+        }
+
+        cal_rows_html = ""
+        for wk in cal_weeks:
+            row_cells = ""
+            for d_str, in_m, evs in wk:
+                is_sel = in_m and d_str == "9"
+                bdr = "2px solid #2563EB" if is_sel else "1px solid #EDF2F7"
+                bg = "#EFF6FF" if is_sel else ("#FFFFFF" if in_m else "#F8FAFC")
+                d_col = "#0F172A" if in_m else "#94A3B8"
+                pills_mk = ""
+                for etitle, esub, etone in evs:
+                    if cal_search_q and cal_search_q.lower() not in etitle.lower():
+                        continue
+                    pbg, pfg = ev_box_tones[etone]
+                    pills_mk += f'<div style="background:{pbg};color:{pfg};border-radius:6px;padding:4px 7px;font-size:10.5px;margin-top:4px;line-height:1.3"><div style="font-weight:700">{etitle}</div><div style="font-size:9.8px;opacity:0.9">{esub}</div></div>'
+                row_cells += f'<div style="min-height:104px;border:{bdr};background:{bg};padding:6px 7px"><div style="font-size:12px;font-weight:700;color:{d_col}">{d_str}</div>{pills_mk}</div>'
+            cal_rows_html += f'<div style="display:grid;grid-template-columns:repeat(7,1fr)">{row_cells}</div>'
+
+        st.markdown(
+            clean_html(
+                f"""
+                <div style="border:1px solid #E2E8F0;border-radius:12px;overflow:hidden;background:white;margin-bottom:12px">
+                    <div style="display:grid;grid-template-columns:repeat(7,1fr);background:#F8FAFC;border-bottom:1px solid #E2E8F0;text-align:center;font-size:12px;font-weight:700;color:#1E293B;padding:9px 0">
+                        <div>Sun</div><div>Mon</div><div>Tue</div><div>Wed</div><div>Thu</div><div>Fri</div><div>Sat</div>
+                    </div>
+                    {cal_rows_html}
+                </div>
+                """
+            ),
+            unsafe_allow_html=True,
+        )
+
+        # Bottom 4 Filter / Legend Cards (Exact Match to Image 23)
+        bc1, bc2, bc3, bc4 = st.columns(4)
+        with bc1, st.container(border=True):
+            st.markdown(
+                clean_html(
+                    """
+                    <div style="font-size:13px;font-weight:700;color:#0F172A;margin-bottom:6px">Resources</div>
+                    <div style="border:1px solid #CBD5E1;border-radius:6px;padding:4px 8px;font-size:11.5px;color:#64748B;margin-bottom:8px;background:#F8FAFC">🔍 Search team member...</div>
+                    <div style="font-size:12px;line-height:2.0;color:#1E293B">
+                        <div><span style="color:#1473E6">☑</span> &nbsp;Select All</div>
+                        <div style="background:#EFF6FF;border-radius:4px;padding:0 4px"><span style="color:#1473E6">☑</span> &nbsp;James Miller</div>
+                        <div style="background:#EFF6FF;border-radius:4px;padding:0 4px"><span style="color:#1473E6">☑</span> &nbsp;Sarah Kim</div>
+                        <div style="background:#EFF6FF;border-radius:4px;padding:0 4px"><span style="color:#1473E6">☑</span> &nbsp;Alice Morgan</div>
+                        <div><span style="color:#94A3B8">☐</span> &nbsp;Ryan Cruz</div>
+                        <div style="font-size:11.5px;font-weight:600;color:#334155;margin-top:2px">Show More</div>
+                    </div>
+                    """
+                ),
+                unsafe_allow_html=True,
+            )
+        with bc2, st.container(border=True):
+            st.markdown(
+                clean_html(
+                    """
+                    <div style="font-size:13px;font-weight:700;color:#0F172A;margin-bottom:6px">Event Types</div>
+                    <div style="font-size:12px;line-height:2.15;color:#1E293B">
+                        <div><span style="color:#1473E6">☑</span> &nbsp;Select All</div>
+                        <div><span style="color:#1473E6">■</span> &nbsp;Project Assignment</div>
+                        <div><span style="color:#EF4444">■</span> &nbsp;Meeting / Event</div>
+                        <div><span style="color:#EF4444">■</span> &nbsp;Leave</div>
+                        <div><span style="color:#9333EA">■</span> &nbsp;Milestone</div>
+                        <div><span style="color:#94A3B8">■</span> &nbsp;Non-Working Day</div>
+                    </div>
+                    """
+                ),
+                unsafe_allow_html=True,
+            )
+        with bc3, st.container(border=True):
+            st.markdown(
+                clean_html(
+                    """
+                    <div style="font-size:13px;font-weight:700;color:#0F172A;margin-bottom:6px">Projects</div>
+                    <div style="font-size:12px;line-height:2.15;color:#1E293B">
+                        <div><span style="color:#1473E6">☑</span> &nbsp;Select All</div>
+                        <div><span style="color:#1473E6">☑</span> &nbsp;<span style="color:#00875A">●</span> Website Revamp</div>
+                        <div><span style="color:#1473E6">☐</span> &nbsp;<span style="color:#1473E6">●</span> Marketing Campaign</div>
+                        <div><span style="color:#9333EA">☐</span> &nbsp;<span style="color:#9333EA">●</span> IT Infrastructure Upgrade</div>
+                        <div><span style="color:#9333EA">☐</span> &nbsp;<span style="color:#EF4444">●</span> Sustainability Initiative</div>
+                        <div><span style="color:#EA580C">☐</span> &nbsp;<span style="color:#F28C00">●</span> Internal Operations</div>
+                    </div>
+                    """
+                ),
+                unsafe_allow_html=True,
+            )
+        with bc4, st.container(border=True):
+            st.markdown(
+                clean_html(
+                    """
+                    <div style="font-size:13px;font-weight:700;color:#0F172A;margin-bottom:6px">Calendar Legend</div>
+                    <div style="font-size:12px;line-height:2.15;color:#1E293B">
+                        <div><span style="color:#00875A;font-size:14px">●</span> &nbsp;Project Assignment</div>
+                        <div><span style="color:#1473E6;font-size:14px">●</span> &nbsp;Meeting / Event</div>
+                        <div><span style="color:#EF4444;font-size:14px">●</span> &nbsp;Leave</div>
+                        <div><span style="color:#9333EA;font-size:14px">●</span> &nbsp;Milestone</div>
+                        <div><span style="color:#94A3B8;font-size:14px">●</span> &nbsp;Non-Working Day</div>
+                        <div><span style="display:inline-block;width:11px;height:11px;border:2px solid #2563EB;border-radius:3px;vertical-align:middle"></span> &nbsp;Selected Date</div>
+                    </div>
+                    """
+                ),
+                unsafe_allow_html=True,
             )
 
+    # --- RIGHT SIDE INSPECTOR PANEL (Thu, May 9, 2024) ---
+    with main_r, st.container(border=True):
+        st.markdown(
+            clean_html(
+                """
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+                    <span style="font-size:18px;font-weight:800;color:#0F172A">Thu, May 9, 2024</span>
+                    <span style="color:#64748B;font-size:14px;cursor:pointer">✕</span>
+                </div>
+                """
+            ),
+            unsafe_allow_html=True,
+        )
 
+        insp_tabs = st.tabs(["Day View", "Team (5)", "Projects (3)"])
+        with insp_tabs[0]:
+            st.markdown(
+                clean_html(
+                    f"""
+                    <div style="font-size:12px;padding-top:4px">
+                        <div style="display:grid;grid-template-columns:58px 1fr;gap:10px;padding-bottom:12px;border-bottom:1px solid #F1F5F9;margin-bottom:10px">
+                            <div style="color:#475569;font-weight:600;line-height:1.4">9:00 AM<br>5:00 PM</div>
+                            <div>
+                                <div style="display:flex;justify-content:space-between;align-items:center">
+                                    <span style="font-weight:700;color:#0F172A;font-size:13px"><span style="color:#00875A">●</span> &nbsp;Website Revamp (50%)</span>
+                                    {badge_html('On Track').replace('On Track', 'Project Task')}
+                                </div>
+                                <div style="color:#475569;padding-left:16px;margin-top:3px;line-height:1.5">
+                                    UI/UX design and wireframes<br>Assignee: James Miller<br>Project: Website Revamp
+                                </div>
+                            </div>
+                        </div>
+                        <div style="display:grid;grid-template-columns:58px 1fr;gap:10px;padding-bottom:12px;border-bottom:1px solid #F1F5F9;margin-bottom:10px">
+                            <div style="color:#475569;font-weight:600;line-height:1.4">10:00 AM<br>11:00 AM</div>
+                            <div>
+                                <div style="display:flex;justify-content:space-between;align-items:center">
+                                    <span style="font-weight:700;color:#0F172A;font-size:13px"><span style="color:#1473E6">●</span> &nbsp;Team Meeting</span>
+                                    {badge_html('In Progress').replace('In Progress', 'Meeting')}
+                                </div>
+                                <div style="color:#475569;padding-left:16px;margin-top:3px;line-height:1.5">
+                                    Weekly project sync<br>Attendees: James Miller, Sarah Kim, Alice Morgan
+                                </div>
+                            </div>
+                        </div>
+                        <div style="display:grid;grid-template-columns:58px 1fr;gap:10px;padding-bottom:8px">
+                            <div style="color:#475569;font-weight:600;line-height:1.4">2:00 PM<br>4:00 PM</div>
+                            <div>
+                                <div style="display:flex;justify-content:space-between;align-items:center">
+                                    <span style="font-weight:700;color:#0F172A;font-size:13px"><span style="color:#9333EA">●</span> &nbsp;Design Review</span>
+                                    {badge_html('In Progress').replace('In Progress', 'Meeting')}
+                                </div>
+                                <div style="color:#475569;padding-left:16px;margin-top:3px;line-height:1.5">
+                                    Review UI concepts<br>Attendees: UX Team
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    """
+                ),
+                unsafe_allow_html=True,
+            )
+        with insp_tabs[1]:
+            st.caption("5 team members scheduled on Thu, May 9, 2024.")
+        with insp_tabs[2]:
+            st.caption("3 active projects scheduled on Thu, May 9, 2024.")
+
+        st.markdown(
+            clean_html(
+                f"""
+                <hr style="margin:8px 0 12px 0;border-color:#E2E8F0">
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+                    <span style="font-size:13.5px;font-weight:700;color:#0F172A">Team Availability (May 9)</span>
+                    <span style="font-size:11.5px;color:#1473E6;font-weight:600">View All</span>
+                </div>
+                <div style="font-size:12px;line-height:2.2">
+                    <div style="display:grid;grid-template-columns:1.35fr 0.75fr 1fr;align-items:center;gap:6px;margin-bottom:4px">
+                        <div><span class="vk-avatar" style="background:#0284C7">JM</span>James Miller</div>
+                        <div>{badge_html('Available')}</div>
+                        <div>{progress_html(50, GREEN)}</div>
+                    </div>
+                    <div style="display:grid;grid-template-columns:1.35fr 0.75fr 1fr;align-items:center;gap:6px;margin-bottom:4px">
+                        <div><span class="vk-avatar" style="background:#0284C7">SK</span>Sarah Kim</div>
+                        <div>{badge_html('Available')}</div>
+                        <div>{progress_html(75, GREEN)}</div>
+                    </div>
+                    <div style="display:grid;grid-template-columns:1.35fr 0.75fr 1fr;align-items:center;gap:6px;margin-bottom:4px">
+                        <div><span class="vk-avatar" style="background:#0284C7">AL</span>Alice Morgan</div>
+                        <div>{badge_html('Available')}</div>
+                        <div>{progress_html(50, GREEN)}</div>
+                    </div>
+                    <div style="display:grid;grid-template-columns:1.35fr 0.75fr 1fr;align-items:center;gap:6px;margin-bottom:4px">
+                        <div><span class="vk-avatar" style="background:#0369A1">RJ</span>Ryan Cruz</div>
+                        <div>{badge_html('Partial')}</div>
+                        <div>{progress_html(80, BLUE)}</div>
+                    </div>
+                    <div style="display:grid;grid-template-columns:1.35fr 0.75fr 1fr;align-items:center;gap:6px">
+                        <div><span class="vk-avatar" style="background:#0284C7">MT</span>Michael Tan</div>
+                        <div>{badge_html('On Leave')}</div>
+                        <div>{progress_html(0, GRAY)}</div>
+                    </div>
+                </div>
+                <hr style="margin:12px 0;border-color:#E2E8F0">
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+                    <span style="font-size:13.5px;font-weight:700;color:#0F172A">Projects on this Date (2)</span>
+                    <span style="font-size:11.5px;color:#1473E6;font-weight:600">View All</span>
+                </div>
+                <div style="font-size:12px;line-height:2.1;color:#334155;margin-bottom:10px">
+                    <div style="display:flex;justify-content:space-between">
+                        <span><span style="color:#00875A">●</span> &nbsp;<b>Website Revamp</b></span>
+                        <span style="color:#64748B">4 members &nbsp; 50% avg allocation</span>
+                    </div>
+                    <div style="display:flex;justify-content:space-between">
+                        <span><span style="color:#9333EA">●</span> &nbsp;<b>IT Infrastructure Upgrade</b></span>
+                        <span style="color:#64748B">3 members &nbsp; 20% avg allocation</span>
+                    </div>
+                </div>
+                <hr style="margin:10px 0;border-color:#E2E8F0">
+                <div style="font-size:13.5px;font-weight:700;color:#0F172A;margin-bottom:8px">Quick Actions</div>
+                """
+            ),
+            unsafe_allow_html=True,
+        )
+
+        qa1, qa2, qa3, qa4 = st.columns(4)
+        with qa1:
+            if st.button("📅\nAdd Event", key="qa_add_ev", use_container_width=True):
+                st.session_state.cal_modal = "add_event"
+                st.rerun()
+        with qa2:
+            if st.button("👥\nView Team", key="qa_v_team", use_container_width=True):
+                st.session_state.page = "Resources"
+                st.rerun()
+        with qa3:
+            if st.button("🕒\nSet Leave", key="qa_set_lv", use_container_width=True):
+                st.session_state.cal_modal = "add_event"
+                st.rerun()
+        with qa4:
+            if st.button("⚙\nAvailability", key="qa_ed_av", use_container_width=True):
+                st.session_state.page = "Resources"
+                st.rerun()
+
+    if st.session_state.get("cal_modal") == "add_event":
+        add_event_modal()
+        
 # ===========================================================================
 # PAGE 7: REPORTS
 # ===========================================================================
