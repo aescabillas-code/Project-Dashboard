@@ -878,15 +878,15 @@ table.vk-table tbody tr:hover {{
 }}
 
 /* Compact density, readable at normal browser zoom */
-[data-testid="stVerticalBlock"] { gap: 0.55rem !important; }
-[data-testid="stHorizontalBlock"] { gap: 0.65rem !important; }
+[data-testid="stVerticalBlock"] {{ gap: 0.55rem !important; }}
+[data-testid="stHorizontalBlock"] {{ gap: 0.65rem !important; }}
 [data-testid="stDataFrame"] [role="gridcell"],
-[data-testid="stDataEditor"] [role="gridcell"] { padding-top: 2px !important; padding-bottom: 2px !important; }
+[data-testid="stDataEditor"] [role="gridcell"] {{ padding-top: 2px !important; padding-bottom: 2px !important; }}
 [data-testid="stDataFrame"] [role="columnheader"],
-[data-testid="stDataEditor"] [role="columnheader"] { padding-top: 4px !important; padding-bottom: 4px !important; }
-.stMarkdown p { margin-bottom: 0.35rem !important; }
-h1, h2, h3 { line-height: 1.2 !important; }
-.stButton > button, .stDownloadButton > button { min-height: 2.1rem !important; padding: 0.35rem 0.7rem !important; font-size: 14px !important; }
+[data-testid="stDataEditor"] [role="columnheader"] {{ padding-top: 4px !important; padding-bottom: 4px !important; }}
+.stMarkdown p {{ margin-bottom: 0.35rem !important; }}
+h1, h2, h3 {{ line-height: 1.2 !important; }}
+.stButton > button, .stDownloadButton > button {{ min-height: 2.1rem !important; padding: 0.35rem 0.7rem !important; font-size: 14px !important; }}
 /* Modal Dialog Width & Header Styling */
 div[data-testid="stDialog"] > div > div {{
     max-width: 1020px !important;
