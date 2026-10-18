@@ -96,6 +96,29 @@ def save_data_to_mongo(projects, tasks, resources, milestones, settings, saved_r
         except Exception as e:
             st.error(f"Failed to save data to MongoDB: {e}")
 
+def metric_card(label: str, value: object, note: str = "", icon: str = "📊", tone: str = "green") -> None:
+    tones = {
+        "green": ("#E6F6F0", GREEN),
+        "blue": ("#E8F2FF", BLUE),
+        "orange": ("#FFF4E5", ORANGE),
+        "red": ("#FEECEB", RED),
+        "purple": ("#F3E8FF", PURPLE),
+    }
+    bg, fg = tones.get(tone, tones["green"])
+    st.markdown(
+        f"""
+        <div class="vk-metric-card">
+            <div class="vk-metric-icon" style="background:{bg};color:{fg}">{icon}</div>
+            <div>
+                <div class="vk-metric-label">{html.escape(label)}</div>
+                <div class="vk-metric-value">{html.escape(str(value))}</div>
+                <div class="vk-metric-note">{html.escape(note)}</div>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
 # Initial Seeding / Temporary Mock Data (Disappears once real DB data is entered/saved)
 default_projects = [
     {
