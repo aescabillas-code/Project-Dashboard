@@ -17,7 +17,6 @@ import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 from pymongo import MongoClient
-import ssl
 
 DB_NAME = "Vektor"
 COLLECTION_NAME = "Reports"
@@ -27,11 +26,11 @@ def get_mongo_collection():
     try:
         mongo_uri = st.secrets["MONGO_URI"]
         
-        # Initialize MongoClient with explicit SSL/TLS context options to bypass handshake mismatch
+        # Use modern PyMongo v4+ TLS arguments
         client = MongoClient(
             mongo_uri, 
             serverSelectionTimeoutMS=5000,
-            ssl_cert_reqs=ssl.CERT_NONE  # Bypasses strict local cert validation errors on cloud containers
+            tlsAllowInvalidCertificates=True  # Bypasses local SSL certificate verification blockups
         )
         db = client[DB_NAME]
         return db[COLLECTION_NAME]
