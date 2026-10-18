@@ -4743,797 +4743,1398 @@ elif page == "Calendar":
         add_event_modal()
         
 # ===========================================================================
-# PAGE 7: REPORTS
+# PAGE 7: REPORTS (Exact Replica of All 7 Report Mockup Screens)
 # ===========================================================================
 elif page == "Reports":
-    render_top_header("Reports", "Gain insights into project progress, resource utilization, and team performance.", show_filters=False)
+    if "report_tab" not in st.session_state:
+        st.session_state.report_tab = "Overview"
 
-    with st.container(border=True):
-        f1, f2, f3, f4, f5 = st.columns([1.45, 1.05, 1.05, 0.95, 0.9])
-        with f1:
-            dates = st.date_input("Date Range", (date(2024, 4, 24), date(2024, 6, 30)), key="report_dates")
-        with f2:
-            pf = st.selectbox("Project", ["All Projects"] + projects_list, key="report_project")
-        with f3:
-            tf = st.selectbox("Team", ["All Teams"] + teams_list, key="report_team")
-        with f4:
-            fmt = st.selectbox("Export Format", ["Excel (.xlsx)", "CSV (.csv)", "JSON (.json)"], key="report_fmt")
+    active_rtab = st.session_state.report_tab
 
-        rp = P.copy()
-        rt = T.copy()
-        rr = R.copy()
-        rm = M.copy()
-        if pf != "All Projects":
-            rp = rp[rp.name == pf]
-            rt = rt[rt.project == pf]
-            rm = rm[rm.project == pf]
-        if tf != "All Teams":
-            rp = rp[rp.team == tf]
-            rt = rt[rt.team == tf]
-            rr = rr[rr.team == tf]
-            rm = rm[rm.team == tf]
-        if isinstance(dates, tuple) and len(dates) == 2:
-            ds, de = dates[0].isoformat(), dates[1].isoformat()
-            rt = rt[(rt.start_date.fillna("") <= de) & (rt.due_date.fillna("") >= ds)]
-            rm = rm[(rm.due_date.fillna("") >= "2024-01-01") & (rm.due_date.fillna("") <= de)]
+    sub_headers = {
+        "Overview": ("", "Gain insights into project progress, resource utilization, and team performance."),
+        "Projects": ("Project Report", "Track project progress, milestones, task status, and overall project health."),
+        "Resources": ("Resource Report", "View team availability, assignments, and workload across projects."),
+        "Tasks": ("Tasks Report", "Track task status, progress, and workload across projects and teams."),
+        "Milestones": ("Milestones Report", "Track milestone status, progress, and upcoming key dates across projects."),
+        "Workload": ("Workload Report", "View team workload, task distribution, and capacity across projects."),
+        "Custom": ("Custom Report", "Create and customize reports to analyze project data based on your needs."),
+    }
+    sub_h, sub_desc = sub_headers.get(active_rtab, sub_headers["Overview"])
 
-        with f5:
-            st.write("")
-            if fmt.startswith("Excel"):
-                st.download_button(
-                    "⬇ Export Report",
-                    excel_bytes({"Projects": rp, "Tasks": rt, "Resources": rr, "Milestones": rm}),
-                    file_name="vektor_report.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    type="primary",
-                    use_container_width=True,
+    # --- TOP HEADER & FILTER BAR ---
+    rh_l, rh_f1, rh_f2, rh_f3, rh_exp = st.columns([2.2, 1.05, 0.85, 0.85, 0.78])
+    with rh_l:
+        sub_h_html = f"<div style='font-size:19px;font-weight:800;color:{TEXT_COLOR};margin-top:2px'>{html.escape(sub_h)}</div>" if sub_h else ""
+        st.markdown(
+            clean_html(
+                f"""
+                <div style='font-size:28px;font-weight:800;color:{TEXT_COLOR};letter-spacing:-0.03em;line-height:1.1'>Reports</div>
+                {sub_h_html}
+                <div style='font-size:13px;color:#64748B;margin-top:2px'>{html.escape(sub_desc)}</div>
+                """
+            ),
+            unsafe_allow_html=True,
+        )
+    with rh_f1:
+        st.markdown("<div style='font-size:11px;font-weight:600;color:#475569;margin-bottom:2px'>Date Range</div>", unsafe_allow_html=True)
+        st.date_input("Date Range", (date(2024, 4, 24), date(2024, 6, 30)), key="rep_top_dates", label_visibility="collapsed")
+    with rh_f2:
+        st.markdown("<div style='font-size:11px;font-weight:600;color:#475569;margin-bottom:2px'>Project</div>", unsafe_allow_html=True)
+        rep_proj_f = st.selectbox("Project", ["All Projects"] + projects_list, key="rep_top_proj", label_visibility="collapsed")
+    with rh_f3:
+        st.markdown("<div style='font-size:11px;font-weight:600;color:#475569;margin-bottom:2px'>Team</div>", unsafe_allow_html=True)
+        rep_team_f = st.selectbox("Team", ["All Teams"] + teams_list, key="rep_top_team", label_visibility="collapsed")
+    with rh_exp:
+        st.markdown("<div style='font-size:11px;margin-bottom:2px'>&nbsp;</div>", unsafe_allow_html=True)
+        st.download_button(
+            "⬇ Export Report ▾",
+            excel_bytes({"Projects": P, "Tasks": T, "Resources": R, "Milestones": M}),
+            file_name=f"vektor_{active_rtab.lower()}_report.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            type="primary",
+            use_container_width=True,
+            key="rep_top_export_btn",
+        )
+
+    st.write("")
+    # --- 7-TAB TILE NAVIGATION BAR (No Radio Buttons) ---
+    rtab_names = ["Overview", "Projects", "Resources", "Tasks", "Milestones", "Workload", "Custom"]
+    nav_cols = st.columns([1, 1, 1, 1, 1, 1, 1, 2.2])
+    for idx, r_name in enumerate(rtab_names):
+        with nav_cols[idx]:
+            if st.button(
+                r_name,
+                key=f"rep_nav_btn_{r_name}",
+                type="primary" if active_rtab == r_name else "secondary",
+                use_container_width=True,
+            ):
+                st.session_state.report_tab = r_name
+                st.rerun()
+
+    st.write("")
+
+    # Helper for Donut + Right Legend inside Report Cards
+    def render_report_donut_card(
+        center_big: str,
+        center_sub: str,
+        labels: list[str],
+        values: list[int],
+        colors: list[str],
+        right_rows: list[tuple[str, str, str]],
+        height: int = 210,
+    ) -> None:
+        d_c, l_c = st.columns([1.05, 1.15])
+        with d_c:
+            fig = go.Figure(
+                go.Pie(
+                    labels=labels,
+                    values=values,
+                    hole=0.66,
+                    sort=False,
+                    direction="clockwise",
+                    marker=dict(colors=colors, line=dict(color="#FFFFFF", width=2)),
+                    textinfo="none",
                 )
-            elif fmt.startswith("CSV"):
-                st.download_button(
-                    "⬇ Export Report",
-                    rp.to_csv(index=False).encode("utf-8-sig"),
-                    file_name="vektor_report.csv",
-                    mime="text/csv",
-                    type="primary",
-                    use_container_width=True,
-                )
-            else:
-                payload = {
-                    k: v.where(pd.notna(v), None).to_dict("records")
-                    for k, v in {"Projects": rp, "Tasks": rt, "Resources": rr, "Milestones": rm}.items()
-                }
-                st.download_button(
-                    "⬇ Export Report",
-                    json.dumps(payload, default=str, indent=2).encode(),
-                    file_name="vektor_report.json",
-                    mime="application/json",
-                    type="primary",
-                    use_container_width=True,
-                )
+            )
+            fig.update_layout(
+                height=height,
+                margin=dict(l=4, r=4, t=4, b=4),
+                showlegend=False,
+                paper_bgcolor="rgba(0,0,0,0)",
+                annotations=[
+                    dict(
+                        text=f"<b style='font-size:20px;color:#0F172A'>{center_big}</b><br><span style='font-size:11px;color:#64748B'>{center_sub}</span>",
+                        x=0.5,
+                        y=0.5,
+                        showarrow=False,
+                    )
+                ],
+            )
+            st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+        with l_c:
+            rows_mk = "".join(
+                f"<div style='display:flex;justify-content:space-between;align-items:center;padding:5px 0;font-size:12.5px'>"
+                f"<span><span style='color:{dot};font-size:14px'>●</span> &nbsp;{html.escape(lbl)}</span>"
+                f"<b style='color:#0F172A'>{html.escape(val)}</b></div>"
+                for dot, lbl, val in right_rows
+            )
+            st.markdown(clean_html(f"<div style='padding-top:34px'>{rows_mk}</div>"), unsafe_allow_html=True)
 
-    tabs = st.tabs(["Overview", "Projects", "Resources", "Tasks", "Milestones", "Workload", "Custom"])
+    # Helper for Pagination Footer
+    def render_pagination_footer(left_text: str, pages: list[int], active_p: int = 1) -> None:
+        pg_btns = "".join(
+            f"<span style='border-radius:6px;padding:4px 10px;background:{'#00875A' if p == active_p else 'white'};"
+            f"color:{'white' if p == active_p else '#0F172A'};border:{'none' if p == active_p else '1px solid #CBD5E1'};"
+            f"font-weight:700;font-size:12px'>{p}</span>"
+            for p in pages
+        )
+        st.markdown(
+            clean_html(
+                f"""
+                <div style="display:flex;align-items:center;justify-content:space-between;padding-top:10px;font-size:12px;color:#475569">
+                    <div>{html.escape(left_text)}</div>
+                    <div style="display:flex;align-items:center;gap:5px">
+                        <span style="border:1px solid #CBD5E1;border-radius:6px;padding:4px 9px;background:white">‹</span>
+                        {pg_btns}
+                        <span style="border:1px solid #CBD5E1;border-radius:6px;padding:4px 9px;background:white">›</span>
+                    </div>
+                </div>
+                """
+            ),
+            unsafe_allow_html=True,
+        )
 
-    with tabs[0]:
-        k1, k2, k3, k4 = st.columns(4)
-        with k1:
-            metric_card("Total Projects", len(rp), f"{int((rp.status == 'On Track').sum())} on track", "📁", "green")
-        with k2:
-            metric_card("Total Tasks", len(rt), f"{int((rt.status == 'Completed').sum())} completed", "☑️", "blue")
-        with k3:
-            metric_card("Milestones", len(rm), f"{int((rm.status == 'Completed').sum())} achieved", "⚑", "orange")
-        with k4:
-            metric_card("Team Members", len(rr), f"{int((rr.status == 'Available').sum())} available", "👥", "purple")
+    # =========================================================================
+    # REPORT TAB 1: OVERVIEW (Exact Match to Images 30 & 31)
+    # =========================================================================
+    if active_rtab == "Overview":
+        ov_k1, ov_k2, ov_k3, ov_k4 = st.columns(4)
+        with ov_k1:
+            st.markdown(
+                clean_html(
+                    """
+                    <div class="vk-kpi-card" style="justify-content:space-between;padding:14px 18px;min-height:104px">
+                        <div style="display:flex;align-items:center;gap:14px">
+                            <div style="width:48px;height:48px;border-radius:50%;background:#DBEAFE;color:#1473E6;display:flex;align-items:center;justify-content:center;font-size:22px">💼</div>
+                            <div>
+                                <div style="font-size:12px;font-weight:700;color:#1E293B">Total Projects</div>
+                                <div style="font-size:28px;font-weight:800;color:#0F172A;line-height:1.15">12</div>
+                            </div>
+                        </div>
+                        <div style="font-size:11.5px;line-height:1.85;min-width:105px">
+                            <div style="display:flex;justify-content:space-between"><span><span style="color:#00875A">●</span> On Track</span><b>8</b></div>
+                            <div style="display:flex;justify-content:space-between"><span><span style="color:#F28C00">●</span> At Risk</span><b>3</b></div>
+                            <div style="display:flex;justify-content:space-between"><span><span style="color:#EF4444">●</span> Delayed</span><b>1</b></div>
+                        </div>
+                    </div>
+                    """
+                ),
+                unsafe_allow_html=True,
+            )
+        with ov_k2:
+            st.markdown(
+                clean_html(
+                    """
+                    <div class="vk-kpi-card" style="justify-content:space-between;padding:14px 18px;min-height:104px">
+                        <div style="display:flex;align-items:center;gap:14px">
+                            <div style="width:48px;height:48px;border-radius:50%;background:#D1FAE5;color:#00875A;display:flex;align-items:center;justify-content:center;font-size:22px">📋</div>
+                            <div>
+                                <div style="font-size:12px;font-weight:700;color:#1E293B">Total Tasks</div>
+                                <div style="font-size:28px;font-weight:800;color:#0F172A;line-height:1.15">180</div>
+                            </div>
+                        </div>
+                        <div style="font-size:11.5px;line-height:1.85;min-width:115px">
+                            <div style="display:flex;justify-content:space-between"><span><span style="color:#00875A">●</span> Completed</span><b>120</b></div>
+                            <div style="display:flex;justify-content:space-between"><span><span style="color:#1473E6">●</span> In Progress</span><b>40</b></div>
+                            <div style="display:flex;justify-content:space-between"><span><span style="color:#64748B">●</span> Not Started</span><b>20</b></div>
+                        </div>
+                    </div>
+                    """
+                ),
+                unsafe_allow_html=True,
+            )
+        with ov_k3:
+            st.markdown(
+                clean_html(
+                    """
+                    <div class="vk-kpi-card" style="justify-content:space-between;padding:14px 18px;min-height:104px">
+                        <div style="display:flex;align-items:center;gap:14px">
+                            <div style="width:48px;height:48px;border-radius:50%;background:#EDE9FE;color:#7C3AED;display:flex;align-items:center;justify-content:center;font-size:22px">👥</div>
+                            <div>
+                                <div style="font-size:12px;font-weight:700;color:#1E293B">Team Members</div>
+                                <div style="font-size:28px;font-weight:800;color:#0F172A;line-height:1.15">24</div>
+                            </div>
+                        </div>
+                        <div style="font-size:11.5px;line-height:1.85;min-width:105px">
+                            <div style="display:flex;justify-content:space-between"><span><span style="color:#00875A">●</span> Available</span><b>18</b></div>
+                            <div style="display:flex;justify-content:space-between"><span><span style="color:#F28C00">●</span> Partial</span><b>4</b></div>
+                            <div style="display:flex;justify-content:space-between"><span><span style="color:#EF4444">●</span> On Leave</span><b>2</b></div>
+                        </div>
+                    </div>
+                    """
+                ),
+                unsafe_allow_html=True,
+            )
+        with ov_k4:
+            st.markdown(
+                clean_html(
+                    """
+                    <div class="vk-kpi-card" style="justify-content:space-between;padding:14px 18px;min-height:104px">
+                        <div style="display:flex;align-items:center;gap:14px">
+                            <div style="width:58px;height:58px;border-radius:50%;border:6px solid #00875A;border-left-color:#3B82F6;display:flex;align-items:center;justify-content:center;font-size:15px;font-weight:800;color:#0F172A">68%</div>
+                            <div>
+                                <div style="font-size:12px;font-weight:700;color:#1E293B;margin-bottom:4px">Overall Progress</div>
+                                <div style="font-size:11.5px;line-height:1.7">
+                                    <div><span style="color:#00875A">●</span> <b>68%</b> Completed</div>
+                                    <div><span style="color:#1473E6">●</span> <b>22%</b> In Progress</div>
+                                    <div><span style="color:#64748B">●</span> <b>10%</b> Not Started</div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    """
+                ),
+                unsafe_allow_html=True,
+            )
 
         st.write("")
-        c1, c2, c3 = st.columns(3)
-        with c1, st.container(border=True):
+        # Row 1: Project Status | Task Status | Team Availability (Monthly Stacked)
+        r1_c1, r1_c2, r1_c3 = st.columns(3)
+        with r1_c1, st.container(border=True):
             section_title("Project Status")
-            chart_status_donut(rp, "status", "Projects")
-        with c2, st.container(border=True):
+            render_report_donut_card(
+                "12", "Projects",
+                ["On Track", "At Risk", "Delayed"], [8, 3, 1], [GREEN, ORANGE, RED],
+                [(GREEN, "On Track", "8 (67%)"), (ORANGE, "At Risk", "3 (25%)"), (RED, "Delayed", "1 (8%)")],
+            )
+        with r1_c2, st.container(border=True):
             section_title("Task Status")
-            chart_status_donut(rt, "status", "Tasks")
-        with c3, st.container(border=True):
-            section_title("Resource Availability")
-            chart_status_donut(rr, "status", "Members")
-
-        c1, c2 = st.columns(2)
-        with c1, st.container(border=True):
-            section_title("Project Progress")
-            progress_bar_chart(rp.sort_values("progress"), "name", "progress")
-        with c2, st.container(border=True):
-            section_title("Task Completion Trend")
-            trend = pd.DataFrame(
+            render_report_donut_card(
+                "180", "Tasks",
+                ["Completed", "In Progress", "Not Started"], [120, 40, 20], [GREEN, BLUE, "#94A3B8"],
+                [(GREEN, "Completed", "120 (67%)"), (BLUE, "In Progress", "40 (22%)"), ("#94A3B8", "Not Started", "20 (11%)")],
+            )
+        with r1_c3, st.container(border=True):
+            section_title("Team Availability")
+            ta_df = pd.DataFrame(
                 {
                     "Month": ["Apr", "May", "Jun", "Jul", "Aug", "Sep"],
-                    "Completed": [8, 18, 27, 35, 40, 48],
-                    "In Progress": [3, 12, 16, 19, 21, 24],
+                    "Available": [18, 15, 18, 17, 16, 15],
+                    "Partial": [4, 4, 4, 4, 5, 5],
+                    "On Leave": [2, 3, 2, 3, 3, 4],
                 }
             )
-            fig = px.line(
-                trend,
+            fig_ta = px.bar(
+                ta_df,
                 x="Month",
-                y=["Completed", "In Progress"],
-                markers=True,
-                color_discrete_map={"Completed": GREEN, "In Progress": BLUE},
+                y=["Available", "Partial", "On Leave"],
+                color_discrete_map={"Available": GREEN, "Partial": ORANGE, "On Leave": RED},
             )
-            fig.update_layout(height=250, margin=dict(l=0, r=0, t=6, b=6), paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)")
-            st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+            fig_ta.update_layout(
+                height=210,
+                margin=dict(l=0, r=0, t=6, b=0),
+                xaxis_title=None,
+                yaxis=dict(title=None, range=[0, 26]),
+                legend_title_text="",
+                legend=dict(orientation="v", yanchor="middle", y=0.5, xanchor="left", x=1.02, font=dict(size=11)),
+                paper_bgcolor="rgba(0,0,0,0)",
+                plot_bgcolor="rgba(0,0,0,0)",
+                bargap=0.42,
+            )
+            st.plotly_chart(fig_ta, use_container_width=True, config={"displayModeBar": False})
 
-    with tabs[1]:
-        k1, k2, k3, k4 = st.columns(4)
-        with k1:
-            metric_card("Total Projects", len(rp), "All portfolio projects", "📁", "green")
-        with k2:
-            metric_card("On Track", int((rp.status == "On Track").sum()), "Healthy delivery", "✅", "green")
-        with k3:
-            metric_card("In Progress", int(((rp.progress > 0) & (rp.progress < 100)).sum()), "Active execution", "▶️", "blue")
-        with k4:
-            metric_card("At Risk / Delayed", int(rp.status.isin(["At Risk", "Delayed"]).sum()), "Needs mitigation", "⚠️", "red")
-
-        st.write("")
-        c1, c2 = st.columns(2)
-        with c1, st.container(border=True):
-            section_title("Project Status")
-            chart_status_donut(rp, "status", "Projects")
-        with c2, st.container(border=True):
+        # Row 2: Project Progress | Task Completion Trend | Team Workload
+        r2_c1, r2_c2, r2_c3 = st.columns(3)
+        with r2_c1, st.container(border=True):
             section_title("Project Progress")
-            progress_bar_chart(rp.sort_values("progress"), "name", "progress")
+            pp_items = [
+                ("Website Revamp", 90),
+                ("Marketing Campaign", 60),
+                ("IT Infrastructure Upgrade", 40),
+                ("Sustainability Initiative", 25),
+                ("Internal Operations", 75),
+            ]
+            pp_html = "".join(
+                f"<div style='display:grid;grid-template-columns:145px 1fr 38px;align-items:center;gap:10px;margin-bottom:13px;font-size:12.5px'>"
+                f"<span style='color:#1E293B;font-weight:500;text-align:right'>{p_nm}</span>"
+                f"<div style='height:13px;background:#E2E8F0;border-radius:4px;overflow:hidden'>"
+                f"<div style='width:{p_v}%;height:100%;background:#00875A;border-radius:4px'></div></div>"
+                f"<b style='color:#0F172A;text-align:right'>{p_v}%</b></div>"
+                for p_nm, p_v in pp_items
+            )
+            st.markdown(clean_html(f"<div style='padding-top:8px'>{pp_html}</div>"), unsafe_allow_html=True)
 
-        with st.container(border=True):
-            section_title("Project Report Summary", f"{len(rp)} Projects")
-            render_rich_table(
-                rp,
-                [
-                    ("name", "Project Name", "bold"),
-                    ("owner", "Owner", "avatar"),
-                    ("team", "Team", "text"),
-                    ("status", "Status", "badge"),
-                    ("start_date", "Start Date", "date"),
-                    ("end_date", "End Date", "date"),
-                    ("progress", "Progress", "progress"),
-                    ("health", "Health", "badge"),
-                ],
+        with r2_c2, st.container(border=True):
+            section_title("Task Completion Trend")
+            tct_df = pd.DataFrame(
+                {
+                    "Month": ["Apr", "May", "Jun", "Jul", "Aug", "Sep"],
+                    "Completed": [25, 55, 100, 125, 155, 180],
+                    "In Progress": [12, 30, 55, 72, 88, 102],
+                    "Not Started": [8, 18, 28, 35, 42, 48],
+                }
+            )
+            fig_tct = px.line(
+                tct_df,
+                x="Month",
+                y=["Completed", "In Progress", "Not Started"],
+                markers=True,
+                color_discrete_map={"Completed": GREEN, "In Progress": BLUE, "Not Started": "#94A3B8"},
+            )
+            fig_tct.update_layout(
+                height=210,
+                margin=dict(l=0, r=0, t=4, b=0),
+                xaxis_title=None,
+                yaxis=dict(title=None, range=[0, 210]),
+                legend_title_text="",
+                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5, font=dict(size=11)),
+                paper_bgcolor="rgba(0,0,0,0)",
+                plot_bgcolor="rgba(0,0,0,0)",
+            )
+            st.plotly_chart(fig_tct, use_container_width=True, config={"displayModeBar": False})
+
+        with r2_c3, st.container(border=True):
+            section_title("Team Workload")
+            tw_bars = [
+                ("JM", "#0284C7", "James Miller", 90, RED),
+                ("SK", "#0284C7", "Sarah Kim", 75, ORANGE),
+                ("AL", "#0F172A", "Alice Morgan", 60, BLUE),
+                ("RJ", "#0F172A", "Ryan Cruz", 50, BLUE),
+                ("MT", "#0284C7", "Michael Tan", 30, GREEN),
+            ]
+            tw_mk = "".join(
+                f"<div style='display:grid;grid-template-columns:135px 1fr 38px;align-items:center;gap:10px;margin-bottom:11px;font-size:12.5px'>"
+                f"<div style='display:flex;align-items:center'><span class='vk-avatar' style='background:{abg}'>{ini}</span><span style='font-weight:500'>{nm}</span></div>"
+                f"<div style='height:12px;background:#E2E8F0;border-radius:4px;overflow:hidden'><div style='width:{pct}%;height:100%;background:{bcol};border-radius:4px'></div></div>"
+                f"<b style='text-align:right;color:#0F172A'>{pct}%</b></div>"
+                for ini, abg, nm, pct, bcol in tw_bars
+            )
+            st.markdown(clean_html(f"<div style='padding-top:4px'>{tw_mk}</div>"), unsafe_allow_html=True)
+
+        # Row 3: Upcoming Milestones | Top Projects by Progress | Project Health
+        r3_c1, r3_c2, r3_c3 = st.columns([1.2, 1, 1])
+        with r3_c1, st.container(border=True):
+            section_title("Upcoming Milestones", "View All")
+            um_rows = [
+                ("UI/UX Design Complete", "Website Revamp", "May 10, 2024", "On Track"),
+                ("Campaign Launch", "Marketing Campaign", "May 25, 2024", "At Risk"),
+                ("Infrastructure Setup", "IT Infrastructure Upgrade", "Jun 15, 2024", "On Track"),
+                ("Sustainability Plan", "Sustainability Initiative", "Jun 30, 2024", "Delayed"),
+                ("Operations Review", "Internal Operations", "Jul 10, 2024", "On Track"),
+            ]
+            um_html = "".join(
+                f"<tr><td><b>{m_n}</b></td><td>{p_n}</td><td>{d_s}</td><td>{badge_html(st_s)}</td></tr>"
+                for m_n, p_n, d_s, st_s in um_rows
+            )
+            st.markdown(
+                clean_html(
+                    f'<div class="vk-table-wrap"><table class="vk-table"><thead><tr><th>Milestone</th><th>Project</th><th>Due Date</th><th>Status</th></tr></thead><tbody>{um_html}</tbody></table></div>'
+                ),
+                unsafe_allow_html=True,
             )
 
-    with tabs[2]:
-        k1, k2, k3, k4 = st.columns(4)
-        with k1:
-            metric_card("Total Resources", len(rr), "Workspace members", "👥", "blue")
-        with k2:
-            metric_card("Available", int((rr.status == "Available").sum()), "Ready for assignment", "🟢", "green")
-        with k3:
-            metric_card("Partial", int((rr.status == "Partial").sum()), "Part-time allocation", "🟠", "orange")
-        with k4:
-            metric_card("On Leave", int((rr.status == "On Leave").sum()), "Out of office", "🔴", "red")
-
-        st.write("")
-        c1, c2 = st.columns(2)
-        with c1, st.container(border=True):
-            section_title("Resource Status")
-            chart_status_donut(rr, "status", "Members")
-        with c2, st.container(border=True):
-            section_title("Team Distribution")
-            td = rr.team.value_counts().rename_axis("Team").reset_index(name="Members")
-            fig = px.bar(td, x="Team", y="Members", text="Members", color="Team", color_discrete_sequence=[GREEN, BLUE, ORANGE, PURPLE, GRAY])
-            fig.update_traces(textposition="outside", cliponaxis=False)
-            fig.update_layout(height=240, showlegend=False, margin=dict(l=0, r=0, t=12, b=0), paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)")
-            st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
-
-        with st.container(border=True):
-            section_title("Resource Directory & Capacity", f"{len(rr)} Members")
-            rr_view = rr.copy()
-            rr_view["tasks"] = rr_view.name.map(T.groupby("assignee").size().to_dict()).fillna(0).astype(int)
-            render_rich_table(
-                rr_view,
-                [
-                    ("name", "Resource Name", "avatar"),
-                    ("role", "Role", "badge"),
-                    ("team", "Team", "text"),
-                    ("status", "Status", "badge"),
-                    ("capacity", "Capacity", "progress"),
-                    ("tasks", "Assigned Tasks", "bold"),
-                ],
+        with r3_c2, st.container(border=True):
+            section_title("Top Projects by Progress", "View All")
+            tp_rows = [
+                ("Website Revamp", 90),
+                ("Marketing Campaign", 60),
+                ("IT Infrastructure Upgrade", 40),
+                ("Sustainability Initiative", 25),
+                ("Internal Operations", 75),
+            ]
+            tp_html = "".join(
+                f"<tr><td><b>{p_n}</b></td><td>{progress_html(pct, GREEN)}</td></tr>"
+                for p_n, pct in tp_rows
+            )
+            st.markdown(
+                clean_html(
+                    f'<div class="vk-table-wrap"><table class="vk-table"><thead><tr><th>Project</th><th>Progress</th></tr></thead><tbody>{tp_html}</tbody></table></div>'
+                ),
+                unsafe_allow_html=True,
             )
 
-    with tabs[3]:
-        k1, k2, k3, k4 = st.columns(4)
-        with k1:
-            metric_card("Total Tasks", len(rt), "In date range", "☑️", "blue")
-        with k2:
-            metric_card("Completed", int((rt.status == "Completed").sum()), "100% done", "✅", "green")
-        with k3:
-            metric_card("In Progress", int((rt.status == "In Progress").sum()), "Active work", "▶️", "blue")
-        with k4:
-            metric_card("Not Started", int((rt.status == "Not Started").sum()), "Upcoming", "⏸️", "orange")
-
-        st.write("")
-        c1, c2, c3 = st.columns(3)
-        with c1, st.container(border=True):
-            section_title("Task Status")
-            chart_status_donut(rt, "status", "Tasks")
-        with c2, st.container(border=True):
-            section_title("Tasks by Project")
-            z = rt.groupby("project").size().rename("Tasks").reset_index()
-            fig = px.bar(z, x="Tasks", y="project", orientation="h", text="Tasks", color_discrete_sequence=[BLUE])
-            fig.update_traces(textposition="outside", cliponaxis=False)
-            fig.update_layout(height=240, margin=dict(l=0, r=24, t=6, b=6), xaxis_title=None, yaxis_title=None, paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)")
-            st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
-        with c3, st.container(border=True):
-            section_title("Tasks by Priority")
-            chart_status_donut(rt, "priority", "Priority")
-
-        with st.container(border=True):
-            section_title("Tasks Report Table", f"{len(rt)} Tasks")
-            render_rich_table(
-                rt,
-                [
-                    ("name", "Task Name", "bold"),
-                    ("project", "Project", "text"),
-                    ("team", "Team", "text"),
-                    ("status", "Status", "badge"),
-                    ("priority", "Priority", "badge"),
-                    ("start_date", "Start Date", "date"),
-                    ("due_date", "Due Date", "date"),
-                    ("assignee", "Assignee", "avatar"),
-                    ("progress", "Progress", "progress"),
-                    ("dependency", "Dependency", "text"),
-                ],
+        with r3_c3, st.container(border=True):
+            section_title("Project Health", "View All")
+            ph_rows = [
+                ("Website Revamp", 90, GREEN, "On Track"),
+                ("Marketing Campaign", 60, BLUE, "At Risk"),
+                ("IT Infrastructure Upgrade", 40, BLUE, "At Risk"),
+                ("Sustainability Initiative", 25, RED, "Delayed"),
+                ("Internal Operations", 75, GREEN, "On Track"),
+            ]
+            ph_html = "".join(
+                f"<tr><td><b>{p_n}</b></td><td>{progress_html(pct, bcol)}</td><td>{badge_html(h_s)}</td></tr>"
+                for p_n, pct, bcol, h_s in ph_rows
+            )
+            st.markdown(
+                clean_html(
+                    f'<div class="vk-table-wrap"><table class="vk-table"><thead><tr><th>Project</th><th>Progress</th><th>Health</th></tr></thead><tbody>{ph_html}</tbody></table></div>'
+                ),
+                unsafe_allow_html=True,
             )
 
-    with tabs[4]:
-        k1, k2, k3, k4 = st.columns(4)
-        with k1:
-            metric_card("Total Milestones", len(rm), "Tracked checkpoints", "⚑", "blue")
-        with k2:
-            metric_card("Completed", int((rm.status == "Completed").sum()), "Delivered on time", "✅", "green")
-        with k3:
-            metric_card("In Progress", int((rm.status == "In Progress").sum()), "Active milestones", "▶️", "blue")
-        with k4:
-            metric_card("Overdue", int((rm.status == "Overdue").sum()), "Past due date", "⚠️", "red")
+    # =========================================================================
+    # REPORT TAB 2: PROJECTS (Exact Match to Image 28)
+    # =========================================================================
+    elif active_rtab == "Projects":
+        pk1, pk2, pk3, pk4 = st.columns(4)
+        with pk1:
+            st.markdown(
+                clean_html(
+                    """
+                    <div class="vk-kpi-card" style="justify-content:space-between;padding:14px 18px;min-height:98px">
+                        <div style="display:flex;align-items:center;gap:14px">
+                            <div style="width:48px;height:48px;border-radius:50%;background:#DBEAFE;color:#1473E6;display:flex;align-items:center;justify-content:center;font-size:22px">📁</div>
+                            <div>
+                                <div style="font-size:12px;font-weight:700;color:#1E293B">Total Projects</div>
+                                <div style="font-size:28px;font-weight:800;color:#0F172A;line-height:1.15">12</div>
+                            </div>
+                        </div>
+                        <div style="font-size:11.5px;line-height:1.85;min-width:105px">
+                            <div style="display:flex;justify-content:space-between"><span><span style="color:#00875A">●</span> On Track</span><b>8</b></div>
+                            <div style="display:flex;justify-content:space-between"><span><span style="color:#F28C00">●</span> At Risk</span><b>3</b></div>
+                            <div style="display:flex;justify-content:space-between"><span><span style="color:#EF4444">●</span> Delayed</span><b>1</b></div>
+                        </div>
+                    </div>
+                    """
+                ),
+                unsafe_allow_html=True,
+            )
+        with pk2:
+            kpi_card_mockup("Completed Projects", "5", sub_text="42%", icon_html="✓", icon_bg="#D1FAE5", icon_fg="#00875A")
+        with pk3:
+            kpi_card_mockup("In Progress Projects", "5", sub_text="42%", icon_html="▷", icon_bg="#DBEAFE", icon_fg="#1473E6")
+        with pk4:
+            kpi_card_mockup("Not Started Projects", "2", sub_text="17%", icon_html="❚❚", icon_bg="#E2E8F0", icon_fg="#475569")
 
         st.write("")
-        c1, c2 = st.columns(2)
-        with c1, st.container(border=True):
+        pr1_1, pr1_2, pr1_3 = st.columns(3)
+        with pr1_1, st.container(border=True):
+            section_title("Project Status")
+            render_report_donut_card(
+                "12", "Projects",
+                ["On Track", "At Risk", "Delayed"], [8, 3, 1], [GREEN, ORANGE, RED],
+                [(GREEN, "On Track", "8 (67%)"), (ORANGE, "At Risk", "3 (25%)"), (RED, "Delayed", "1 (8%)")],
+            )
+        with pr1_2, st.container(border=True):
+            section_title("Project Progress")
+            pp_items = [
+                ("Website Revamp", 90),
+                ("Marketing Campaign", 60),
+                ("IT Infrastructure Upgrade", 40),
+                ("Sustainability Initiative", 25),
+                ("Internal Operations", 75),
+            ]
+            pp_html = "".join(
+                f"<div style='display:grid;grid-template-columns:145px 1fr 38px;align-items:center;gap:10px;margin-bottom:13px;font-size:12.5px'>"
+                f"<span style='color:#1E293B;font-weight:500;text-align:right'>{p_nm}</span>"
+                f"<div style='height:13px;background:#E2E8F0;border-radius:4px;overflow:hidden'>"
+                f"<div style='width:{p_v}%;height:100%;background:#00875A;border-radius:4px'></div></div>"
+                f"<b style='color:#0F172A;text-align:right'>{p_v}%</b></div>"
+                for p_nm, p_v in pp_items
+            )
+            st.markdown(clean_html(f"<div style='padding-top:8px'>{pp_html}</div>"), unsafe_allow_html=True)
+        with pr1_3, st.container(border=True):
+            section_title("Projects by Status (Trend)")
+            pst_df = pd.DataFrame(
+                {
+                    "Month": ["Apr", "May", "Jun", "Jul", "Aug", "Sep"],
+                    "On Track": [5, 6, 7, 7.5, 6.5, 5.5],
+                    "At Risk": [2, 2, 2, 2.5, 2.5, 2.5],
+                    "Delayed": [1, 2, 2, 2, 2, 2],
+                }
+            )
+            fig_pst = px.bar(
+                pst_df,
+                x="Month",
+                y=["On Track", "At Risk", "Delayed"],
+                color_discrete_map={"On Track": GREEN, "At Risk": ORANGE, "Delayed": RED},
+            )
+            fig_pst.update_layout(
+                height=210,
+                margin=dict(l=0, r=0, t=6, b=0),
+                xaxis_title=None,
+                yaxis=dict(title=None, range=[0, 13]),
+                legend_title_text="",
+                legend=dict(orientation="v", yanchor="middle", y=0.5, xanchor="left", x=1.02, font=dict(size=11)),
+                paper_bgcolor="rgba(0,0,0,0)",
+                plot_bgcolor="rgba(0,0,0,0)",
+                bargap=0.45,
+            )
+            st.plotly_chart(fig_pst, use_container_width=True, config={"displayModeBar": False})
+
+        pr2_1, pr2_2, pr2_3 = st.columns(3)
+        with pr2_1, st.container(border=True):
+            section_title("Project Health")
+            render_report_donut_card(
+                "12", "Projects",
+                ["Healthy", "At Risk", "Critical"], [8, 3, 1], [GREEN, ORANGE, RED],
+                [(GREEN, "Healthy", "8 (67%)"), (ORANGE, "At Risk", "3 (25%)"), (RED, "Critical", "1 (8%)")],
+            )
+        with pr2_2, st.container(border=True):
             section_title("Milestone Status")
-            chart_status_donut(rm, "status", "Milestones")
-        with c2, st.container(border=True):
-            section_title("Milestones by Project")
-            z = rm.groupby("project").size().rename("Milestones").reset_index()
-            fig = px.bar(z, x="project", y="Milestones", text="Milestones", color="project", color_discrete_sequence=[GREEN, BLUE, ORANGE, RED, PURPLE])
-            fig.update_traces(textposition="outside", cliponaxis=False)
-            fig.update_layout(height=240, showlegend=False, margin=dict(l=0, r=0, t=14, b=6), xaxis_title=None, yaxis_title=None, paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)")
-            st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+            render_report_donut_card(
+                "25", "Milestones",
+                ["Completed", "In Progress", "Not Started"], [15, 7, 3], [GREEN, BLUE, "#94A3B8"],
+                [(GREEN, "Completed", "15 (60%)"), (BLUE, "In Progress", "7 (28%)"), ("#94A3B8", "Not Started", "3 (12%)")],
+            )
+        with pr2_3, st.container(border=True):
+            section_title("Top Projects by Progress")
+            tpp_items = [
+                ("Website Revamp", 90),
+                ("Internal Operations", 75),
+                ("Marketing Campaign", 60),
+                ("IT Infrastructure Upgrade", 40),
+                ("Sustainability Initiative", 25),
+            ]
+            tpp_html = "".join(
+                f"<div style='display:grid;grid-template-columns:145px 1fr 38px;align-items:center;gap:10px;margin-bottom:13px;font-size:12.5px'>"
+                f"<span style='color:#1E293B;font-weight:500'>{p_nm}</span>"
+                f"<div style='height:13px;background:#E2E8F0;border-radius:4px;overflow:hidden'>"
+                f"<div style='width:{p_v}%;height:100%;background:#00875A;border-radius:4px'></div></div>"
+                f"<b style='color:#0F172A;text-align:right'>{p_v}%</b></div>"
+                for p_nm, p_v in tpp_items
+            )
+            st.markdown(clean_html(f"<div style='padding-top:8px'>{tpp_html}</div>"), unsafe_allow_html=True)
 
-        with st.container(border=True):
-            section_title("Milestones Report Table", f"{len(rm)} Milestones")
-            render_rich_table(
-                rm,
-                [
-                    ("name", "Milestone", "bold"),
-                    ("project", "Project", "text"),
-                    ("team", "Team", "text"),
-                    ("status", "Status", "badge"),
-                    ("start_date", "Start Date", "date"),
-                    ("due_date", "Due Date", "date"),
-                    ("completion_date", "Completion Date", "date"),
-                    ("dependency", "Dependency", "text"),
-                    ("notes", "Notes", "text"),
-                ],
+        pr3_l, pr3_r = st.columns([1.85, 1])
+        with pr3_l, st.container(border=True):
+            ph_c1, ph_c2 = st.columns([2.2, 1.2])
+            with ph_c1:
+                st.markdown("<div style='font-size:15px;font-weight:700;color:#0F172A;padding-top:4px'>Project List</div>", unsafe_allow_html=True)
+            with ph_c2:
+                pr_search = st.text_input("Search", placeholder="🔍 Search projects...", key="rep_proj_list_q", label_visibility="collapsed")
+            plist_rows = [
+                ("Website Revamp", "On Track", "Apr 1, 2024", "Sep 30, 2024", 90, "4 / 5", "18 / 20", "Healthy"),
+                ("Marketing Campaign", "At Risk", "Apr 15, 2024", "Aug 31, 2024", 60, "3 / 5", "12 / 20", "At Risk"),
+                ("IT Infrastructure Upgrade", "At Risk", "May 1, 2024", "Oct 31, 2024", 40, "2 / 5", "8 / 20", "At Risk"),
+                ("Sustainability Initiative", "Delayed", "May 15, 2024", "Dec 15, 2024", 25, "1 / 5", "5 / 20", "Critical"),
+                ("Internal Operations", "On Track", "Jun 1, 2024", "Nov 30, 2024", 75, "3 / 5", "15 / 20", "Healthy"),
+            ]
+            if pr_search:
+                plist_rows = [r for r in plist_rows if pr_search.lower() in r[0].lower()]
+            pl_tr = "".join(
+                f"<tr><td><b>{p_n}</b></td><td>{badge_html(st_s)}</td><td>{sd}</td><td>{ed}</td><td>{progress_html(pct, GREEN)}</td><td style='text-align:center'>{ms_c}</td><td style='text-align:center'>{tk_c}</td><td>{badge_html(hl_s)}</td></tr>"
+                for p_n, st_s, sd, ed, pct, ms_c, tk_c, hl_s in plist_rows
+            )
+            st.markdown(
+                clean_html(
+                    f'<div class="vk-table-wrap"><table class="vk-table"><thead><tr><th>Project Name</th><th>Status</th><th>Start Date</th><th>End Date</th><th>Progress</th><th style="text-align:center">Milestones</th><th style="text-align:center">Tasks</th><th>Health</th></tr></thead><tbody>{pl_tr}</tbody></table></div>'
+                ),
+                unsafe_allow_html=True,
+            )
+            render_pagination_footer("Showing 1 to 5 of 12 projects", [1, 2, 3], 1)
+
+        with pr3_r, st.container(border=True):
+            section_title("Upcoming Project Milestones", "View All")
+            upm_rows = [
+                ("UI/UX Design Complete", "Website Revamp", "May 10, 2024", "On Track"),
+                ("Campaign Launch", "Marketing Campaign", "May 25, 2024", "At Risk"),
+                ("Infrastructure Setup", "IT Infrastructure Upgrade", "Jun 15, 2024", "On Track"),
+                ("Sustainability Plan", "Sustainability Initiative", "Jun 30, 2024", "Delayed"),
+                ("Operations Review", "Internal Operations", "Jul 10, 2024", "On Track"),
+            ]
+            upm_tr = "".join(
+                f"<tr><td><b>{m_n}</b></td><td>{p_n}</td><td>{dd}</td><td>{badge_html(st_s)}</td></tr>"
+                for m_n, p_n, dd, st_s in upm_rows
+            )
+            st.markdown(
+                clean_html(
+                    f'<div class="vk-table-wrap"><table class="vk-table"><thead><tr><th>Milestone</th><th>Project</th><th>Due Date</th><th>Status</th></tr></thead><tbody>{upm_tr}</tbody></table></div>'
+                ),
+                unsafe_allow_html=True,
             )
 
-    with tabs[5]:
-        counts = T.groupby("assignee").size().rename("active_tasks").reset_index()
-        work = rr.merge(counts, left_on="name", right_on="assignee", how="left").drop(columns=["assignee"], errors="ignore")
-        work["active_tasks"] = work["active_tasks"].fillna(0).astype(int)
-        work["utilization"] = work.apply(
-            lambda r: 0 if r["status"] == "On Leave" else min(100, int(r["active_tasks"] * 35 + (55 if r["status"] == "Available" else 30))),
-            axis=1,
-        )
-        work["workload_status"] = work["utilization"].apply(
-            lambda u: "Overloaded" if u >= 95 else ("High" if u >= 75 else "Balanced")
-        )
-
-        k1, k2, k3, k4 = st.columns(4)
-        with k1:
-            metric_card("Team Members", len(work), "Evaluated resources", "👥", "blue")
-        with k2:
-            metric_card("Active Tasks", int(work["active_tasks"].sum()), "Assigned across teams", "☑️", "green")
-        with k3:
-            metric_card("High Workload", int((work["workload_status"] == "High").sum()), "75% – 94% utilization", "🟠", "orange")
-        with k4:
-            metric_card("Overloaded", int((work["workload_status"] == "Overloaded").sum()), "95%+ utilization", "🔴", "red")
+    # =========================================================================
+    # REPORT TAB 3: RESOURCES (Exact Match to Image 29)
+    # =========================================================================
+    elif active_rtab == "Resources":
+        rk1, rk2, rk3, rk4 = st.columns(4)
+        with rk1:
+            kpi_card_mockup("Total Resources", "24", icon_html="👥", icon_bg="#DBEAFE", icon_fg="#1473E6")
+        with rk2:
+            kpi_card_mockup("Available", "18", sub_text="75%", icon_html="👤", icon_bg="#D1FAE5", icon_fg="#00875A")
+        with rk3:
+            kpi_card_mockup("Partial Allocation", "4", sub_text="17%", icon_html="◔", icon_bg="#FEF3C7", icon_fg="#F28C00")
+        with rk4:
+            kpi_card_mockup("On Leave", "2", sub_text="8%", icon_html="👤", icon_bg="#FEE2E2", icon_fg="#EF4444")
 
         st.write("")
-        c1, c2 = st.columns(2)
-        with c1, st.container(border=True):
-            section_title("Individual Workload", "Top 10 by Utilization %")
-            z = work.sort_values("utilization", ascending=True).tail(10)
-            fig = px.bar(
-                z,
-                x="utilization",
-                y="name",
-                orientation="h",
-                text="utilization",
-                color="workload_status",
-                color_discrete_map={"Balanced": GREEN, "High": ORANGE, "Overloaded": RED},
+        rr1_1, rr1_2, rr1_3 = st.columns(3)
+        with rr1_1, st.container(border=True):
+            section_title("Resource Status")
+            render_report_donut_card(
+                "24", "Resources",
+                ["Available", "Partial", "On Leave"], [18, 4, 2], [GREEN, ORANGE, RED],
+                [(GREEN, "Available", "18 (75%)"), (ORANGE, "Partial", "4 (17%)"), (RED, "On Leave", "2 (8%)")],
             )
-            fig.update_traces(texttemplate="%{text}%", textposition="outside", cliponaxis=False)
-            fig.update_layout(height=300, margin=dict(l=0, r=36, t=6, b=6), xaxis_title=None, yaxis_title=None, legend_title_text="", paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)")
-            st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
-        with c2, st.container(border=True):
-            section_title("Workload by Team", "Total Active Tasks")
-            z = work.groupby("team")["active_tasks"].sum().reset_index()
-            fig = px.bar(z, x="team", y="active_tasks", text="active_tasks", color="team", color_discrete_sequence=[GREEN, BLUE, ORANGE, PURPLE, GRAY])
-            fig.update_traces(textposition="outside", cliponaxis=False)
-            fig.update_layout(height=300, showlegend=False, margin=dict(l=0, r=0, t=14, b=6), xaxis_title=None, yaxis_title=None, paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)")
-            st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
-
-        with st.container(border=True):
-            section_title("Resource Workload Breakdown", f"{len(work)} Members")
-            render_rich_table(
-                work.sort_values("utilization", ascending=False),
-                [
-                    ("name", "Team Member", "avatar"),
-                    ("role", "Role", "badge"),
-                    ("team", "Team", "text"),
-                    ("status", "Availability", "badge"),
-                    ("active_tasks", "Active Tasks", "bold"),
-                    ("utilization", "Utilization", "progress"),
-                    ("workload_status", "Workload Status", "badge"),
-                ],
+        with rr1_2, st.container(border=True):
+            section_title("Team Distribution")
+            td_df = pd.DataFrame(
+                {
+                    "Team": ["IT", "Design", "Operations", "Marketing", "Others"],
+                    "Members": [8, 6, 4, 4, 2],
+                }
             )
-
-    with tabs[6]:
-        with st.container(border=True):
-            section_title("Build Custom Report", "Configure dimensions, metrics, and visualization style")
-            a, b, c = st.columns(3)
-            with a:
-                typ = st.selectbox("Report Type", ["Project Report", "Task Report", "Resource Report", "Milestone Report", "Workload Report"])
-            with b:
-                group = st.selectbox("Group By", ["Status", "Team", "Project", "Priority", "Assignee"])
-            with c:
-                metrics = st.multiselect(
-                    "Metrics / Data to Include",
-                    ["Project Status", "Task Status", "Milestone Status", "Team Members", "Progress", "Priority", "Dates", "Assignees"],
-                    default=["Project Status", "Task Status", "Progress"],
-                )
-            viz = tile_toggle(
-                "Visualization Type",
-                ["Bar Chart", "Column Chart", "Pie Chart", "Line Chart", "Table", "Summary Cards"],
-                key="custom_rep_viz",
+            fig_td = px.bar(
+                td_df,
+                x="Team",
+                y="Members",
+                text="Members",
+                color="Team",
+                color_discrete_sequence=[GREEN, BLUE, PURPLE, ORANGE, "#64748B"],
             )
-            b1, b2, _ = st.columns([0.8, 0.8, 3])
-            with b1:
-                generate = st.button("▶ Generate Report", type="primary", use_container_width=True)
-            with b2:
-                reset = st.button("↺ Reset", use_container_width=True)
+            fig_td.update_traces(textposition="outside", cliponaxis=False)
+            fig_td.update_layout(
+                height=210,
+                margin=dict(l=0, r=0, t=12, b=0),
+                showlegend=False,
+                xaxis_title=None,
+                yaxis=dict(title=None, range=[0, 10.5]),
+                paper_bgcolor="rgba(0,0,0,0)",
+                plot_bgcolor="rgba(0,0,0,0)",
+            )
+            st.plotly_chart(fig_td, use_container_width=True, config={"displayModeBar": False})
 
-            if reset:
-                st.session_state.pop("custom_report", None)
-                st.rerun()
-            if generate or "custom_report" not in st.session_state:
-                st.session_state.custom_report = {"type": typ, "group": group, "metrics": metrics, "viz": viz}
+        with rr1_3, st.container(border=True):
+            section_title("Assignments by Project")
+            abp_items = [
+                ("Website Revamp", 8, 88, GREEN),
+                ("Internal Operations", 6, 68, "#0EA5E9"),
+                ("Marketing Campaign", 5, 55, "#38BDF8"),
+                ("IT Infrastructure Upgrade", 3, 36, PURPLE),
+                ("Sustainability Initiative", 2, 24, ORANGE),
+            ]
+            abp_html = "".join(
+                f"<div style='display:grid;grid-template-columns:145px 1fr 24px;align-items:center;gap:10px;margin-bottom:13px;font-size:12.5px'>"
+                f"<span style='color:#1E293B;font-weight:500;text-align:right'>{p_nm}</span>"
+                f"<div style='height:13px;background:#F1F5F9;border-radius:4px;overflow:hidden'>"
+                f"<div style='width:{w_p}%;height:100%;background:{bcol};border-radius:4px'></div></div>"
+                f"<b style='color:#0F172A;text-align:right'>{cnt}</b></div>"
+                for p_nm, cnt, w_p, bcol in abp_items
+            )
+            st.markdown(clean_html(f"<div style='padding-top:8px'>{abp_html}</div>"), unsafe_allow_html=True)
 
-        if st.session_state.get("custom_report"):
-            cfg = st.session_state.custom_report
-            source_map = {
-                "Project Report": rp,
-                "Task Report": rt,
-                "Resource Report": rr,
-                "Milestone Report": rm,
-                "Workload Report": rr,
-            }
-            source = source_map.get(cfg["type"], rp).copy()
-            colmap = {"Project": "project", "Team": "team", "Status": "status", "Priority": "priority", "Assignee": "assignee"}
-            gc = colmap.get(cfg["group"], "status")
-            if gc not in source.columns:
-                gc = "status" if "status" in source.columns else source.columns[0]
-            z = source[gc].fillna("Unassigned").value_counts().rename_axis(gc).reset_index(name="Count")
+        rr2_1, rr2_2 = st.columns(2)
+        with rr2_1, st.container(border=True):
+            section_title("Resource Availability (by Team)")
+            rat_df = pd.DataFrame(
+                {
+                    "Team": ["IT", "Design", "Operations", "Marketing", "Others"],
+                    "Available": [5, 3.5, 3, 3.5, 2],
+                    "Partial": [3.5, 3, 1, 1.5, 0.5],
+                    "On Leave": [1.5, 1, 1, 1, 0.5],
+                }
+            )
+            fig_rat = px.bar(
+                rat_df,
+                x="Team",
+                y=["Available", "Partial", "On Leave"],
+                color_discrete_map={"Available": GREEN, "Partial": ORANGE, "On Leave": RED},
+            )
+            fig_rat.update_layout(
+                height=195,
+                margin=dict(l=0, r=0, t=6, b=0),
+                xaxis_title=None,
+                yaxis=dict(title=None, range=[0, 11]),
+                legend_title_text="",
+                legend=dict(orientation="v", yanchor="middle", y=0.5, xanchor="left", x=1.02, font=dict(size=11)),
+                paper_bgcolor="rgba(0,0,0,0)",
+                plot_bgcolor="rgba(0,0,0,0)",
+                bargap=0.48,
+            )
+            st.plotly_chart(fig_rat, use_container_width=True, config={"displayModeBar": False})
 
+        with rr2_2, st.container(border=True):
+            section_title("Resource Assignments (Count)")
+            rac_df = pd.DataFrame(
+                {
+                    "Team": ["IT", "Design", "Operations", "Marketing", "Others"],
+                    "Primary Assignment": [4.5, 3.5, 2, 2, 1],
+                    "Additional Assignment": [4, 3.5, 2.5, 2.5, 1],
+                }
+            )
+            fig_rac = px.bar(
+                rac_df,
+                x="Team",
+                y=["Primary Assignment", "Additional Assignment"],
+                color_discrete_map={"Primary Assignment": GREEN, "Additional Assignment": "#1D9BF0"},
+            )
+            fig_rac.update_layout(
+                height=195,
+                margin=dict(l=0, r=0, t=6, b=0),
+                xaxis_title=None,
+                yaxis=dict(title=None, range=[0, 11]),
+                legend_title_text="",
+                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1, font=dict(size=11)),
+                paper_bgcolor="rgba(0,0,0,0)",
+                plot_bgcolor="rgba(0,0,0,0)",
+                bargap=0.48,
+            )
+            st.plotly_chart(fig_rac, use_container_width=True, config={"displayModeBar": False})
+
+        rr3_l, rr3_r = st.columns([1.85, 1])
+        with rr3_l, st.container(border=True):
+            rl_c1, rl_c2, rl_c3 = st.columns([1.8, 1.1, 0.8])
+            with rl_c1:
+                st.markdown("<div style='font-size:15px;font-weight:700;color:#0F172A;padding-top:4px'>Resource List</div>", unsafe_allow_html=True)
+            with rl_c2:
+                rl_q = st.text_input("Search", placeholder="🔍 Search resources...", key="rep_res_q", label_visibility="collapsed")
+            with rl_c3:
+                rl_st = st.selectbox("Status", ["All Statuses", "Available", "Partial", "On Leave"], key="rep_res_st", label_visibility="collapsed")
+
+            rlist_rows = [
+                ("JM", "#0284C7", "James Miller", "IT", "Available", 2, 8, "May 10, 2024", "—"),
+                ("SK", "#0284C7", "Sarah Kim", "Design", "Available", 2, 6, "May 25, 2024", "—"),
+                ("AL", "#0284C7", "Alice Morgan", "Marketing", "Partial", 1, 5, "Jun 15, 2024", "—"),
+                ("RJ", "#0F172A", "Ryan Cruz", "Operations", "Available", 2, 7, "Jun 30, 2024", "—"),
+                ("MT", "#0284C7", "Michael Tan", "IT", "On Leave", 0, 0, "—", "On leave until May 20"),
+                ("DP", "#1D4ED8", "Daniel Perez", "Operations", "Available", 1, 4, "Jun 10, 2024", "—"),
+                ("ER", "#EF4444", "Ella Ramirez", "Design", "Partial", 1, 3, "May 28, 2024", "—"),
+                ("CP", "#0284C7", "Chris Padilla", "IT", "Available", 2, 6, "Jun 22, 2024", "—"),
+            ]
+            if rl_q:
+                rlist_rows = [r for r in rlist_rows if rl_q.lower() in r[2].lower() or rl_q.lower() in r[3].lower()]
+            if rl_st != "All Statuses":
+                rlist_rows = [r for r in rlist_rows if r[4] == rl_st]
+
+            rl_tr = "".join(
+                f"<tr><td><span class='vk-avatar' style='background:{abg}'>{ini}</span><b>{nm}</b></td><td>{tm}</td><td>{badge_html(st_s)}</td><td style='text-align:center'>{pa}</td><td style='text-align:center'>{tk}</td><td>{um}</td><td style='color:#64748B'>{nt}</td></tr>"
+                for ini, abg, nm, tm, st_s, pa, tk, um, nt in rlist_rows
+            )
+            st.markdown(
+                clean_html(
+                    f'<div class="vk-table-wrap"><table class="vk-table"><thead><tr><th>Name</th><th>Team</th><th>Status</th><th style="text-align:center">Project Assignments</th><th style="text-align:center">Tasks</th><th>Upcoming Milestone</th><th>Notes</th></tr></thead><tbody>{rl_tr}</tbody></table></div>'
+                ),
+                unsafe_allow_html=True,
+            )
+            render_pagination_footer("Showing 1 to 8 of 24 resources", [1, 2, 3], 1)
+
+        with rr3_r:
             with st.container(border=True):
-                section_title(f"Report Preview: {cfg['type']} grouped by {cfg['group']}", f"{len(source)} Records")
-                if cfg["viz"] == "Pie Chart":
-                    chart_status_donut(source, gc, cfg["group"], height=280)
-                elif cfg["viz"] in ["Bar Chart", "Column Chart", "Line Chart"]:
-                    if cfg["viz"] == "Line Chart":
-                        fig = px.line(z, x=gc, y="Count", markers=True, color_discrete_sequence=[GREEN])
-                    elif cfg["viz"] == "Bar Chart":
-                        fig = px.bar(z, x="Count", y=gc, orientation="h", text="Count", color=gc, color_discrete_sequence=[GREEN, BLUE, ORANGE, RED])
-                    else:
-                        fig = px.bar(z, x=gc, y="Count", text="Count", color=gc, color_discrete_sequence=[GREEN, BLUE, ORANGE, RED])
-                    fig.update_layout(height=280, showlegend=False, paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)")
-                    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
-                elif cfg["viz"] == "Summary Cards":
-                    cols = st.columns(min(4, max(1, len(z))))
-                    for col, (_, r_row) in zip(cols, z.iterrows()):
-                        with col:
-                            metric_card(str(r_row[gc]), int(r_row.Count), f"{cfg['type']} records", "📊", "green")
-
-                st.dataframe(source, hide_index=True, use_container_width=True)
-
-                with st.form("save_custom_report_form"):
-                    c_a, c_b = st.columns([3, 1])
-                    with c_a:
-                        report_name = st.text_input("Report Name", f"{cfg['type']} ({cfg['group']}) - {date.today().isoformat()}")
-                    with c_b:
-                        st.write("")
-                        save_rep = st.form_submit_button("＋ Save Current Report", type="primary", use_container_width=True)
-                    if save_rep and report_name.strip():
-                        sql(
-                            "INSERT INTO saved_reports(name,report_type,config,last_generated,created_by) VALUES(?,?,?,?,?)",
-                            (report_name.strip(), cfg["type"], json.dumps(cfg), date.today().isoformat(), "Alice Morgan"),
-                        )
-                        log_event("Saved", "Report", None, report_name.strip())
-                        st.success("Custom report saved.")
-                        st.rerun()
-
-        with st.container(border=True):
-            saved = df("SELECT * FROM saved_reports ORDER BY id DESC")
-            section_title("Saved Reports", f"{len(saved)} Saved")
-            if saved.empty:
-                st.caption("No saved reports yet.")
-            else:
-                render_rich_table(
-                    saved,
-                    [
-                        ("name", "Report Name", "bold"),
-                        ("report_type", "Report Type", "badge"),
-                        ("last_generated", "Last Generated", "date"),
-                        ("created_by", "Created By", "avatar"),
-                    ],
-                )
-
-
-# ===========================================================================
-# PAGE 8: SETTINGS
-# ===========================================================================
-elif page == "Settings":
-    render_top_header("Settings", "Manage workspace, users, defaults, notifications, integrations, and system preferences", show_filters=False)
-    tabs = st.tabs(
-        [
-            "Workspace",
-            "User Management",
-            "Project Settings",
-            "Task Settings",
-            "Milestones",
-            "Notifications",
-            "Integrations",
-            "System",
-        ]
-    )
-
-    with tabs[0]:
-        with st.container(border=True):
-            section_title("Workspace Settings", "General branding and localization")
-            logo_file = st.file_uploader("Workspace Logo (PNG/JPG)", type=["png", "jpg", "jpeg"])
-            if logo_file is not None:
-                b64_str = base64.b64encode(logo_file.read()).decode("utf-8")
-                put_setting("workspace_logo_b64", b64_str)
-                st.success("Logo uploaded and applied to sidebar.")
-
-            with st.form("workspace_settings_form"):
-                name = st.text_input("Workspace Name", get_setting("workspace_name", "Vektor"))
-                desc = st.text_area("Description", get_setting("workspace_description", "Project management workspace for planning, tracking, and delivery."))
-                a, b = st.columns(2)
-                with a:
-                    t_opts = ["HPE Green", "Blue", "Dark"]
-                    cur_t = get_setting("theme", "HPE Green")
-                    theme = st.selectbox("Theme", t_opts, index=t_opts.index(cur_t) if cur_t in t_opts else 0)
-                with b:
-                    l_opts = ["English", "Filipino"]
-                    cur_l = get_setting("language", "English")
-                    language = st.selectbox("Language", l_opts, index=l_opts.index(cur_l) if cur_l in l_opts else 0)
-                a, b = st.columns(2)
-                with a:
-                    f_opts = ["MMM DD, YYYY", "DD/MM/YYYY", "MM/DD/YYYY"]
-                    cur_f = get_setting("date_format", "MMM DD, YYYY")
-                    fmt_d = st.selectbox("Date Format", f_opts, index=f_opts.index(cur_f) if cur_f in f_opts else 0)
-                with b:
-                    p_opts = ["Overview", "Projects", "Task List", "Reports"]
-                    cur_p = get_setting("default_landing", "Overview")
-                    landing = st.selectbox("Default Landing Page", p_opts, index=p_opts.index(cur_p) if cur_p in p_opts else 0)
-                if st.form_submit_button("💾 Save Workspace Settings", type="primary"):
-                    for k, v in {
-                        "workspace_name": name,
-                        "workspace_description": desc,
-                        "theme": theme,
-                        "language": language,
-                        "date_format": fmt_d,
-                        "default_landing": landing,
-                    }.items():
-                        put_setting(k, v)
-                    log_event("Updated", "Workspace Settings", None, f"Theme={theme}")
-                    st.success("Workspace settings saved.")
-                    st.rerun()
-
-    with tabs[1]:
-        with st.container(border=True):
-            section_title("User Management", f"{len(R)} Registered Users")
-            render_rich_table(
-                R,
-                [
-                    ("name", "Name", "avatar"),
-                    ("email", "Email", "text"),
-                    ("role", "Role", "badge"),
-                    ("team", "Team", "text"),
-                    ("status", "Status", "badge"),
-                ],
-                max_rows=12,
-            )
-
-        c1, c2 = st.columns(2)
-        with c1, st.container(border=True):
-            section_title("Add New User")
-            with st.form("add_user_form"):
-                u_name = st.text_input("Full Name *")
-                u_email = st.text_input("Email Address *")
-                a, b = st.columns(2)
-                with a:
-                    u_role = st.selectbox("Role", ["Admin", "Project Manager", "Team Member"])
-                with b:
-                    u_team = st.selectbox("Team", teams_list)
-                if st.form_submit_button("＋ Add User", type="primary"):
-                    if u_name.strip():
-                        sql(
-                            "INSERT INTO resources(name,email,team,role,status,capacity) VALUES(?,?,?,?,?,?)",
-                            (u_name.strip(), u_email.strip() or f"{u_name.lower().replace(' ', '.')}@vektor.example", u_team, u_role, "Available", 100),
-                        )
-                        log_event("Created", "User", None, u_name.strip())
-                        st.rerun()
-                    else:
-                        st.error("Name is required.")
-        with c2, st.container(border=True):
-            section_title("Update or Remove User")
-            if not R.empty:
-                uid = st.selectbox("Select User", R.id.tolist(), format_func=lambda x: f"{R.loc[R.id == x, 'name'].iloc[0]} ({R.loc[R.id == x, 'role'].iloc[0]})")
-                u_row = R[R.id == uid].iloc[0]
-                roles = ["Admin", "Project Manager", "Team Member"]
-                states = ["Available", "Partial", "On Leave"]
-                new_role = st.selectbox("Role", roles, index=roles.index(u_row.role) if u_row.role in roles else 2, key="upd_u_role")
-                new_stat = st.selectbox("Status", states, index=states.index(u_row.status) if u_row.status in states else 0, key="upd_u_stat")
-                b_a, b_b = st.columns(2)
-                with b_a:
-                    if st.button("💾 Update User", type="primary", use_container_width=True):
-                        sql("UPDATE resources SET role=?, status=? WHERE id=?", (new_role, new_stat, int(uid)))
-                        log_event("Updated", "User", int(uid), u_row["name"])
-                        st.rerun()
-                with b_b:
-                    if st.button("🗑 Remove User", use_container_width=True):
-                        sql("DELETE FROM resources WHERE id=?", (int(uid),))
-                        log_event("Deleted", "User", int(uid), u_row["name"])
-                        st.rerun()
-
-    with tabs[2]:
-        with st.container(border=True):
-            section_title("Project Defaults & Governance")
-            with st.form("project_defaults_form"):
-                a, b = st.columns(2)
-                with a:
-                    p_stats = ["Not Started", "On Track", "At Risk", "Delayed"]
-                    cur_ps = get_setting("default_project_status", "On Track")
-                    status = st.selectbox("Default Project Status", p_stats, index=p_stats.index(cur_ps) if cur_ps in p_stats else 1)
-                with b:
-                    t_mpl = ["Standard Project", "Software Delivery", "Marketing Campaign", "Infrastructure"]
-                    cur_tm = get_setting("project_template", "Standard Project")
-                    template = st.selectbox("Default Project Template", t_mpl, index=t_mpl.index(cur_tm) if cur_tm in t_mpl else 0)
-                vals = {
-                    k: st.checkbox(label, value=get_setting(k, "true" if default else "false") == "true")
-                    for k, label, default in [
-                        ("auto_project_id", "Enable project key/ID auto-generation", True),
-                        ("require_project_desc", "Require project description", True),
-                        ("allow_project_attachments", "Allow project attachments", True),
-                        ("project_archiving", "Enable project archiving", False),
-                    ]
-                }
-                if st.form_submit_button("💾 Save Project Defaults", type="primary"):
-                    put_setting("default_project_status", status)
-                    put_setting("project_template", template)
-                    for k, v in vals.items():
-                        put_setting(k, str(v).lower())
-                    st.success("Project defaults saved.")
-
-    with tabs[3]:
-        with st.container(border=True):
-            section_title("Task Defaults & Workflow Rules")
-            with st.form("task_defaults_form"):
-                a, b = st.columns(2)
-                with a:
-                    status = st.selectbox("Default Task Status", ["Not Started", "In Progress", "Completed"])
-                with b:
-                    priority = st.selectbox("Default Task Priority", ["High", "Medium", "Low"], index=1)
-                vals = {
-                    k: st.checkbox(label, value=get_setting(k, "true" if default else "false") == "true")
-                    for k, label, default in [
-                        ("task_dependencies", "Enable task dependencies", True),
-                        ("allow_subtasks", "Allow subtasks", True),
-                        ("recurring_tasks", "Enable recurring tasks", False),
-                        ("require_assignee", "Require assignee", True),
-                        ("task_attachments", "Allow task attachments", True),
-                    ]
-                }
-                if st.form_submit_button("💾 Save Task Defaults", type="primary"):
-                    put_setting("default_task_status", status)
-                    put_setting("default_task_priority", priority)
-                    for k, v in vals.items():
-                        put_setting(k, str(v).lower())
-                    st.success("Task defaults saved.")
-
-    with tabs[4]:
-        c1, c2 = st.columns([1, 1.3])
-        with c1, st.container(border=True):
-            section_title("Milestone Settings")
-            with st.form("milestone_defaults_form"):
-                status = st.selectbox("Default Milestone Status", ["Not Started", "In Progress", "Completed"])
-                vals = {
-                    k: st.checkbox(label, value=get_setting(k, "true") == "true")
-                    for k, label in [
-                        ("milestones_enabled", "Enable milestones"),
-                        ("milestones_require_due", "Require due date"),
-                        ("milestone_dependencies", "Allow milestone dependencies"),
-                        ("milestone_notifications", "Auto-notify on milestone updates"),
-                    ]
-                }
-                if st.form_submit_button("💾 Save Milestone Defaults", type="primary"):
-                    put_setting("default_milestone_status", status)
-                    for k, v in vals.items():
-                        put_setting(k, str(v).lower())
-                    st.success("Milestone defaults saved.")
-
-        with c2, st.container(border=True):
-            section_title("Add Milestone")
-            with st.form("add_milestone_form"):
-                m_name = st.text_input("Milestone Name *")
-                a, b = st.columns(2)
-                with a:
-                    m_proj = st.selectbox("Project", projects_list)
-                with b:
-                    m_team = st.selectbox("Team", teams_list)
-                a, b = st.columns(2)
-                with a:
-                    m_due = st.date_input("Due Date", date.today() + timedelta(days=14))
-                with b:
-                    m_stat = st.selectbox("Status", ["Not Started", "In Progress", "Completed", "Overdue"])
-                if st.form_submit_button("＋ Add Milestone", type="primary"):
-                    if m_name.strip():
-                        sql(
-                            "INSERT INTO milestones(name,project_id,team,status,start_date,due_date,notes) VALUES(?,?,?,?,?,?,?)",
-                            (m_name.strip(), pmap[m_proj], m_team, m_stat, date.today().isoformat(), m_due.isoformat(), ""),
-                        )
-                        log_event("Created", "Milestone", None, m_name.strip())
-                        st.rerun()
-
-        with st.container(border=True):
-            section_title("Active Milestones", f"{len(M)} Total")
-            render_rich_table(
-                M,
-                [
-                    ("name", "Milestone", "bold"),
-                    ("project", "Project", "text"),
-                    ("team", "Team", "text"),
-                    ("due_date", "Due Date", "date"),
-                    ("status", "Status", "badge"),
-                ],
-            )
-
-    with tabs[5]:
-        with st.container(border=True):
-            section_title("Notification Preferences", "Configure triggers and delivery cadence")
-            with st.form("notifications_form"):
-                labels = [
-                    "Task assigned to me",
-                    "Task due soon",
-                    "Task overdue",
-                    "Milestone updates",
-                    "Project status changes",
-                    "Project assignment",
-                    "Mention in comments",
-                    "Weekly project digest",
+                section_title("Upcoming Leave", "View All")
+                ul_rows = [
+                    ("MT", "#0284C7", "Michael Tan", "Vacation", "May 15, 2024", "May 20, 2024"),
+                    ("AR", "#0F172A", "Anna Reyes", "Sick Leave", "May 22, 2024", "May 24, 2024"),
+                    ("KS", "#0369A1", "Kevin Santos", "Vacation", "Jun 10, 2024", "Jun 14, 2024"),
+                    ("LC", "#0284C7", "Lisa Chan", "Personal Leave", "Jun 25, 2024", "Jun 27, 2024"),
                 ]
-                c_a, c_b = st.columns(2)
-                vals = {}
-                for idx, k in enumerate(labels):
-                    target_col = c_a if idx < 4 else c_b
-                    with target_col:
-                        vals[k] = st.checkbox(k, value=get_setting("notify_" + k, "false" if k == "Mention in comments" else "true") == "true")
-                freq_opts = ["Real-time", "Hourly", "Daily digest", "Weekly digest"]
-                cur_freq = get_setting("notification_frequency", "Daily digest")
-                freq = st.selectbox("Notification Frequency", freq_opts, index=freq_opts.index(cur_freq) if cur_freq in freq_opts else 2)
-                if st.form_submit_button("💾 Save Notification Preferences", type="primary"):
-                    for k, v in vals.items():
-                        put_setting("notify_" + k, str(v).lower())
-                    put_setting("notification_frequency", freq)
-                    st.success("Notification preferences saved.")
-
-    with tabs[6]:
-        section_title("Connected Apps & Integrations", "Sync calendars, messaging channels, and cloud storage")
-        services = [
-            ("Microsoft 365", "Connect Outlook calendar, email alerts, and directory sync", "📅"),
-            ("Slack", "Send automated task, milestone, and health alerts to Slack channels", "💬"),
-            ("Microsoft Teams", "Collaborate on project channels and receive @mention notifications", "👥"),
-            ("OneDrive", "Attach and sync project deliverables and specification documents", "☁️"),
-        ]
-        cols = st.columns(2)
-        for idx, (service, desc, ico) in enumerate(services):
-            with cols[idx % 2], st.container(border=True):
-                is_conn = get_setting(f"integration_{service}", "false") == "true"
-                a, b = st.columns([3.2, 1.1])
-                with a:
-                    st.markdown(
-                        f"<div style='display:flex;align-items:center;gap:10px'>"
-                        f"<span style='font-size:24px'>{ico}</span>"
-                        f"<div><div style='font-weight:700;font-size:15px'>{html.escape(service)}</div>"
-                        f"<div style='font-size:12px;color:#64748B'>{html.escape(desc)}</div></div></div>",
-                        unsafe_allow_html=True,
-                    )
-                    st.markdown(
-                        f"<div style='margin-top:8px'>{badge_html('Connected' if is_conn else 'Disconnected')}</div>",
-                        unsafe_allow_html=True,
-                    )
-                with b:
-                    st.write("")
-                    btn_label = "Disconnect" if is_conn else "Connect"
-                    if st.button(btn_label, key=f"int_{service}", type="secondary" if is_conn else "primary", use_container_width=True):
-                        put_setting(f"integration_{service}", "false" if is_conn else "true")
-                        log_event("Integration Toggled", service, None, "Disconnected" if is_conn else "Connected")
-                        st.rerun()
-
-    with tabs[7]:
-        c1, c2 = st.columns([1.2, 1])
-        with c1, st.container(border=True):
-            section_title("System & Security Preferences")
-            with st.form("system_settings_form"):
-                audit = st.checkbox("Enable audit logs", value=get_setting("audit_logs", "true") == "true")
-                exports = st.checkbox("Allow data export", value=get_setting("data_export", "true") == "true")
-                backups = st.checkbox("Enable automatic backups", value=get_setting("automatic_backups", "true") == "true")
-                maintenance = st.checkbox("Enable maintenance mode", value=get_setting("maintenance_mode", "false") == "true")
-                t_opts = ["30 minutes", "1 hour", "4 hours", "8 hours", "12 hours"]
-                cur_to = get_setting("session_timeout", "8 hours")
-                timeout = st.selectbox("Session Timeout", t_opts, index=t_opts.index(cur_to) if cur_to in t_opts else 3)
-                if st.form_submit_button("💾 Save System Settings", type="primary"):
-                    for k, v in {
-                        "audit_logs": audit,
-                        "data_export": exports,
-                        "automatic_backups": backups,
-                        "maintenance_mode": maintenance,
-                        "session_timeout": timeout,
-                    }.items():
-                        put_setting(k, str(v).lower() if isinstance(v, bool) else v)
-                    st.success("System settings saved.")
-
-        with c2, st.container(border=True):
-            section_title("Database & Demo Data Management")
-            if os.path.exists(DB):
-                with open(DB, "rb") as f:
-                    db_bytes = f.read()
-                st.download_button(
-                    "⬇ Download SQLite Backup (.db)",
-                    db_bytes,
-                    file_name=f"vektor_backup_{date.today().isoformat()}.db",
-                    mime="application/octet-stream",
-                    type="primary",
-                    use_container_width=True,
+                ul_tr = "".join(
+                    f"<tr><td><span class='vk-avatar' style='background:{abg}'>{ini}</span><b>{nm}</b></td><td>{lt}</td><td>{sd}</td><td>{ed}</td></tr>"
+                    for ini, abg, nm, lt, sd, ed in ul_rows
                 )
-            if st.button("🔄 Reset Workspace to Default Demo Data", use_container_width=True):
-                init_db(force_reset=True)
-                st.success("Database reset to factory demo data.")
-                st.rerun()
-            if st.button("🧹 Clear Audit Log", use_container_width=True):
-                sql("DELETE FROM audit_log")
-                st.success("Audit log cleared.")
-                st.rerun()
+                st.markdown(
+                    clean_html(
+                        f'<div class="vk-table-wrap"><table class="vk-table"><thead><tr><th>Name</th><th>Leave Type</th><th>Start Date</th><th>End Date</th></tr></thead><tbody>{ul_tr}</tbody></table></div>'
+                    ),
+                    unsafe_allow_html=True,
+                )
+            with st.container(border=True):
+                section_title("Upcoming Assignments", "View All")
+                ua_rows = [
+                    ("SK", "#0284C7", "Sarah Kim", "Website Revamp", "May 1, 2024"),
+                    ("RJ", "#1D4ED8", "Ryan Cruz", "IT Infrastructure Upgrade", "May 15, 2024"),
+                    ("AL", "#0F172A", "Alice Morgan", "Marketing Campaign", "Jun 1, 2024"),
+                    ("DP", "#0F172A", "Daniel Perez", "Internal Operations", "Jun 10, 2024"),
+                ]
+                ua_tr = "".join(
+                    f"<tr><td><span class='vk-avatar' style='background:{abg}'>{ini}</span><b>{nm}</b></td><td>{pr}</td><td>{sd}</td></tr>"
+                    for ini, abg, nm, pr, sd in ua_rows
+                )
+                st.markdown(
+                    clean_html(
+                        f'<div class="vk-table-wrap"><table class="vk-table"><thead><tr><th>Name</th><th>Project</th><th>Start Date</th></tr></thead><tbody>{ua_tr}</tbody></table></div>'
+                    ),
+                    unsafe_allow_html=True,
+                )
+
+    # =========================================================================
+    # REPORT TAB 4: TASKS (Exact Match to Image 32)
+    # =========================================================================
+    elif active_rtab == "Tasks":
+        tk1, tk2, tk3, tk4 = st.columns(4)
+        with tk1:
+            kpi_card_mockup("Total Tasks", "180", icon_html="📋", icon_bg="#D1FAE5", icon_fg="#00875A")
+        with tk2:
+            kpi_card_mockup("Completed Tasks", "120", sub_text="67%", icon_html="✓", icon_bg="#D1FAE5", icon_fg="#00875A")
+        with tk3:
+            kpi_card_mockup("In Progress Tasks", "40", sub_text="22%", icon_html="▷", icon_bg="#DBEAFE", icon_fg="#1473E6")
+        with tk4:
+            kpi_card_mockup("Not Started Tasks", "20", sub_text="11%", icon_html="•••", icon_bg="#E2E8F0", icon_fg="#475569")
+
+        st.write("")
+        tr1_1, tr1_2, tr1_3 = st.columns(3)
+        with tr1_1, st.container(border=True):
+            section_title("Task Status")
+            render_report_donut_card(
+                "180", "Tasks",
+                ["Completed", "In Progress", "Not Started"], [120, 40, 20], [GREEN, BLUE, "#94A3B8"],
+                [(GREEN, "Completed", "120 (67%)"), (BLUE, "In Progress", "40 (22%)"), ("#94A3B8", "Not Started", "20 (11%)")],
+            )
+        with tr1_2, st.container(border=True):
+            section_title("Tasks by Project")
+            tbp_rows = [
+                ("Website Revamp", 48, 25, 18, 36),
+                ("Marketing Campaign", 38, 20, 15, 28),
+                ("IT Infrastructure Upgrade", 28, 22, 14, 24),
+                ("Sustainability Initiative", 20, 16, 14, 18),
+                ("Internal Operations", 16, 12, 14, 16),
+            ]
+            tbp_html = "".join(
+                f"<div style='display:grid;grid-template-columns:145px 1fr 28px;align-items:center;gap:10px;margin-bottom:11px;font-size:12.5px'>"
+                f"<span style='color:#1E293B;font-weight:500;text-align:right'>{p_nm}</span>"
+                f"<div style='display:flex;height:13px;background:#F1F5F9;border-radius:4px;overflow:hidden'>"
+                f"<div style='width:{c_w}%;background:#00875A'></div>"
+                f"<div style='width:{i_w}%;background:#1473E6'></div>"
+                f"<div style='width:{n_w}%;background:#CBD5E1'></div></div>"
+                f"<b style='color:#0F172A;text-align:right'>{tot}</b></div>"
+                for p_nm, c_w, i_w, n_w, tot in tbp_rows
+            )
+            st.markdown(
+                clean_html(
+                    f"""
+                    <div style="padding-top:4px">{tbp_html}</div>
+                    <div style="display:flex;justify-content:center;gap:16px;font-size:11.5px;color:#475569;margin-top:8px">
+                        <span><span style="color:#00875A">●</span> Completed</span>
+                        <span><span style="color:#1473E6">●</span> In Progress</span>
+                        <span><span style="color:#94A3B8">●</span> Not Started</span>
+                    </div>
+                    """
+                ),
+                unsafe_allow_html=True,
+            )
+        with tr1_3, st.container(border=True):
+            section_title("Tasks by Priority")
+            render_report_donut_card(
+                "180", "Tasks",
+                ["High", "Medium", "Low"], [30, 90, 60], [RED, ORANGE, GREEN],
+                [(RED, "High", "30 (17%)"), (ORANGE, "Medium", "90 (50%)"), (GREEN, "Low", "60 (33%)")],
+            )
+
+        tr2_1, tr2_2, tr2_3 = st.columns([1.2, 1.15, 0.85])
+        with tr2_1, st.container(border=True):
+            section_title("Task Trend")
+            tt_df = pd.DataFrame(
+                {
+                    "Month": ["Apr", "May", "Jun", "Jul", "Aug", "Sep"],
+                    "Completed": [6, 15, 24, 31, 38, 45],
+                    "In Progress": [3, 10, 14, 18, 21, 24],
+                    "Not Started": [2, 5, 7, 8, 9, 10],
+                }
+            )
+            fig_tt = px.line(
+                tt_df,
+                x="Month",
+                y=["Completed", "In Progress", "Not Started"],
+                markers=True,
+                color_discrete_map={"Completed": GREEN, "In Progress": BLUE, "Not Started": "#94A3B8"},
+            )
+            fig_tt.update_layout(
+                height=195,
+                margin=dict(l=0, r=0, t=4, b=0),
+                xaxis_title=None,
+                yaxis=dict(title=None, range=[0, 52]),
+                legend_title_text="",
+                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1, font=dict(size=11)),
+                paper_bgcolor="rgba(0,0,0,0)",
+                plot_bgcolor="rgba(0,0,0,0)",
+            )
+            st.plotly_chart(fig_tt, use_container_width=True, config={"displayModeBar": False})
+
+        with tr2_2, st.container(border=True):
+            section_title("Tasks by Team")
+            tbt_df = pd.DataFrame(
+                {
+                    "Team": ["IT", "Design", "Operations", "Marketing", "Others"],
+                    "Completed": [22, 14, 10, 11, 6],
+                    "In Progress": [14, 10, 8, 8, 5],
+                    "Not Started": [8, 12, 9, 8, 5],
+                }
+            )
+            fig_tbt = px.bar(
+                tbt_df,
+                x="Team",
+                y=["Completed", "In Progress", "Not Started"],
+                color_discrete_map={"Completed": GREEN, "In Progress": BLUE, "Not Started": "#CBD5E1"},
+            )
+            fig_tbt.update_layout(
+                height=195,
+                margin=dict(l=0, r=0, t=6, b=0),
+                xaxis_title=None,
+                yaxis=dict(title=None, range=[0, 52]),
+                legend_title_text="",
+                legend=dict(orientation="v", yanchor="middle", y=0.5, xanchor="left", x=1.02, font=dict(size=11)),
+                paper_bgcolor="rgba(0,0,0,0)",
+                plot_bgcolor="rgba(0,0,0,0)",
+                bargap=0.42,
+            )
+            st.plotly_chart(fig_tbt, use_container_width=True, config={"displayModeBar": False})
+
+        with tr2_3, st.container(border=True):
+            section_title("Overdue Tasks")
+            st.markdown(
+                clean_html(
+                    """
+                    <div style="background:#FEF2F2;border:1px solid #FECACA;border-radius:10px;padding:12px 14px;display:flex;align-items:center;gap:14px;margin-bottom:12px">
+                        <div style="width:40px;height:40px;border-radius:50%;background:#FEE2E2;color:#DC2626;display:flex;align-items:center;justify-content:center;font-size:20px;font-weight:800">⚠</div>
+                        <div style="display:flex;align-items:baseline;gap:10px">
+                            <span style="font-size:28px;font-weight:800;color:#DC2626">8</span>
+                            <div style="font-size:11.5px;color:#B91C1C;line-height:1.3"><b>Overdue Tasks</b><br>4% of total</div>
+                        </div>
+                    </div>
+                    <div style="font-size:12px;font-weight:700;color:#0F172A;margin-bottom:6px">By Priority</div>
+                    <div style="font-size:12.5px;line-height:2.0">
+                        <div style="display:flex;justify-content:space-between;border-bottom:1px solid #F1F5F9"><span><span style="color:#EF4444">●</span> &nbsp;High</span><b>4</b></div>
+                        <div style="display:flex;justify-content:space-between;border-bottom:1px solid #F1F5F9"><span><span style="color:#F28C00">●</span> &nbsp;Medium</span><b>3</b></div>
+                        <div style="display:flex;justify-content:space-between"><span><span style="color:#00875A">●</span> &nbsp;Low</span><b>1</b></div>
+                    </div>
+                    """
+                ),
+                unsafe_allow_html=True,
+            )
+
+        tr3_l, tr3_r = st.columns([1.85, 1])
+        with tr3_l, st.container(border=True):
+            tl_c1, tl_c2, tl_c3 = st.columns([1.8, 1.1, 0.8])
+            with tl_c1:
+                st.markdown("<div style='font-size:15px;font-weight:700;color:#0F172A;padding-top:4px'>Task List</div>", unsafe_allow_html=True)
+            with tl_c2:
+                tk_q = st.text_input("Search", placeholder="🔍 Search tasks...", key="rep_tk_q", label_visibility="collapsed")
+            with tl_c3:
+                tk_st = st.selectbox("Status", ["All Statuses", "Completed", "In Progress", "Not Started"], key="rep_tk_st", label_visibility="collapsed")
+
+            tlist_rows = [
+                ("UI/UX Design Complete", "Website Revamp", "Design", "Completed", "High", "Apr 1, 2024", "Apr 30, 2024", "Alice Morgan (AL)"),
+                ("Homepage Development", "Website Revamp", "IT", "In Progress", "High", "Apr 10, 2024", "May 15, 2024", "James Miller (JM)"),
+                ("Content Review", "Marketing Campaign", "Marketing", "In Progress", "Medium", "Apr 15, 2024", "May 20, 2024", "Sarah Kim (SK)"),
+                ("Infrastructure Setup", "IT Infrastructure Upgrade", "IT", "Not Started", "High", "May 1, 2024", "Jun 15, 2024", "Michael Tan (MT)"),
+                ("Sustainability Plan", "Sustainability Initiative", "Operations", "Completed", "Medium", "May 5, 2024", "May 30, 2024", "Ryan Cruz (RJ)"),
+                ("Process Documentation", "Internal Operations", "Operations", "In Progress", "Low", "May 10, 2024", "Jun 20, 2024", "Daniel Perez (DP)"),
+                ("Training Materials", "Marketing Campaign", "Marketing", "Not Started", "Medium", "May 20, 2024", "Jun 30, 2024", "Ella Ramirez (ER)"),
+                ("QA Testing", "Website Revamp", "IT", "In Progress", "High", "May 25, 2024", "Jun 25, 2024", "Chris Padilla (CP)"),
+            ]
+            if tk_q:
+                tlist_rows = [r for r in tlist_rows if tk_q.lower() in r[0].lower() or tk_q.lower() in r[1].lower()]
+            if tk_st != "All Statuses":
+                tlist_rows = [r for r in tlist_rows if r[3] == tk_st]
+
+            tl_tr = "".join(
+                f"<tr><td><b>{tn}</b></td><td>{pn}</td><td>{tm}</td><td>{badge_html(st_s)}</td><td>{badge_html(pr_s)}</td><td>{sd}</td><td>{dd}</td><td>{ass}</td></tr>"
+                for tn, pn, tm, st_s, pr_s, sd, dd, ass in tlist_rows
+            )
+            st.markdown(
+                clean_html(
+                    f'<div class="vk-table-wrap"><table class="vk-table"><thead><tr><th>Task Name</th><th>Project</th><th>Team</th><th>Status</th><th>Priority</th><th>Start Date</th><th>Due Date</th><th>Assignee</th></tr></thead><tbody>{tl_tr}</tbody></table></div>'
+                ),
+                unsafe_allow_html=True,
+            )
+            render_pagination_footer("Showing 1 to 8 of 180 tasks", [1, 2, 3, 4, 5], 1)
+
+        with tr3_r:
+            with st.container(border=True):
+                section_title("Upcoming Tasks (Next 14 Days)", "View All")
+                ut_rows = [
+                    ("Content Review", "Marketing Campaign", "May 20, 2024", "Medium"),
+                    ("Infrastructure Setup", "IT Infrastructure Upgrade", "Jun 15, 2024", "High"),
+                    ("Process Documentation", "Internal Operations", "Jun 20, 2024", "Low"),
+                    ("QA Testing", "Website Revamp", "Jun 25, 2024", "High"),
+                    ("Training Materials", "Marketing Campaign", "Jun 30, 2024", "Medium"),
+                ]
+                ut_tr = "".join(
+                    f"<tr><td><b>{tn}</b></td><td>{pn}</td><td>{dd}</td><td>{badge_html(pr_s)}</td></tr>"
+                    for tn, pn, dd, pr_s in ut_rows
+                )
+                st.markdown(
+                    clean_html(
+                        f'<div class="vk-table-wrap"><table class="vk-table"><thead><tr><th>Task Name</th><th>Project</th><th>Due Date</th><th>Priority</th></tr></thead><tbody>{ut_tr}</tbody></table></div>'
+                    ),
+                    unsafe_allow_html=True,
+                )
+            with st.container(border=True):
+                section_title("Recently Completed Tasks", "View All")
+                rc_rows = [
+                    ("UI/UX Design Complete", "Website Revamp", "Apr 30, 2024"),
+                    ("Sustainability Plan", "Sustainability Initiative", "May 30, 2024"),
+                    ("Requirements Gathering", "Internal Operations", "Jun 2, 2024"),
+                    ("Design Review", "Marketing Campaign", "Jun 5, 2024"),
+                    ("System Configuration", "IT Infrastructure Upgrade", "Jun 8, 2024"),
+                ]
+                rc_tr = "".join(
+                    f"<tr><td><b>{tn}</b></td><td>{pn}</td><td>{cd}</td></tr>"
+                    for tn, pn, cd in rc_rows
+                )
+                st.markdown(
+                    clean_html(
+                        f'<div class="vk-table-wrap"><table class="vk-table"><thead><tr><th>Task Name</th><th>Project</th><th>Completed Date</th></tr></thead><tbody>{rc_tr}</tbody></table></div>'
+                    ),
+                    unsafe_allow_html=True,
+                )
+
+    # =========================================================================
+    # REPORT TAB 5: MILESTONES (Exact Match to Image 35)
+    # =========================================================================
+    elif active_rtab == "Milestones":
+        mk1, mk2, mk3, mk4, mk5 = st.columns(5)
+        with mk1:
+            kpi_card_mockup("Total Milestones", "25", icon_html="⚑", icon_bg="#D1FAE5", icon_fg="#00875A")
+        with mk2:
+            kpi_card_mockup("Completed", "15", sub_text="60%", icon_html="✓", icon_bg="#D1FAE5", icon_fg="#00875A")
+        with mk3:
+            kpi_card_mockup("In Progress", "7", sub_text="28%", icon_html="▷", icon_bg="#DBEAFE", icon_fg="#1473E6")
+        with mk4:
+            kpi_card_mockup("Not Started", "3", sub_text="12%", icon_html="🕒", icon_bg="#E2E8F0", icon_fg="#475569")
+        with mk5:
+            kpi_card_mockup("Overdue", "4", sub_text="16%", icon_html="⚠", icon_bg="#FEE2E2", icon_fg="#EF4444")
+
+        st.write("")
+        mr1_1, mr1_2, mr1_3 = st.columns(3)
+        with mr1_1, st.container(border=True):
+            section_title("Milestone Status")
+            render_report_donut_card(
+                "25", "Milestones",
+                ["Completed", "In Progress", "Not Started"], [15, 7, 3], [GREEN, BLUE, "#94A3B8"],
+                [(GREEN, "Completed", "15 (60%)"), (BLUE, "In Progress", "7 (28%)"), ("#94A3B8", "Not Started", "3 (12%)")],
+            )
+        with mr1_2, st.container(border=True):
+            section_title("Milestones by Project")
+            mbp_rows = [
+                ("Website Revamp", 40, 25, 35, 5),
+                ("Marketing Campaign", 40, 38, 22, 5),
+                ("IT Infrastructure Upgrade", 40, 28, 32, 5),
+                ("Sustainability Initiative", 48, 22, 30, 5),
+                ("Internal Operations", 30, 28, 42, 5),
+            ]
+            mbp_html = "".join(
+                f"<div style='display:grid;grid-template-columns:145px 1fr 24px;align-items:center;gap:10px;margin-bottom:11px;font-size:12.5px'>"
+                f"<span style='color:#1E293B;font-weight:500;text-align:right'>{p_nm}</span>"
+                f"<div style='display:flex;height:13px;background:#F1F5F9;border-radius:4px;overflow:hidden'>"
+                f"<div style='width:{c_w}%;background:#00875A'></div>"
+                f"<div style='width:{i_w}%;background:#1473E6'></div>"
+                f"<div style='width:{n_w}%;background:#CBD5E1'></div></div>"
+                f"<b style='color:#0F172A;text-align:right'>{tot}</b></div>"
+                for p_nm, c_w, i_w, n_w, tot in mbp_rows
+            )
+            st.markdown(
+                clean_html(
+                    f"""
+                    <div style="padding-top:4px">{mbp_html}</div>
+                    <div style="display:flex;justify-content:center;gap:16px;font-size:11.5px;color:#475569;margin-top:8px">
+                        <span><span style="color:#00875A">●</span> Completed</span>
+                        <span><span style="color:#1473E6">●</span> In Progress</span>
+                        <span><span style="color:#94A3B8">●</span> Not Started</span>
+                    </div>
+                    """
+                ),
+                unsafe_allow_html=True,
+            )
+        with mr1_3, st.container(border=True):
+            section_title("Milestones by Due Date (Trend)")
+            mdd_df = pd.DataFrame(
+                {
+                    "Month": ["Apr", "May", "Jun", "Jul", "Aug", "Sep"],
+                    "Completed": [1.5, 2.2, 3.5, 3, 2, 2.8],
+                    "In Progress": [0.5, 1.5, 2.5, 1.5, 2.5, 2.5],
+                    "Not Started": [1.5, 0, 1.5, 3, 2.8, 0],
+                    "Overdue": [0, 1.8, 0, 0, 1.2, 2],
+                }
+            )
+            fig_mdd = px.bar(
+                mdd_df,
+                x="Month",
+                y=["Completed", "In Progress", "Not Started", "Overdue"],
+                color_discrete_map={"Completed": GREEN, "In Progress": BLUE, "Not Started": "#CBD5E1", "Overdue": RED},
+            )
+            fig_mdd.update_layout(
+                height=210,
+                margin=dict(l=0, r=0, t=6, b=0),
+                xaxis_title=None,
+                yaxis=dict(title=None, range=[0, 10.5]),
+                legend_title_text="",
+                legend=dict(orientation="v", yanchor="middle", y=0.5, xanchor="left", x=1.02, font=dict(size=11)),
+                paper_bgcolor="rgba(0,0,0,0)",
+                plot_bgcolor="rgba(0,0,0,0)",
+                bargap=0.45,
+            )
+            st.plotly_chart(fig_mdd, use_container_width=True, config={"displayModeBar": False})
+
+        mr2_l, mr2_r = st.columns(2)
+        with mr2_l, st.container(border=True):
+            section_title("Upcoming Milestones (Next 30 Days)", "View All")
+            um30_rows = [
+                ("Infrastructure Setup", "IT Infrastructure Upgrade", "May 15, 2024", "In Progress", "3", "#FEF3C7", "#D97706"),
+                ("Campaign Launch", "Marketing Campaign", "May 20, 2024", "In Progress", "8", "#FEF3C7", "#D97706"),
+                ("Sustainability Plan", "Sustainability Initiative", "May 25, 2024", "Not Started", "13", "#DCFCE7", "#15803D"),
+                ("UI/UX Design Complete", "Website Revamp", "May 28, 2024", "In Progress", "16", "#DCFCE7", "#15803D"),
+                ("Process Documentation", "Internal Operations", "May 30, 2024", "Not Started", "18", "#DCFCE7", "#15803D"),
+            ]
+            um30_tr = "".join(
+                f"<tr><td><b>{mn}</b></td><td>{pn}</td><td>{dd}</td><td>{badge_html(st_s)}</td>"
+                f"<td style='text-align:center'><span class='vk-badge' style='background:{dbg};color:{dfg};min-width:44px'>{dl}</span></td></tr>"
+                for mn, pn, dd, st_s, dl, dbg, dfg in um30_rows
+            )
+            st.markdown(
+                clean_html(
+                    f'<div class="vk-table-wrap"><table class="vk-table"><thead><tr><th>Milestone Name</th><th>Project</th><th>Due Date</th><th>Status</th><th style="text-align:center">Days Left</th></tr></thead><tbody>{um30_tr}</tbody></table></div>'
+                ),
+                unsafe_allow_html=True,
+            )
+
+        with mr2_r, st.container(border=True):
+            section_title("Overdue Milestones", "View All")
+            om_rows = [
+                ("QA Testing", "Website Revamp", "Apr 20, 2024", 34),
+                ("Content Review", "Marketing Campaign", "Apr 25, 2024", 29),
+                ("Training Materials", "Marketing Campaign", "May 5, 2024", 19),
+                ("Requirements Gathering", "Internal Operations", "May 10, 2024", 14),
+            ]
+            om_tr = "".join(
+                f"<tr><td><b>{mn}</b></td><td>{pn}</td><td>{dd}</td><td style='text-align:center;color:#DC2626;font-weight:800'>{do}</td><td>{badge_html('Overdue')}</td></tr>"
+                for mn, pn, dd, do in om_rows
+            )
+            st.markdown(
+                clean_html(
+                    f'<div class="vk-table-wrap"><table class="vk-table"><thead><tr><th>Milestone Name</th><th>Project</th><th>Due Date</th><th style="text-align:center">Days Overdue</th><th>Status</th></tr></thead><tbody>{om_tr}</tbody></table></div>'
+                ),
+                unsafe_allow_html=True,
+            )
 
         with st.container(border=True):
-            logs = df("SELECT * FROM audit_log ORDER BY id DESC LIMIT 50")
-            section_title("Recent Audit Events", f"{len(logs)} Logged")
-            if logs.empty:
-                st.caption("No audit events recorded yet.")
-            else:
-                render_rich_table(
-                    logs,
-                    [
-                        ("created_at", "Timestamp", "text"),
-                        ("event", "Action", "badge"),
-                        ("item_type", "Entity", "bold"),
-                        ("details", "Details", "text"),
-                    ],
-                )
+            ml_c1, ml_c2, ml_c3, ml_c4, ml_c5 = st.columns([2.2, 1.1, 0.85, 0.85, 0.85])
+            with ml_c1:
+                st.markdown("<div style='font-size:15px;font-weight:700;color:#0F172A;padding-top:4px'>Milestone List</div>", unsafe_allow_html=True)
+            with ml_c2:
+                ml_q = st.text_input("Search", placeholder="🔍 Search milestones...", key="rep_ms_q", label_visibility="collapsed")
+            with ml_c3:
+                st.selectbox("Project", ["All Projects"] + projects_list, key="rep_ms_pr", label_visibility="collapsed")
+            with ml_c4:
+                ml_st = st.selectbox("Status", ["All Statuses", "Completed", "In Progress", "Not Started", "Overdue"], key="rep_ms_st", label_visibility="collapsed")
+            with ml_c5:
+                st.selectbox("Team", ["All Teams"] + teams_list, key="rep_ms_tm", label_visibility="collapsed")
+
+            mlist_rows = [
+                ("UI/UX Design Complete", "Website Revamp", "Design", "Completed", "Apr 1, 2024", "Apr 30, 2024", "Apr 28, 2024", "—", "Design phase completed."),
+                ("Campaign Launch", "Marketing Campaign", "Marketing", "In Progress", "Apr 15, 2024", "May 20, 2024", "—", "Content Review", "Awaiting final assets."),
+                ("Infrastructure Setup", "IT Infrastructure Upgrade", "IT", "In Progress", "May 1, 2024", "May 15, 2024", "—", "Requirements Gathering", "Environment setup ongoing."),
+                ("Sustainability Plan", "Sustainability Initiative", "Operations", "Not Started", "May 5, 2024", "May 25, 2024", "—", "—", "Pending stakeholder approval."),
+                ("Process Documentation", "Internal Operations", "Operations", "Not Started", "May 10, 2024", "May 30, 2024", "—", "Infrastructure Setup", "Template to be finalized."),
+                ("QA Testing", "Website Revamp", "IT", "Overdue", "Apr 1, 2024", "Apr 20, 2024", "—", "Development Complete", "Testing issues to resolve."),
+                ("Training Materials", "Marketing Campaign", "Marketing", "Overdue", "Apr 20, 2024", "May 5, 2024", "—", "Content Review", "Update with latest product info."),
+                ("System Configuration", "IT Infrastructure Upgrade", "IT", "Completed", "Mar 15, 2024", "Apr 10, 2024", "Apr 9, 2024", "—", "Configuration completed successfully."),
+            ]
+            if ml_q:
+                mlist_rows = [r for r in mlist_rows if ml_q.lower() in r[0].lower() or ml_q.lower() in r[1].lower()]
+            if ml_st != "All Statuses":
+                mlist_rows = [r for r in mlist_rows if r[3] == ml_st]
+
+            ml_tr = "".join(
+                f"<tr><td><b>{mn}</b></td><td>{pn}</td><td>{tm}</td><td>{badge_html(st_s)}</td><td>{sd}</td><td>{dd}</td><td>{cd}</td><td>{dp}</td><td style='color:#475569'>{nt}</td></tr>"
+                for mn, pn, tm, st_s, sd, dd, cd, dp, nt in mlist_rows
+            )
+            st.markdown(
+                clean_html(
+                    f'<div class="vk-table-wrap"><table class="vk-table"><thead><tr><th>Milestone Name</th><th>Project</th><th>Team</th><th>Status</th><th>Start Date</th><th>Due Date</th><th>Completion Date</th><th>Dependency</th><th>Notes</th></tr></thead><tbody>{ml_tr}</tbody></table></div>'
+                ),
+                unsafe_allow_html=True,
+            )
+            render_pagination_footer("Showing 1 to 8 of 25 milestones", [1, 2, 3, 4], 1)
+
+    # =========================================================================
+    # REPORT TAB 6: WORKLOAD (Exact Match to Image 27)
+    # =========================================================================
+    elif active_rtab == "Workload":
+        wk1, wk2, wk3, wk4, wk5 = st.columns(5)
+        with wk1:
+            kpi_card_mockup("Total Team Members", "24", icon_html="👥", icon_bg="#DBEAFE", icon_fg="#1473E6")
+        with wk2:
+            kpi_card_mockup("Total Active Tasks", "180", icon_html="❖", icon_bg="#D1FAE5", icon_fg="#00875A")
+        with wk3:
+            kpi_card_mockup("Balanced Workload", "16", sub_text="67%", icon_html="👤", icon_bg="#D1FAE5", icon_fg="#00875A")
+        with wk4:
+            kpi_card_mockup("High Workload", "5", sub_text="21%", icon_html="△", icon_bg="#FEF3C7", icon_fg="#F28C00")
+        with wk5:
+            kpi_card_mockup("Overloaded", "3", sub_text="12%", icon_html="⚠", icon_bg="#FEE2E2", icon_fg="#EF4444")
+
+        st.write("")
+        wr1_1, wr1_2, wr1_3 = st.columns(3)
+        with wr1_1, st.container(border=True):
+            section_title("Workload Distribution")
+            render_report_donut_card(
+                "24", "Team Members",
+                ["Balanced", "High Workload", "Overloaded"], [16, 5, 3], [GREEN, ORANGE, RED],
+                [(GREEN, "Balanced", "16 (67%)"), (ORANGE, "High Workload", "5 (21%)"), (RED, "Overloaded", "3 (12%)")],
+            )
+        with wr1_2, st.container(border=True):
+            section_title("Task Distribution by Team")
+            tdt_df = pd.DataFrame(
+                {
+                    "Team": ["IT", "Design", "Operations", "Marketing", "Others"],
+                    "Completed": [18, 12, 13, 12, 6],
+                    "In Progress": [10, 7, 9, 6, 6],
+                    "Not Started": [8, 6, 8, 5, 3],
+                    "High Priority": [9, 6, 7, 7, 3],
+                }
+            )
+            fig_tdt = px.bar(
+                tdt_df,
+                x="Team",
+                y=["Completed", "In Progress", "Not Started", "High Priority"],
+                color_discrete_map={"Completed": GREEN, "In Progress": BLUE, "Not Started": "#CBD5E1", "High Priority": ORANGE},
+            )
+            fig_tdt.update_layout(
+                height=210,
+                margin=dict(l=0, r=0, t=6, b=0),
+                xaxis_title=None,
+                yaxis=dict(title=None, range=[0, 52]),
+                legend_title_text="",
+                legend=dict(orientation="v", yanchor="middle", y=0.5, xanchor="left", x=1.02, font=dict(size=10.5)),
+                paper_bgcolor="rgba(0,0,0,0)",
+                plot_bgcolor="rgba(0,0,0,0)",
+                bargap=0.45,
+            )
+            st.plotly_chart(fig_tdt, use_container_width=True, config={"displayModeBar": False})
+
+        with wr1_3, st.container(border=True):
+            section_title("Workload by Project")
+            wbp_rows = [
+                ("Website Revamp", 36, 20, 18, 20, 42),
+                ("Marketing Campaign", 30, 22, 16, 14, 36),
+                ("IT Infrastructure Upgrade", 26, 20, 16, 12, 32),
+                ("Sustainability Initiative", 24, 18, 15, 9, 28),
+                ("Internal Operations", 20, 13, 16, 8, 22),
+            ]
+            wbp_html = "".join(
+                f"<div style='display:grid;grid-template-columns:145px 1fr 28px;align-items:center;gap:10px;margin-bottom:11px;font-size:12.5px'>"
+                f"<span style='color:#1E293B;font-weight:500;text-align:right'>{p_nm}</span>"
+                f"<div style='display:flex;height:13px;background:#F1F5F9;border-radius:4px;overflow:hidden'>"
+                f"<div style='width:{c_w}%;background:#00875A'></div>"
+                f"<div style='width:{i_w}%;background:#1473E6'></div>"
+                f"<div style='width:{n_w}%;background:#CBD5E1'></div>"
+                f"<div style='width:{h_w}%;background:#F28C00'></div></div>"
+                f"<b style='color:#0F172A;text-align:right'>{tot}</b></div>"
+                for p_nm, c_w, i_w, n_w, h_w, tot in wbp_rows
+            )
+            st.markdown(
+                clean_html(
+                    f"""
+                    <div style="padding-top:4px">{wbp_html}</div>
+                    <div style="display:flex;justify-content:center;gap:12px;font-size:11px;color:#475569;margin-top:8px">
+                        <span><span style="color:#00875A">●</span> Completed</span>
+                        <span><span style="color:#1473E6">●</span> In Progress</span>
+                        <span><span style="color:#94A3B8">●</span> Not Started</span>
+                        <span><span style="color:#F28C00">●</span> High Priority</span>
+                    </div>
+                    """
+                ),
+                unsafe_allow_html=True,
+            )
+
+        wr2_1, wr2_2, wr2_3 = st.columns(3)
+        with wr2_1, st.container(border=True):
+            section_title("Team Workload")
+            twc_df = pd.DataFrame(
+                {
+                    "Team": ["IT", "Design", "Operations", "Marketing", "Others"],
+                    "Available Capacity": [3.2, 2.3, 2.8, 2.0, 2.6],
+                    "Assigned Tasks": [2.8, 1.8, 3.2, 1.5, 2.0],
+                    "Remaining Capacity": [3.5, 3.0, 2.0, 2.5, 3.0],
+                }
+            )
+            fig_twc = px.bar(
+                twc_df,
+                x="Team",
+                y=["Available Capacity", "Assigned Tasks", "Remaining Capacity"],
+                color_discrete_map={"Available Capacity": GREEN, "Assigned Tasks": BLUE, "Remaining Capacity": "#CBD5E1"},
+            )
+            fig_twc.update_layout(
+                height=215,
+                margin=dict(l=0, r=0, t=6, b=0),
+                xaxis_title=None,
+                yaxis=dict(title=None, range=[0, 11]),
+                legend_title_text="",
+                legend=dict(orientation="h", yanchor="top", y=-0.18, xanchor="center", x=0.5, font=dict(size=10.5)),
+                paper_bgcolor="rgba(0,0,0,0)",
+                plot_bgcolor="rgba(0,0,0,0)",
+                bargap=0.45,
+            )
+            st.plotly_chart(fig_twc, use_container_width=True, config={"displayModeBar": False})
+
+        with wr2_2, st.container(border=True):
+            section_title("Individual Workload (Top 10)")
+            iw_items = [
+                ("James Miller", 18, 92, RED),
+                ("Sarah Kim", 16, 82, RED),
+                ("Alice Morgan", 14, 70, ORANGE),
+                ("Ryan Cruz", 12, 60, ORANGE),
+                ("Michael Tan", 10, 48, GREEN),
+                ("Daniel Perez", 9, 43, GREEN),
+                ("Ella Ramirez", 8, 38, GREEN),
+                ("Chris Padilla", 7, 32, GREEN),
+                ("Anna Reyes", 6, 26, GREEN),
+                ("Kevin Santos", 6, 26, GREEN),
+            ]
+            iw_html = "".join(
+                f"<div style='display:grid;grid-template-columns:100px 1fr 24px;align-items:center;gap:8px;margin-bottom:5px;font-size:11.5px'>"
+                f"<span style='color:#1E293B;font-weight:500'>{nm}</span>"
+                f"<div style='height:9px;background:#F1F5F9;border-radius:4px;overflow:hidden'><div style='width:{w_p}%;height:100%;background:{bcol};border-radius:4px'></div></div>"
+                f"<b style='text-align:right;color:#0F172A'>{cnt}</b></div>"
+                for nm, cnt, w_p, bcol in iw_items
+            )
+            st.markdown(clean_html(iw_html), unsafe_allow_html=True)
+
+        with wr2_3, st.container(border=True):
+            section_title("Workload Status by Project")
+            wsp_rows = [
+                ("Website Revamp", 50, 35, 15),
+                ("Marketing Campaign", 42, 42, 16),
+                ("IT Infrastructure Upgrade", 53, 27, 20),
+                ("Sustainability Initiative", 50, 35, 15),
+                ("Internal Operations", 44, 38, 18),
+            ]
+            wsp_html = "".join(
+                f"<div style='display:grid;grid-template-columns:145px 1fr;align-items:center;gap:10px;margin-bottom:11px;font-size:12px'>"
+                f"<span style='color:#1E293B;font-weight:500;text-align:right'>{p_nm}</span>"
+                f"<div style='display:flex;height:13px;border-radius:3px;overflow:hidden'>"
+                f"<div style='width:{b_w}%;background:#00875A'></div>"
+                f"<div style='width:{h_w}%;background:#F28C00'></div>"
+                f"<div style='width:{o_w}%;background:#EF4444'></div></div></div>"
+                for p_nm, b_w, h_w, o_w in wsp_rows
+            )
+            st.markdown(
+                clean_html(
+                    f"""
+                    <div style="padding-top:4px">{wsp_html}</div>
+                    <div style="display:grid;grid-template-columns:145px 1fr;gap:10px;font-size:10.5px;color:#64748B;margin-top:4px">
+                        <div></div>
+                        <div style="display:flex;justify-content:space-between"><span>0%</span><span>20%</span><span>40%</span><span>60%</span><span>80%</span><span>100%</span></div>
+                    </div>
+                    <div style="display:flex;justify-content:center;gap:14px;font-size:11.5px;color:#475569;margin-top:8px">
+                        <span><span style="color:#00875A">●</span> Balanced</span>
+                        <span><span style="color:#F28C00">●</span> High Workload</span>
+                        <span><span style="color:#EF4444">●</span> Overloaded</span>
+                    </div>
+                    """
+                ),
+                unsafe_allow_html=True,
+            )
+
+        wr3_l, wr3_r = st.columns([1.85, 1])
+        with wr3_l, st.container(border=True):
+            wl_c1, wl_c2, wl_c3, wl_c4 = st.columns([1.6, 1.1, 0.85, 1.0])
+            with wl_c1:
+                st.markdown("<div style='font-size:15px;font-weight:700;color:#0F172A;padding-top:4px'>Team Member Workload List</div>", unsafe_allow_html=True)
+            with wl_c2:
+                wl_q = st.text_input("Search", placeholder="🔍 Search team members...", key="rep_wl_q", label_visibility="collapsed")
+            with wl_c3:
+                st.selectbox("Team", ["All Teams"] + teams_list, key="rep_wl_tm", label_visibility="collapsed")
+            with wl_c4:
+                wl_st = st.selectbox("Workload", ["All Workload Status", "Overloaded", "High", "Balanced"], key="rep_wl_st", label_visibility="collapsed")
+
+            wlist_rows = [
+                ("JM", "#0284C7", "James Miller", "IT", 18, 6, 8, 4, 6, "Overloaded"),
+                ("SK", "#0284C7", "Sarah Kim", "Design", 16, 5, 8, 3, 4, "Overloaded"),
+                ("AL", "#0F172A", "Alice Morgan", "Marketing", 14, 5, 6, 3, 4, "High"),
+                ("RJ", "#0F172A", "Ryan Cruz", "Operations", 12, 4, 6, 2, 3, "High"),
+                ("MT", "#0284C7", "Michael Tan", "IT", 10, 5, 4, 1, 2, "Balanced"),
+                ("DP", "#1D4ED8", "Daniel Perez", "Operations", 9, 4, 3, 2, 1, "Balanced"),
+                ("ER", "#EF4444", "Ella Ramirez", "Design", 8, 3, 3, 2, 1, "Balanced"),
+                ("CP", "#0284C7", "Chris Padilla", "IT", 7, 3, 2, 2, 1, "Balanced"),
+            ]
+            if wl_q:
+                wlist_rows = [r for r in wlist_rows if wl_q.lower() in r[2].lower() or wl_q.lower() in r[3].lower()]
+            if wl_st != "All Workload Status":
+                wlist_rows = [r for r in wlist_rows if r[9] == wl_st]
+
+            wl_badge_map = {
+                "Overloaded": "vk-badge-red",
+                "High": "vk-badge-orange",
+                "Balanced": "vk-badge-green",
+            }
+            wl_tr = "".join(
+                f"<tr><td><span class='vk-avatar' style='background:{abg}'>{ini}</span><b>{nm}</b></td><td>{tm}</td><td style='text-align:center'><b>{at}</b></td><td style='text-align:center'>{cm}</td><td style='text-align:center'>{ip}</td><td style='text-align:center'>{ns}</td><td style='text-align:center'>{hp}</td>"
+                f"<td><span class='vk-badge {wl_badge_map[ws]}' style='min-width:84px'>{ws}</span></td></tr>"
+                for ini, abg, nm, tm, at, cm, ip, ns, hp, ws in wlist_rows
+            )
+            st.markdown(
+                clean_html(
+                    f'<div class="vk-table-wrap"><table class="vk-table"><thead><tr><th>Name</th><th>Team</th><th style="text-align:center">Active Tasks</th><th style="text-align:center">Completed</th><th style="text-align:center">In Progress</th><th style="text-align:center">Not Started</th><th style="text-align:center">High Priority</th><th>Workload Status</th></tr></thead><tbody>{wl_tr}</tbody>
