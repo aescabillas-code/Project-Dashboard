@@ -2109,249 +2109,1130 @@ elif page == "Projects":
 
 
 # ===========================================================================
-# PAGE 3: GANTT CHART
+# PAGE 3: GANTT CHART (Exact Replica of Month, Week, and Day Mockups)
 # ===========================================================================
 elif page == "Gantt Chart":
-    render_top_header("Gantt Chart", "Visualize project schedules, task durations, dependencies, and milestones", show_filters=True)
-    t = apply_global_filters(T, "project")
-    m = apply_global_filters(M, "project")
-
-    with st.container(border=True):
-        c1, c2, c3 = st.columns([1.4, 1, 1])
-        with c1:
-            view_mode = tile_toggle("Timeline View", ["Tasks & Milestones", "Tasks Only", "Projects Timeline"], key="gantt_view_mode")
-        with c2:
-            color_by = st.selectbox("Color Bars By", ["status", "priority", "project", "team"])
-        with c3:
-            st.write("")
-            show_deps = st.checkbox("Show Dependency Labels on Bars", value=True)
-
-        if view_mode == "Projects Timeline":
-            g = apply_global_filters(P, "name").copy()
-            g["Start"] = pd.to_datetime(g.start_date, errors="coerce")
-            g["Finish"] = pd.to_datetime(g.end_date, errors="coerce")
-            y_col = "name"
-        else:
-            g = t.copy()
-            g["Start"] = pd.to_datetime(g.start_date, errors="coerce")
-            g["Finish"] = pd.to_datetime(g.due_date, errors="coerce")
-            y_col = "name"
-
-        g = g.dropna(subset=["Start", "Finish"])
-        if g.empty:
-            st.info("No scheduled items available for the selected filters.")
-        else:
-            cmap = {
-                "Completed": GREEN,
-                "On Track": GREEN,
-                "In Progress": BLUE,
-                "At Risk": ORANGE,
-                "Not Started": GRAY,
-                "Overdue": RED,
-                "Delayed": RED,
-                "High": RED,
-                "Medium": ORANGE,
-                "Low": GREEN,
-            }
-            g["BarLabel"] = g.apply(
-                lambda r: f"{r.get('progress', 0)}%" + (f" ⟵ {r.get('dependency')}" if show_deps and r.get("dependency") else ""),
-                axis=1,
-            )
-            fig = px.timeline(
-                g,
-                x_start="Start",
-                x_end="Finish",
-                y=y_col,
-                color=color_by if color_by in g.columns else "status",
-                text="BarLabel",
-                color_discrete_map=cmap,
-            )
-            if view_mode == "Tasks & Milestones" and not m.empty:
-                m_valid = m.dropna(subset=["due_date"]).copy()
-                m_valid["Due"] = pd.to_datetime(m_valid.due_date, errors="coerce")
-                fig.add_trace(
-                    go.Scatter(
-                        x=m_valid["Due"],
-                        y=m_valid["name"],
-                        mode="markers",
-                        marker=dict(symbol="diamond", size=12, color=NAVY, line=dict(width=2, color="white")),
-                        name="Milestone Deadline",
-                        hovertext=m_valid["project"] + " • " + m_valid["status"],
-                    )
-                )
-            fig.update_yaxes(autorange="reversed", title=None, showgrid=True, gridcolor="#F1F5F9")
-            fig.update_xaxes(showgrid=True, gridcolor="#E2E8F0")
-            fig.update_layout(
-                height=max(380, 42 * len(g)),
-                margin=dict(l=0, r=16, t=10, b=10),
-                paper_bgcolor="rgba(0,0,0,0)",
-                plot_bgcolor="rgba(0,0,0,0)",
-                legend_title_text="",
-                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-            )
-            st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
-
-    with st.container(border=True):
-        section_title("Schedule & Dependency Matrix", f"{len(t)} Scheduled Tasks")
-        render_rich_table(
-            t,
-            [
-                ("name", "Task", "bold"),
-                ("project", "Project", "text"),
-                ("assignee", "Assignee", "avatar"),
-                ("start_date", "Start Date", "date"),
-                ("due_date", "Due Date", "date"),
-                ("dependency", "Dependency", "text"),
-                ("status", "Status", "badge"),
-                ("progress", "Progress", "progress"),
-            ],
+    # Top Header Row: Title on Left, Search + Date Range on Right
+    gh_l, gh_s, gh_d = st.columns([2.2, 1.1, 1.0])
+    with gh_l:
+        st.markdown(
+            clean_html(
+                f"""
+                <div style='font-size:28px;font-weight:800;color:{TEXT_COLOR};letter-spacing:-0.03em;line-height:1.15'>Gantt Chart</div>
+                <div style='font-size:13.5px;color:#64748B;margin-top:2px'>Visualize and manage project schedules, dependencies, and milestones.</div>
+                """
+            ),
+            unsafe_allow_html=True,
         )
-
-
-# ===========================================================================
-# PAGE 4: TASK LIST
-# ===========================================================================
-elif page == "Task List":
-    render_top_header("Task List", "Manage task scope, assignments, priorities, and delivery dates", show_filters=True)
-    t = apply_global_filters(T, "project")
-
-    k1, k2, k3, k4 = st.columns(4)
-    with k1:
-        metric_card("Total Tasks", len(t), "Filtered scope", "☑️", "blue")
-    with k2:
-        metric_card("Completed", int((t.status == "Completed").sum()), "Delivered tasks", "✅", "green")
-    with k3:
-        metric_card("In Progress", int((t.status == "In Progress").sum()), "Active execution", "▶️", "blue")
-    with k4:
-        metric_card("Not Started / Overdue", int(t.status.isin(["Not Started", "Overdue"]).sum()), "Pending action", "⏸️", "orange")
+    with gh_s:
+        gantt_q = st.text_input("Search", placeholder="🔍 Search projects or tasks...", key="gantt_search_top", label_visibility="collapsed")
+    with gh_d:
+        st.date_input("Date Range", (date(2024, 4, 24), date(2024, 6, 30)), key="gantt_date_top", label_visibility="collapsed")
 
     st.write("")
-    ta, tb = st.tabs(["☷ Task Directory", "＋ Create / Edit Task"])
-    with ta:
-        with st.container(border=True):
-            c1, c2, c3 = st.columns([1.8, 1, 1])
-            with c1:
-                q = st.text_input("🔍 Search tasks by name, project, or assignee", key="task_search")
-            with c2:
-                sf = st.selectbox("Status", ["All Statuses", "Completed", "In Progress", "Not Started", "Overdue"], key="task_sf")
-            with c3:
-                pf_prio = st.selectbox("Priority", ["All Priorities", "High", "Medium", "Low"], key="task_pf")
+    # Filter Bar Card
+    with st.container(border=True):
+        gf1, gf2, gf3, gf4, gf_sp, gf_more = st.columns([1.15, 1.15, 1.15, 1.15, 0.8, 0.7])
+        gantt_projects = ["All Projects", "Website Revamp", "IT Infrastructure Upgrade", "Sustainability Initiative", "Marketing Campaign", "Training Program"]
+        with gf1:
+            st.markdown("<div style='font-size:11.5px;font-weight:600;color:#475569;margin-bottom:3px'>Project</div>", unsafe_allow_html=True)
+            g_proj_sel = st.selectbox("Project", gantt_projects, key="g_flt_proj", label_visibility="collapsed")
+        with gf2:
+            st.markdown("<div style='font-size:11.5px;font-weight:600;color:#475569;margin-bottom:3px'>View</div>", unsafe_allow_html=True)
+            g_view_sel = st.selectbox("View", ["All Tasks", "Tasks Only", "Milestones Only"], key="g_flt_view", label_visibility="collapsed")
+        with gf3:
+            st.markdown("<div style='font-size:11.5px;font-weight:600;color:#475569;margin-bottom:3px'>Status</div>", unsafe_allow_html=True)
+            g_stat_sel = st.selectbox("Status", ["All Statuses", "On Track", "Completed", "In Progress", "Not Started", "At Risk", "Overdue"], key="g_flt_stat", label_visibility="collapsed")
+        with gf4:
+            st.markdown("<div style='font-size:11.5px;font-weight:600;color:#475569;margin-bottom:3px'>Assignee</div>", unsafe_allow_html=True)
+            g_ass_sel = st.selectbox("Assignee", ["All Assignees"] + sorted(R.name.unique().tolist()), key="g_flt_ass", label_visibility="collapsed")
+        with gf_more:
+            st.markdown("<div style='font-size:11.5px;margin-bottom:3px'>&nbsp;</div>", unsafe_allow_html=True)
+            if st.button("▽ More Filters", key="g_btn_more_flt", use_container_width=True):
+                for k, v in [("g_flt_proj", "All Projects"), ("g_flt_view", "All Tasks"), ("g_flt_stat", "All Statuses"), ("g_flt_ass", "All Assignees")]:
+                    st.session_state[k] = v
+                st.rerun()
 
-            v = t.copy()
-            if q:
-                v = v[v.astype(str).apply(lambda s: s.str.contains(q, case=False, na=False)).any(axis=1)]
-            if sf != "All Statuses":
-                v = v[v.status == sf]
-            if pf_prio != "All Priorities":
-                v = v[v.priority == pf_prio]
+    # Legend + Tile Toggle Bar (Month | Week | Day)
+    if "gantt_scale" not in st.session_state:
+        st.session_state.gantt_scale = "Month"
 
-            section_title("Task List", f"{len(v)} Tasks")
-            render_rich_table(
-                v,
-                [
-                    ("name", "Task Name", "bold"),
-                    ("project", "Project", "text"),
-                    ("team", "Team", "text"),
-                    ("status", "Status", "badge"),
-                    ("priority", "Priority", "badge"),
-                    ("start_date", "Start Date", "date"),
-                    ("due_date", "Due Date", "date"),
-                    ("assignee", "Assignee", "avatar"),
-                    ("progress", "Progress", "progress"),
-                    ("dependency", "Dependency", "text"),
-                ],
+    with st.container(border=True):
+        lg_col, m_col, w_col, d_col, exp_col, dl_col = st.columns([4.5, 0.45, 0.45, 0.42, 0.25, 0.25])
+        with lg_col:
+            dep_marker = (
+                "<span style='display:inline-block;width:11px;height:11px;border-radius:3px;background:#EF4444;margin-right:5px;vertical-align:middle'></span>Dependency"
+                if st.session_state.gantt_scale == "Week"
+                else "<span style='color:#64748B;font-weight:800;margin-right:5px'>⟶</span>Dependency"
             )
-            st.write("")
+            st.markdown(
+                clean_html(
+                    f"""
+                    <div style="display:flex;align-items:center;gap:16px;flex-wrap:wrap;padding-top:6px;font-size:12px;font-weight:500;color:#334155">
+                        <span><span style="display:inline-block;width:11px;height:11px;border-radius:3px;background:#1473E6;margin-right:5px;vertical-align:middle"></span>Task</span>
+                        <span><span style="color:#7C3AED;font-size:14px;margin-right:4px;vertical-align:middle">◆</span>Milestone</span>
+                        <span><span style="display:inline-block;width:11px;height:11px;border-radius:3px;background:#00875A;margin-right:5px;vertical-align:middle"></span>Completed</span>
+                        <span><span style="display:inline-block;width:11px;height:11px;border-radius:3px;background:#60A5FA;margin-right:5px;vertical-align:middle"></span>In Progress</span>
+                        <span><span style="display:inline-block;width:11px;height:11px;border-radius:3px;background:#94A3B8;margin-right:5px;vertical-align:middle"></span>Not Started</span>
+                        <span><span style="display:inline-block;width:11px;height:11px;border-radius:3px;background:#F59E0B;margin-right:5px;vertical-align:middle"></span>At Risk</span>
+                        <span><span style="display:inline-block;width:11px;height:11px;border-radius:3px;background:#EF4444;margin-right:5px;vertical-align:middle"></span>Overdue</span>
+                        <span>{dep_marker}</span>
+                    </div>
+                    """
+                ),
+                unsafe_allow_html=True,
+            )
+        with m_col:
+            if st.button("Month", key="g_scale_month", type="primary" if st.session_state.gantt_scale == "Month" else "secondary", use_container_width=True):
+                st.session_state.gantt_scale = "Month"
+                st.rerun()
+        with w_col:
+            if st.button("Week", key="g_scale_week", type="primary" if st.session_state.gantt_scale == "Week" else "secondary", use_container_width=True):
+                st.session_state.gantt_scale = "Week"
+                st.rerun()
+        with d_col:
+            if st.button("Day", key="g_scale_day", type="primary" if st.session_state.gantt_scale == "Day" else "secondary", use_container_width=True):
+                st.session_state.gantt_scale = "Day"
+                st.rerun()
+        with exp_col:
+            st.button("⛶", key="g_fullscreen_btn", help="Expand view", use_container_width=True)
+        with dl_col:
             st.download_button(
-                "⬇ Export Tasks CSV",
-                v.to_csv(index=False).encode("utf-8-sig"),
-                file_name="vektor_tasks.csv",
+                "⬇",
+                T.to_csv(index=False).encode("utf-8-sig"),
+                file_name="vektor_gantt_schedule.csv",
                 mime="text/csv",
+                key="g_dl_btn",
+                use_container_width=True,
             )
 
-    with tb:
+        scale = st.session_state.gantt_scale
+
+        # WBS dataset for Month, Week, and Day views matching the 3 Gantt screenshots
+        month_day_rows = [
+            # (id, indent, icon_type, icon_col, name, start, end, dur, status, pct, bar_left, bar_w, bar_col, bar_fill_w, milestone_txt, has_dep_arrow, row_bg)
+            ("1", 0, "folder", "#00875A", "Website Revamp", "Apr 24, 2024", "Jun 30, 2024", "67 days", "On Track", "70%", 7.5, 83.0, "#00875A", 100, " end_diamond", False, "#ECFDF5"),
+            ("1.1", 1, "folder", "#1473E6", "Planning", "Apr 24, 2024", "May 5, 2024", "12 days", "Completed", "100%", 7.5, 14.5, "#00875A", 100, "Project Kick-off", False, "#FFFFFF"),
+            ("1.1.1", 2, "play", "#00875A", "Define project scope", "Apr 24, 2024", "Apr 26, 2024", "3 days", "Completed", "100%", 7.5, 4.5, "#10B981", 100, "", True, "#FFFFFF"),
+            ("1.1.2", 2, "play", "#00875A", "Stakeholder alignment", "Apr 27, 2024", "May 5, 2024", "9 days", "Completed", "100%", 12.0, 12.5, "#10B981", 100, "", False, "#FFFFFF"),
+            ("1.2", 1, "folder", "#00875A", "Design", "May 6, 2024", "May 20, 2024", "15 days", "Completed", "100%", 24.5, 20.0, "#00875A", 100, "Design Sign-off", False, "#FFFFFF"),
+            ("1.2.1", 2, "play", "#00875A", "Create wireframes", "May 6, 2024", "May 12, 2024", "7 days", "Completed", "100%", 24.5, 11.0, "#10B981", 100, "", True, "#FFFFFF"),
+            ("1.2.2", 2, "play", "#00875A", "UI/UX design", "May 13, 2024", "May 20, 2024", "8 days", "Completed", "100%", 35.5, 12.0, "#10B981", 100, "", False, "#FFFFFF"),
+            ("1.3", 1, "folder", "#1473E6", "Development", "May 21, 2024", "May 31, 2024", "11 days", "In Progress", "60%", 41.5, 17.5, "#3B82F6", 60, "", False, "#F0F7FF"),
+            ("1.3.1", 2, "play", "#64748B", "Frontend development", "May 21, 2024", "May 26, 2024", "6 days", "In Progress", "70%", 41.5, 9.5, "#60A5FA", 100, "", True, "#FFFFFF"),
+            ("1.3.2", 2, "play", "#64748B", "Backend development", "May 27, 2024", "May 31, 2024", "5 days", "In Progress", "50%", 51.0, 9.5, "#60A5FA", 100, "", False, "#FFFFFF"),
+            ("1.4", 1, "folder", "#64748B", "Testing", "Jun 1, 2024", "Jun 15, 2024", "15 days", "Not Started", "0%", 57.5, 19.0, "#8495B0", 100, "", True, "#FFFFFF"),
+            ("1.4.1", 2, "play", "#64748B", "UAT testing", "Jun 1, 2024", "Jun 10, 2024", "10 days", "Not Started", "0%", 57.5, 12.0, "#8495B0", 100, "", False, "#FFFFFF"),
+            ("1.4.2", 2, "play", "#64748B", "Bug fixes", "Jun 11, 2024", "Jun 15, 2024", "5 days", "Not Started", "0%", 69.5, 7.5, "#8495B0", 100, "", True, "#FFFFFF"),
+            ("1.5", 1, "folder", "#7C3AED", "Go-Live", "Jun 16, 2024", "Jun 30, 2024", "15 days", "Not Started", "0%", 77.0, 17.0, "#8495B0", 100, "Go-Live", False, "#FFFFFF"),
+            ("2", 0, "folder", "#00875A", "IT Infrastructure Upgrade", "Apr 15, 2024", "Jun 20, 2024", "67 days", "In Progress", "45%", 0.5, 69.0, "#93C5FD", 55, "", False, "#F0F7FF"),
+            ("2.1", 1, "doc", "#00875A", "Requirements", "Apr 15, 2024", "Apr 30, 2024", "16 days", "Completed", "100%", 0.5, 17.5, "#00875A", 100, "", True, "#FFFFFF"),
+            ("2.2", 1, "doc", "#7C3AED", "Implementation", "May 1, 2024", "Jun 10, 2024", "41 days", "In Progress", "40%", 18.5, 40.5, "#2563EB", 100, "", True, "#FFFFFF"),
+            ("2.3", 1, "doc", "#7C3AED", "Testing", "Jun 11, 2024", "Jun 20, 2024", "10 days", "Not Started", "0%", 60.0, 16.0, "#8495B0", 100, "", False, "#FFFFFF"),
+            ("3", 0, "folder", "#00875A", "Sustainability Initiative", "May 1, 2024", "Jun 30, 2024", "61 days", "At Risk", "30%", 0.5, 75.5, "#F59E0B", 100, "", False, "#FFFBEB"),
+            ("3.1", 1, "doc", "#00875A", "Research & Analysis", "May 1, 2024", "May 20, 2024", "20 days", "Completed", "100%", 0.5, 29.0, "#00875A", 100, "", True, "#FFFFFF"),
+            ("3.2", 1, "doc", "#64748B", "Strategy Development", "May 21, 2024", "Jun 10, 2024", "21 days", "In Progress", "40%", 30.8, 29.5, "#2563EB", 100, "", True, "#FFFFFF"),
+            ("3.3", 1, "doc", "#64748B", "Implementation", "Jun 11, 2024", "Jun 30, 2024", "20 days", "Not Started", "0%", 61.0, 27.5, "#8495B0", 100, "Launch", False, "#FFFFFF"),
+        ]
+
+        week_rows = [
+            ("1", 0, "folder", "#00875A", "Website Revamp", "Apr 24, 2024", "Jun 30, 2024", "67 days", "On Track", "70%", 7.5, 84.0, "#00875A", 100, "", False, "#ECFDF5"),
+            ("1.1", 1, "folder", "#1473E6", "Planning", "Apr 24, 2024", "May 5, 2024", "12 days", "Completed", "100%", 7.5, 14.5, "#10B981", 100, "", True, "#FFFFFF"),
+            ("1.2", 1, "folder", "#00875A", "Design", "May 6, 2024", "May 20, 2024", "15 days", "Completed", "100%", 24.0, 17.0, "#10B981", 100, "", True, "#FFFFFF"),
+            ("1.3", 1, "folder", "#1473E6", "Development", "May 21, 2024", "May 31, 2024", "11 days", "In Progress", "60%", 43.0, 16.5, "#2563EB", 100, "", True, "#FFFFFF"),
+            ("1.4", 1, "folder", "#7C3AED", "Testing", "Jun 1, 2024", "Jun 15, 2024", "15 days", "Not Started", "0%", 60.0, 17.5, "#8495B0", 100, "", True, "#FFFFFF"),
+            ("1.5", 1, "folder", "#475569", "Go-Live", "Jun 16, 2024", "Jun 30, 2024", "15 days", "Not Started", "0%", 78.0, 15.0, "#8495B0", 100, "Go-Live", False, "#FFFFFF"),
+            ("2", 0, "folder", "#00875A", "IT Infrastructure Upgrade", "Apr 15, 2024", "Jun 20, 2024", "67 days", "In Progress", "45%", 6.5, 74.5, "#93C5FD", 46, "", False, "#F0F7FF"),
+            ("2.1", 1, "doc", "#00875A", "Requirements", "Apr 15, 2024", "Apr 30, 2024", "16 days", "Completed", "100%", 6.5, 17.5, "#10B981", 100, "", True, "#FFFFFF"),
+            ("2.2", 1, "doc", "#1473E6", "Implementation", "May 1, 2024", "Jun 10, 2024", "41 days", "In Progress", "40%", 24.8, 43.0, "#3B82F6", 100, "", True, "#FFFFFF"),
+            ("2.3", 1, "doc", "#7C3AED", "Testing", "Jun 11, 2024", "Jun 20, 2024", "10 days", "Not Started", "0%", 68.2, 16.5, "#8495B0", 100, "", False, "#FFFFFF"),
+            ("3", 0, "folder", "#00875A", "Sustainability Initiative", "May 1, 2024", "Jun 30, 2024", "61 days", "At Risk", "30%", 6.5, 78.5, "#F59E0B", 100, "", False, "#FFFBEB"),
+            ("3.1", 1, "doc", "#00875A", "Research & Analysis", "May 1, 2024", "May 20, 2024", "20 days", "Completed", "100%", 6.5, 25.0, "#00875A", 100, "", True, "#FFFFFF"),
+            ("3.2", 1, "doc", "#3B82F6", "Strategy Development", "May 21, 2024", "Jun 10, 2024", "21 days", "In Progress", "40%", 33.0, 25.5, "#3B82F6", 100, "", True, "#FFFFFF"),
+            ("3.3", 1, "doc", "#7C3AED", "Implementation", "Jun 11, 2024", "Jun 30, 2024", "20 days", "Not Started", "0%", 59.5, 32.0, "#8495B0", 100, "Launch", False, "#FFFFFF"),
+            ("4", 0, "folder", "#00875A", "Marketing Campaign", "May 6, 2024", "Jun 25, 2024", "50 days", "On Track", "25%", 19.8, 62.0, "#00875A", 100, "", False, "#ECFDF5"),
+            ("4.1", 1, "doc", "#1473E6", "Content Creation", "May 6, 2024", "May 20, 2024", "15 days", "In Progress", "50%", 19.8, 20.0, "#2563EB", 100, "", True, "#FFFFFF"),
+            ("4.2", 1, "doc", "#7C3AED", "Campaign Setup", "May 21, 2024", "Jun 10, 2024", "20 days", "Not Started", "0%", 40.5, 21.0, "#8495B0", 100, "", True, "#FFFFFF"),
+            ("4.3", 1, "doc", "#475569", "Launch Campaign", "Jun 11, 2024", "Jun 25, 2024", "15 days", "Not Started", "0%", 62.0, 22.0, "#8495B0", 100, "Launch", False, "#FFFFFF"),
+            ("5", 0, "folder", "#00875A", "Training Program", "May 13, 2024", "Jun 28, 2024", "47 days", "On Track", "20%", 29.5, 56.0, "#00875A", 100, "", False, "#ECFDF5"),
+            ("5.1", 1, "doc", "#00875A", "Training Materials", "May 13, 2024", "May 31, 2024", "18 days", "In Progress", "40%", 29.5, 23.8, "#2563EB", 100, "", True, "#FFFFFF"),
+            ("5.2", 1, "doc", "#475569", "Pilot Training", "Jun 3, 2024", "Jun 14, 2024", "12 days", "Not Started", "0%", 55.0, 14.0, "#8495B0", 100, "", True, "#FFFFFF"),
+            ("5.3", 1, "doc", "#475569", "Full Rollout", "Jun 17, 2024", "Jun 28, 2024", "11 days", "Not Started", "0%", 70.8, 18.0, "#8495B0", 100, "Complete", False, "#FFFFFF"),
+        ]
+
+        day_rows = [
+            ("1", 0, "folder", "#00875A", "Website Revamp", "Apr 24, 2024", "Jun 30, 2024", "67 days", "On Track", "70%", 0.0, 100.0, "#00875A", 100, "", False, "#ECFDF5", ""),
+            ("1.1", 1, "folder", "#00875A", "Planning", "Apr 24, 2024", "May 5, 2024", "12 days", "Completed", "100%", 0.0, 9.5, "#A7F3D0", 100, "Project Kick-off", False, "#FFFFFF", ""),
+            ("1.2", 1, "folder", "#00875A", "Design", "May 6, 2024", "May 20, 2024", "15 days", "Completed", "100%", 0.0, 0.0, "#00875A", 100, "", False, "#FFFFFF", ""),
+            ("1.2.1", 2, "play", "#00875A", "Create wireframes", "May 6, 2024", "May 12, 2024", "7 days", "Completed", "100%", 3.5, 24.5, "#00875A", 100, "", True, "#FFFFFF", "Create wireframes"),
+            ("1.2.2", 2, "play", "#00875A", "UI/UX design", "May 13, 2024", "May 20, 2024", "8 days", "Completed", "100%", 29.5, 17.5, "#10B981", 100, "", False, "#FFFFFF", "UI/UX design"),
+            ("1.3", 1, "folder", "#1473E6", "Development", "May 21, 2024", "May 31, 2024", "11 days", "In Progress", "60%", 25.8, 20.5, "#60A5FA", 45, "", False, "#F0F7FF", "Frontend development"),
+            ("1.3.1", 2, "play", "#0F766E", "Frontend development", "May 21, 2024", "May 26, 2024", "6 days", "In Progress", "70%", 48.5, 15.0, "#60A5FA", 100, "", True, "#FFFFFF", "Backend development"),
+            ("1.3.2", 2, "play", "#0F766E", "Backend development", "May 27, 2024", "May 31, 2024", "5 days", "In Progress", "50%", 66.8, 16.0, "#8495B0", 100, "", False, "#FFFFFF", ""),
+            ("1.4", 1, "folder", "#475569", "Testing", "Jun 1, 2024", "Jun 15, 2024", "15 days", "Not Started", "0%", 58.8, 12.5, "#8495B0", 100, "", True, "#FFFFFF", "UAT testing"),
+            ("1.5", 1, "folder", "#7C3AED", "Go-Live", "Jun 16, 2024", "Jun 30, 2024", "15 days", "Not Started", "0%", 73.0, 14.0, "#8495B0", 100, "Go-Live", False, "#FFFFFF", ""),
+            ("2", 0, "folder", "#00875A", "IT Infrastructure Upgrade", "Apr 15, 2024", "Jun 20, 2024", "67 days", "In Progress", "45%", 0.0, 71.5, "#60A5FA", 49, "", False, "#F0F7FF", ""),
+            ("2.1", 1, "doc", "#00875A", "Requirements", "Apr 15, 2024", "Apr 30, 2024", "16 days", "Completed", "100%", 0.0, 16.0, "#10B981", 100, "", True, "#FFFFFF", "Requirements"),
+            ("2.2", 1, "doc", "#1473E6", "Implementation", "May 1, 2024", "Jun 10, 2024", "41 days", "In Progress", "40%", 18.0, 33.2, "#3B82F6", 100, "", True, "#FFFFFF", "Implementation"),
+            ("2.3", 1, "doc", "#7C3AED", "Testing", "Jun 11, 2024", "Jun 20, 2024", "10 days", "Not Started", "0%", 53.0, 23.5, "#8495B0", 100, "", False, "#FFFFFF", "Testing"),
+            ("3", 0, "folder", "#00875A", "Sustainability Initiative", "May 1, 2024", "Jun 30, 2024", "61 days", "At Risk", "30%", 0.0, 88.5, "#F59E0B", 100, "", False, "#FFFBEB", ""),
+            ("3.1", 1, "doc", "#00875A", "Research & Analysis", "May 1, 2024", "May 20, 2024", "20 days", "Completed", "100%", 0.0, 20.5, "#00875A", 100, "", True, "#FFFFFF", "Research & Analysis"),
+            ("3.2", 1, "doc", "#1473E6", "Strategy Development", "May 21, 2024", "Jun 10, 2024", "21 days", "In Progress", "40%", 22.5, 19.5, "#3B82F6", 100, "", True, "#FFFFFF", "Strategy Development"),
+            ("3.3", 1, "doc", "#7C3AED", "Implementation", "Jun 11, 2024", "Jun 30, 2024", "20 days", "Not Started", "0%", 43.8, 24.5, "#8495B0", 100, "Complete", False, "#FFFFFF", "Implementation"),
+        ]
+
+        active_rows = week_rows if scale == "Week" else (day_rows if scale == "Day" else month_day_rows)
+
+        # Apply Top Search & Dropdown Filters
+        proj_prefix_map = {
+            "Website Revamp": "1",
+            "IT Infrastructure Upgrade": "2",
+            "Sustainability Initiative": "3",
+            "Marketing Campaign": "4",
+            "Training Program": "5",
+        }
+        if g_proj_sel != "All Projects" and g_proj_sel in proj_prefix_map:
+            pfx = proj_prefix_map[g_proj_sel]
+            active_rows = [r for r in active_rows if r[0] == pfx or r[0].startswith(pfx + ".")]
+        if g_stat_sel != "All Statuses":
+            active_rows = [r for r in active_rows if r[8] == g_stat_sel or r[1] == 0]
+        if g_view_sel == "Milestones Only":
+            active_rows = [r for r in active_rows if r[14] or r[1] == 0]
+        if gantt_q:
+            q_low = gantt_q.lower()
+            active_rows = [r for r in active_rows if q_low in r[4].lower() or q_low in r[0].lower()]
+
+        # Build Timeline Header HTML according to scale
+        if scale == "Month":
+            tl_top_hdr = """
+            <div style="display:grid;grid-template-columns:2fr 5fr 5fr;border-bottom:1px solid #E2E8F0;background:#F8FAFC;font-size:11.5px;font-weight:700;color:#1E293B;text-align:center">
+                <div style="padding:6px 0;border-right:1px solid #E2E8F0">Apr 2024</div>
+                <div style="padding:6px 0;border-right:1px solid #E2E8F0;position:relative">
+                    May 2024
+                    <span style="position:absolute;left:10%;top:-10px;background:#065F46;color:white;font-size:10px;font-weight:700;padding:2px 8px;border-radius:4px;z-index:5">Today</span>
+                </div>
+                <div style="padding:6px 0">Jun 2024</div>
+            </div>
+            <div style="display:grid;grid-template-columns:repeat(12,1fr);background:#F8FAFC;font-size:10.5px;font-weight:600;color:#475569;text-align:center">
+                <div style="padding:5px 0;border-right:1px solid #EDF2F7">Apr 21</div>
+                <div style="padding:5px 0;border-right:1px solid #EDF2F7">Apr 28</div>
+                <div style="padding:5px 0;border-right:1px solid #EDF2F7">May 5</div>
+                <div style="padding:5px 0;border-right:1px solid #EDF2F7">May 12</div>
+                <div style="padding:5px 0;border-right:1px solid #EDF2F7;color:#1D4ED8">May 19</div>
+                <div style="padding:5px 0;border-right:1px solid #EDF2F7">May 26</div>
+                <div style="padding:5px 0;border-right:1px solid #EDF2F7">May 26</div>
+                <div style="padding:5px 0;border-right:1px solid #EDF2F7;color:#1D4ED8">Jun 2</div>
+                <div style="padding:5px 0;border-right:1px solid #EDF2F7;color:#1D4ED8">Jun 9</div>
+                <div style="padding:5px 0;border-right:1px solid #EDF2F7;color:#1D4ED8">Jun 16</div>
+                <div style="padding:5px 0;border-right:1px solid #EDF2F7">Jun 23</div>
+                <div style="padding:5px 0">Jun 30</div>
+            </div>
+            """
+            today_line_html = '<div style="position:absolute;top:0;bottom:0;left:21%;width:1.5px;background:#10B981;z-index:4;pointer-events:none"></div>'
+        elif scale == "Week":
+            weeks_meta = [
+                ("Apr 22 – Apr 28", "Week 17", False),
+                ("Apr 29 – May 5", "Week 18", False),
+                ("May 6 – May 12", "Week 19", True),
+                ("May 13 – May 19", "Week 20", False),
+                ("May 20 – May 26", "Week 21", False),
+                ("May 27 – Jun 2", "Week 22", False),
+                ("Jun 3 – Jun 9", "Week 23", False),
+                ("Jun 10 – Jun 16", "Week 24", False),
+                ("Jun 17 – Jun 23", "Week 25", False),
+                ("Jun 24 – Jun 30", "Week 26", False),
+            ]
+            w_cells = "".join(
+                f'<div style="padding:4px 2px;border-right:1px solid #E2E8F0;background:{"#D1FAE5" if is_cur else "#F8FAFC"}">'
+                f'<div style="font-size:10px;font-weight:700;color:#0F172A;line-height:1.2">{rng}</div>'
+                f'<div style="font-size:9.5px;color:{"#065F46" if is_cur else "#64748B"};font-weight:{"700" if is_cur else "500"}">{wk}</div></div>'
+                for rng, wk, is_cur in weeks_meta
+            )
+            tl_top_hdr = f'<div style="display:grid;grid-template-columns:repeat(10,1fr);text-align:center">{w_cells}</div>'
+            today_line_html = '<div style="position:absolute;top:0;bottom:0;left:20%;width:10%;background:rgba(16,185,129,0.08);border-left:1.5px solid #10B981;border-right:1px solid #A7F3D0;z-index:1;pointer-events:none"></div>'
+        else:
+            hours = ["8 AM", "9 AM", "10 AM", "11 AM", "12 PM", "1 PM", "2 PM", "3 PM", "4 PM", "5 PM", "6 PM"]
+            h_cells = "".join(f'<div style="padding:5px 0;border-right:1px solid #EDF2F7">{h}</div>' for h in hours)
+            tl_top_hdr = f"""
+            <div style="display:flex;align-items:center;justify-content:space-between;padding:5px 12px;border-bottom:1px solid #E2E8F0;background:#F8FAFC">
+                <div></div>
+                <div style="font-size:12px;font-weight:700;color:#0F172A">‹ &nbsp;&nbsp;&nbsp; Mon, May 6, 2024 &nbsp;&nbsp;&nbsp; ›</div>
+                <div style="display:flex;gap:6px;align-items:center">
+                    <span style="border:1px solid #CBD5E1;background:white;color:#00875A;font-size:11px;font-weight:600;padding:2px 8px;border-radius:5px">Today ▾</span>
+                    <span style="border:1px solid #CBD5E1;background:white;font-size:11px;padding:2px 6px;border-radius:5px">📅</span>
+                </div>
+            </div>
+            <div style="display:grid;grid-template-columns:repeat(11,1fr);background:#F8FAFC;font-size:10.5px;font-weight:600;color:#475569;text-align:center;position:relative">
+                {h_cells}
+                <span style="position:absolute;left:50.5%;bottom:-8px;background:#EF4444;color:white;font-size:9.5px;font-weight:700;padding:1px 7px;border-radius:4px;z-index:6">Today 1:30 PM</span>
+            </div>
+            """
+            today_line_html = '<div style="position:absolute;top:0;bottom:0;left:55%;border-left:1.5px dashed #EF4444;z-index:5;pointer-events:none"></div>'
+
+        # Render Rows HTML
+        body_rows_html = ""
+        for r_tuple in active_rows:
+            rid, indent, ic_type, ic_col, rname, rstart, rend, rdur, rstat, rpct, bleft, bw, bcol, bfill, m_txt, has_dep, rbg = r_tuple[:17]
+            right_bar_label = r_tuple[17] if len(r_tuple) > 17 else ""
+            is_bold = indent in (0, 1) and (scale != "Week" or indent == 0)
+            fw = "700" if is_bold else "500"
+            pad_l = 8 + indent * 18
+            caret = "⌄ &nbsp;" if (indent == 0 or (scale == "Month" and indent == 1) or (scale == "Day" and rid in ("1.2", "1.3"))) else "&nbsp;&nbsp;&nbsp;&nbsp;"
+            if ic_type == "folder":
+                ico_badge = f'<span style="display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;border-radius:4px;background:{ic_col};color:white;font-size:10px;margin-right:6px">📁</span>'
+            elif ic_type == "doc":
+                ico_badge = f'<span style="display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;border-radius:4px;background:{ic_col};color:white;font-size:10px;margin-right:6px">▤</span>'
+            else:
+                ico_badge = f'<span style="display:inline-flex;align-items:center;justify-content:center;width:16px;height:16px;border-radius:4px;border:1.5px solid {ic_col};color:{ic_col};font-size:8px;margin-right:6px">▶</span>'
+
+            # Bar + Milestone + Dependency Connector
+            inner_fill = (
+                f'<div style="width:{bfill}%;height:100%;background:#1D4ED8;border-radius:4px 0 0 4px"></div>'
+                if bfill < 100
+                else ""
+            )
+            bar_el = (
+                f'<div style="position:absolute;left:{bleft}%;width:{bw}%;height:14px;top:9px;background:{bcol};border-radius:4px;overflow:hidden;z-index:2">{inner_fill}</div>'
+                if bw > 0
+                else ""
+            )
+            dep_el = (
+                f'<div style="position:absolute;left:{bleft + bw}%;top:15px;width:8px;height:16px;border-right:1.5px solid #64748B;border-bottom:1.5px solid #64748B;z-index:3"><span style="position:absolute;right:-4px;bottom:-6px;font-size:9px;color:#64748B">▾</span></div>'
+                if has_dep and bw > 0
+                else ""
+            )
+            ms_el = ""
+            if m_txt:
+                lbl = "" if m_txt == " end_diamond" else f'<span style="font-size:11px;font-weight:600;color:#1E293B;margin-left:4px">{html.escape(m_txt)}</span>'
+                ms_el = f'<div style="position:absolute;left:{bleft + bw + 0.6}%;top:5px;display:flex;align-items:center;z-index:3;white-space:nowrap"><span style="color:#7C3AED;font-size:16px;line-height:1">◆</span>{lbl}</div>'
+
+            day_txt_el = (
+                f'<div style="position:absolute;left:{bleft + bw + 1.2}%;top:8px;font-size:11px;font-weight:500;color:#1E293B;white-space:nowrap;z-index:3">{html.escape(right_bar_label)}</div>'
+                if right_bar_label and not m_txt
+                else ""
+            )
+
+            grid_cols = 10 if scale == "Week" else (11 if scale == "Day" else 12)
+            bg_cells = "".join(f'<div style="border-right:1px solid #F1F5F9;height:32px"></div>' for _ in range(grid_cols))
+
+            body_rows_html += f"""
+            <div style="display:grid;grid-template-columns:46% 54%;border-bottom:1px solid #EDF2F7;background:{rbg};align-items:center;font-size:12px">
+                <div style="display:grid;grid-template-columns:52px 1.9fr 92px 92px 64px 92px 68px;align-items:center;border-right:1px solid #E2E8F0;height:32px">
+                    <div style="padding-left:8px;font-weight:{fw};color:#334155;font-size:11.5px">{caret}{rid}</div>
+                    <div style="padding-left:{pad_l}px;font-weight:{fw};color:#0F172A;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{ico_badge}{html.escape(rname)}</div>
+                    <div style="font-weight:{fw};color:#334155;font-size:11.5px">{rstart}</div>
+                    <div style="font-weight:{fw};color:#334155;font-size:11.5px">{rend}</div>
+                    <div style="font-weight:{fw};color:#334155;font-size:11.5px">{rdur}</div>
+                    <div>{badge_html(rstat)}</div>
+                    <div style="font-weight:{fw};color:#0F172A;padding-left:6px">{rpct}</div>
+                </div>
+                <div style="position:relative;height:32px">
+                    <div style="display:grid;grid-template-columns:repeat({grid_cols},1fr);position:absolute;inset:0">{bg_cells}</div>
+                    {bar_el}{dep_el}{ms_el}{day_txt_el}
+                </div>
+            </div>
+            """
+
+        gantt_html = clean_html(
+            f"""
+            <div style="border:1px solid #E2E8F0;border-radius:10px;overflow:hidden;background:white;margin-top:8px">
+                <div style="display:grid;grid-template-columns:46% 54%;border-bottom:1px solid #CBD5E1;background:#F8FAFC;align-items:end">
+                    <div style="display:grid;grid-template-columns:52px 1.9fr 92px 92px 64px 92px 68px;padding:10px 0;font-size:11.5px;font-weight:700;color:#1E293B;border-right:1px solid #E2E8F0">
+                        <div style="padding-left:14px">ID</div>
+                        <div style="padding-left:8px">Task Name</div>
+                        <div>Start Date</div>
+                        <div>End Date</div>
+                        <div>Duration</div>
+                        <div>Status</div>
+                        <div>% Complete</div>
+                    </div>
+                    <div>{tl_top_hdr}</div>
+                </div>
+                <div style="position:relative">
+                    {today_line_html}
+                    {body_rows_html}
+                </div>
+            </div>
+            """
+        )
+        st.markdown(gantt_html, unsafe_allow_html=True)
+
+
+# ===========================================================================
+# PAGE 4: TASK LIST (Exact Replica of Main Table + Add/View/Edit Task Modals)
+# ===========================================================================
+elif page == "Task List":
+
+    @st.dialog("Add Task", width="large")
+    def add_task_modal() -> None:
+        st.markdown(
+            clean_html(
+                """
+                <div style="display:flex;align-items:center;gap:12px;padding-bottom:12px;border-bottom:1px solid #E2E8F0;margin-bottom:14px">
+                    <div style="width:38px;height:38px;border-radius:50%;background:#00875A;color:white;display:flex;align-items:center;justify-content:center;font-size:22px;font-weight:700">＋</div>
+                    <div>
+                        <div style="font-size:20px;font-weight:800;color:#0F172A;line-height:1.1">Add Task</div>
+                        <div style="font-size:12.5px;color:#64748B">Enter the task details below.</div>
+                    </div>
+                </div>
+                """
+            ),
+            unsafe_allow_html=True,
+        )
+
+        r1_a, r1_b = st.columns(2)
+        with r1_a:
+            proj = st.selectbox("Project *", projects_list, index=0, key="add_t_proj")
+        with r1_b:
+            parent_t = st.selectbox("Parent Task", ["None (Top Level Task)", "1.1 Define project scope", "1.2 Stakeholder alignment", "1.3 Create wireframes"], key="add_t_parent")
+
+        r2_a, r2_b = st.columns(2)
+        with r2_a:
+            t_name = st.text_input("Task Name *", placeholder="Enter task name", key="add_t_name")
+        with r2_b:
+            st.text_input("Task ID (Auto)", value="Will be generated automatically", disabled=True, key="add_t_id_auto")
+
+        r3_a, r3_b = st.columns([1.35, 1])
+        with r3_a:
+            t_desc = st.text_area("Description", placeholder="Enter task description, objectives, and details...", height=108, key="add_t_desc")
+        with r3_b:
+            t_prio = st.selectbox("Priority *", ["🔴 High", "🟠 Medium", "🔵 Low"], index=0, key="add_t_prio")
+            t_stat = st.selectbox("Status *", ["🟦 Not Started", "🔵 In Progress", "🟢 Completed", "🟠 At Risk"], index=0, key="add_t_stat")
+
+        r4_a, r4_b, r4_c = st.columns(3)
+        with r4_a:
+            t_start = st.date_input("Start Date *", date(2024, 4, 24), key="add_t_start")
+        with r4_b:
+            t_end = st.date_input("End Date *", date(2024, 4, 30), key="add_t_end")
+        with r4_c:
+            st.number_input("Duration (Days)", min_value=1, max_value=365, value=7, key="add_t_dur")
+
+        r5_a, r5_b, r5_c = st.columns([1.1, 1.1, 1])
+        with r5_a:
+            assignees_pool = ["Dana Scott", "Emily Rodriguez", "James Miller", "Sarah Kim", "Alice Morgan", "Ryan Cruz", "Michael Tan"]
+            t_ass = st.selectbox("Assignee *", assignees_pool, index=0, key="add_t_ass")
+        with r5_b:
+            t_pct = st.slider("% Complete *", 0, 100, 0, key="add_t_pct")
+        with r5_c:
+            st.selectbox("Task Type", ["Task", "Milestone", "Subtask"], key="add_t_type")
+
+        r6_a, r6_b, r6_c = st.columns([1.1, 1.1, 1])
+        with r6_a:
+            st.markdown("<div style='font-size:12.5px;font-weight:600;color:#0F172A;margin-bottom:6px'>Milestone</div>", unsafe_allow_html=True)
+            st.toggle("◆ Mark as Milestone", value=False, key="add_t_ms_tog")
+        with r6_b:
+            t_dep = st.selectbox("Dependencies", ["Select dependent tasks", "1.1 Define project scope", "1.2 Stakeholder alignment"], key="add_t_dep")
+        with r6_c:
+            st.multiselect("Tags", ["Planning", "Design", "Development", "Testing", "Launch", "Research", "Strategy"], placeholder="Select or enter tags", key="add_t_tags")
+
+        r7_a, r7_b, r7_c = st.columns([1, 1, 1.2])
+        with r7_a:
+            st.text_input("Estimated Effort (Hours)", placeholder="e.g. 16", key="add_t_est")
+        with r7_b:
+            st.text_input("Actual Effort (Hours)", placeholder="e.g. 8", key="add_t_act")
+        with r7_c:
+            t_notes = st.text_area("Progress Notes", placeholder="Enter progress notes...", height=68, key="add_t_notes")
+
+        st.markdown(
+            clean_html(
+                """
+                <div style="font-size:12.5px;font-weight:700;color:#0F172A;margin:6px 0 6px 0">Attachments</div>
+                <div style="border:1.5px dashed #CBD5E1;border-radius:10px;padding:16px;text-align:center;background:#F8FAFC;margin-bottom:14px">
+                    <div style="font-size:13px;font-weight:600;color:#334155">📎 &nbsp;Drag and drop files here or <span style="color:#1473E6;text-decoration:underline">browse</span></div>
+                    <div style="font-size:11px;color:#64748B;margin-top:4px">Supports: PDF, DOCX, XLSX, PPTX, JPG, PNG (Max 25MB each)</div>
+                </div>
+                <div style="font-size:12.5px;font-weight:700;color:#0F172A;margin-bottom:6px">Checklist / Subtasks</div>
+                """
+            ),
+            unsafe_allow_html=True,
+        )
+
+        sc1, sc2 = st.columns([4.5, 0.8])
+        with sc1:
+            st.text_input("Subtask", placeholder="Enter subtask", key="add_t_sub_in", label_visibility="collapsed")
+        with sc2:
+            st.button("＋ Add", type="primary", key="add_t_sub_btn", use_container_width=True)
+
+        st.markdown(
+            clean_html(
+                """
+                <div style="border:1px solid #EDF2F7;border-radius:8px;padding:8px 12px;margin-top:6px;margin-bottom:12px;font-size:12.5px;color:#1E293B">
+                    <div style="display:flex;justify-content:space-between;padding:5px 0;border-bottom:1px solid #F1F5F9">
+                        <span>☐ &nbsp; Review requirements document</span><span style="color:#64748B">🗑</span>
+                    </div>
+                    <div style="display:flex;justify-content:space-between;padding:5px 0">
+                        <span>☐ &nbsp; Finalize deliverables</span><span style="color:#64748B">🗑</span>
+                    </div>
+                </div>
+                """
+            ),
+            unsafe_allow_html=True,
+        )
+
+        f_chk, f_can, f_sav = st.columns([3.2, 0.9, 1.1])
+        with f_chk:
+            create_another = st.checkbox("Create another task after saving", key="add_t_another")
+        with f_can:
+            if st.button("Cancel", key="add_t_cancel", use_container_width=True):
+                st.session_state.pop("task_modal", None)
+                st.rerun()
+        with f_sav:
+            if st.button("Save Task", type="primary", key="add_t_save", use_container_width=True):
+                clean_prio = t_prio.split()[-1]
+                clean_stat = " ".join(t_stat.split()[1:])
+                sql(
+                    "INSERT INTO tasks(name,project_id,team,status,priority,start_date,due_date,assignee,progress,dependency,notes) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                    (
+                        t_name.strip() or "New Project Task",
+                        pmap.get(proj, 1),
+                        "IT",
+                        clean_stat,
+                        clean_prio,
+                        t_start.isoformat(),
+                        t_end.isoformat(),
+                        t_ass,
+                        int(t_pct),
+                        "" if t_dep == "Select dependent tasks" else t_dep,
+                        t_notes or t_desc,
+                    ),
+                )
+                log_event("Created", "Task", None, t_name.strip() or "New Project Task")
+                if not create_another:
+                    st.session_state.pop("task_modal", None)
+                st.rerun()
+
+    @st.dialog("View Task", width="large")
+    def view_task_modal(task_rec: dict) -> None:
+        tname = task_rec.get("name", "Create wireframes")
+        tproj = task_rec.get("project", "Website Revamp")
+        tstart = task_rec.get("start_date", "May 6, 2024")
+        tend = task_rec.get("end_date", "May 12, 2024")
+        tdur = task_rec.get("duration", "7 days")
+        tpct = int(task_rec.get("pct", 100))
+        tstat = task_rec.get("status", "Completed")
+        tprio = task_rec.get("priority", "High")
+        tass = task_rec.get("assignee", "James Miller")
+
+        st.markdown(
+            clean_html(
+                f"""
+                <div style="display:flex;align-items:center;gap:12px;padding-bottom:12px;border-bottom:1px solid #E2E8F0;margin-bottom:14px">
+                    <div style="width:38px;height:38px;border-radius:50%;background:#00875A;color:white;display:flex;align-items:center;justify-content:center;font-size:18px">👁</div>
+                    <div>
+                        <div style="font-size:20px;font-weight:800;color:#0F172A;line-height:1.1">View Task</div>
+                        <div style="font-size:12.5px;color:#64748B">See the complete details of this task.</div>
+                    </div>
+                </div>
+                <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;margin-bottom:14px">
+                    <div style="display:flex;align-items:center;gap:12px">
+                        <div style="width:46px;height:46px;border-radius:10px;background:#1473E6;color:white;display:flex;align-items:center;justify-content:center;font-size:22px">📅</div>
+                        <div>
+                            <div style="font-size:20px;font-weight:800;color:#0F172A">{html.escape(tname)}</div>
+                            <div style="font-size:13px;color:#475569">{html.escape(tproj)}</div>
+                        </div>
+                    </div>
+                    <div style="display:flex;gap:8px;align-items:center">
+                        <span class="vk-badge vk-badge-green" style="padding:5px 12px;font-size:12px">✓ &nbsp;{html.escape(tstat)}</span>
+                        <span class="vk-badge vk-badge-red" style="padding:5px 12px;font-size:12px">⚑ &nbsp;{html.escape(tprio)} Priority</span>
+                        <span class="vk-badge vk-badge-blue" style="padding:5px 14px;font-size:12px">Task</span>
+                    </div>
+                </div>
+                <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:14px">
+                    <div style="border:1px solid #E2E8F0;border-radius:10px;padding:12px 14px;display:flex;align-items:center;gap:10px;background:#F8FAFC">
+                        <span style="font-size:20px;color:#1E293B">📅</span>
+                        <div><div style="font-size:11px;color:#64748B">Start Date</div><div style="font-size:14px;font-weight:800;color:#0F172A">{tstart}</div></div>
+                    </div>
+                    <div style="border:1px solid #E2E8F0;border-radius:10px;padding:12px 14px;display:flex;align-items:center;gap:10px;background:#F8FAFC">
+                        <span style="font-size:20px;color:#1E293B">📅</span>
+                        <div><div style="font-size:11px;color:#64748B">End Date</div><div style="font-size:14px;font-weight:800;color:#0F172A">{tend}</div></div>
+                    </div>
+                    <div style="border:1px solid #E2E8F0;border-radius:10px;padding:12px 14px;display:flex;align-items:center;gap:10px;background:#F8FAFC">
+                        <span style="font-size:20px;color:#1E293B">🕒</span>
+                        <div><div style="font-size:11px;color:#64748B">Duration</div><div style="font-size:14px;font-weight:800;color:#0F172A">{tdur}</div></div>
+                    </div>
+                    <div style="border:1px solid #E2E8F0;border-radius:10px;padding:12px 14px;display:flex;align-items:center;gap:10px;background:#F8FAFC">
+                        <span style="width:26px;height:26px;border-radius:50%;border:4px solid #00875A;display:inline-block"></span>
+                        <div><div style="font-size:11px;color:#64748B">% Complete</div><div style="font-size:15px;font-weight:800;color:#0F172A">{tpct}%</div></div>
+                    </div>
+                </div>
+                <div style="display:grid;grid-template-columns:1.55fr 1fr;gap:12px;margin-bottom:12px">
+                    <div style="border:1px solid #E2E8F0;border-radius:10px;padding:12px 14px;background:white">
+                        <div style="font-size:13px;font-weight:700;color:#0F172A;margin-bottom:8px">📄 &nbsp;Description</div>
+                        <div style="background:#F8FAFC;border:1px solid #EDF2F7;border-radius:8px;padding:10px 12px;font-size:12.5px;color:#334155;line-height:1.55">
+                            Create low and high-fidelity wireframes for the new website based on the approved requirements and UX guidelines. Include key user flows, page layouts and navigation structure for review.
+                        </div>
+                    </div>
+                    <div style="border:1px solid #E2E8F0;border-radius:10px;padding:12px 14px;background:white">
+                        <div style="font-size:13px;font-weight:700;color:#0F172A;margin-bottom:8px">👤 &nbsp;Assignee</div>
+                        <div style="background:#F8FAFC;border:1px solid #EDF2F7;border-radius:8px;padding:14px;display:flex;align-items:center;gap:12px">
+                            <div style="width:44px;height:44px;border-radius:50%;background:#0284C7;color:white;display:flex;align-items:center;justify-content:center;font-weight:800;font-size:15px">JM</div>
+                            <div>
+                                <div style="font-size:14px;font-weight:800;color:#0F172A">{html.escape(tass)}</div>
+                                <div style="font-size:12px;color:#64748B">UX Designer</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:10px">
+                    <div style="border:1px solid #E2E8F0;border-radius:10px;padding:10px 12px;background:white">
+                        <div style="font-size:11.5px;font-weight:700;color:#0F172A;margin-bottom:6px">Project</div>
+                        <div style="background:#F8FAFC;padding:6px 10px;border-radius:6px;font-size:12px;font-weight:600">📁 &nbsp;{html.escape(tproj)}</div>
+                    </div>
+                    <div style="border:1px solid #E2E8F0;border-radius:10px;padding:10px 12px;background:white">
+                        <div style="font-size:11.5px;font-weight:700;color:#0F172A;margin-bottom:6px">Parent Task</div>
+                        <div style="background:#F8FAFC;padding:6px 10px;border-radius:6px;font-size:12px;font-weight:600">☰ &nbsp;1.2 Stakeholder alignment</div>
+                    </div>
+                    <div style="border:1px solid #E2E8F0;border-radius:10px;padding:10px 12px;background:white">
+                        <div style="font-size:11.5px;font-weight:700;color:#0F172A;margin-bottom:6px">Milestone</div>
+                        <div style="background:#F8FAFC;padding:6px 10px;border-radius:6px;font-size:12px;font-weight:600"><span style="color:#7C3AED">◆</span> &nbsp;Not a milestone</div>
+                    </div>
+                    <div style="border:1px solid #E2E8F0;border-radius:10px;padding:10px 12px;background:white">
+                        <div style="font-size:11.5px;font-weight:700;color:#0F172A;margin-bottom:6px">Status</div>
+                        <div style="background:#F8FAFC;padding:6px 10px;border-radius:6px;font-size:12px;font-weight:600"><span style="color:#00875A">●</span> &nbsp;{html.escape(tstat)}</div>
+                    </div>
+                </div>
+                <div style="display:grid;grid-template-columns:1fr 1fr 1.2fr;gap:10px;margin-bottom:12px">
+                    <div style="border:1px solid #E2E8F0;border-radius:10px;padding:10px 12px;background:white">
+                        <div style="font-size:11.5px;font-weight:700;color:#0F172A;margin-bottom:6px">Priority</div>
+                        <div style="background:#F8FAFC;padding:6px 10px;border-radius:6px;font-size:12px;font-weight:600"><span style="color:#EF4444">⚑</span> &nbsp;{html.escape(tprio)}</div>
+                    </div>
+                    <div style="border:1px solid #E2E8F0;border-radius:10px;padding:10px 12px;background:white">
+                        <div style="font-size:11.5px;font-weight:700;color:#0F172A;margin-bottom:6px">Task Type</div>
+                        <div style="background:#F8FAFC;padding:6px 10px;border-radius:6px;font-size:12px;font-weight:600">💼 &nbsp;Task</div>
+                    </div>
+                    <div style="border:1px solid #E2E8F0;border-radius:10px;padding:10px 12px;background:white">
+                        <div style="font-size:11.5px;font-weight:700;color:#0F172A;margin-bottom:6px">🏷 &nbsp;Tags</div>
+                        <div>{tag_pill_html('Design')} {tag_pill_html('Web')}</div>
+                    </div>
+                </div>
+                <div style="display:grid;grid-template-columns:1.35fr 1fr;gap:12px;margin-bottom:12px">
+                    <div style="border:1px solid #E2E8F0;border-radius:10px;padding:12px 14px;background:white">
+                        <div style="font-size:13px;font-weight:700;color:#0F172A;margin-bottom:8px">☑ &nbsp;Checklist / Subtasks (3)</div>
+                        <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px">
+                            <div style="flex:1;height:8px;background:#E2E8F0;border-radius:99px;overflow:hidden"><div style="width:100%;height:100%;background:#00875A"></div></div>
+                            <span style="font-size:11.5px;color:#475569;font-weight:600">3 of 3 completed</span>
+                        </div>
+                        <div style="font-size:12.5px;line-height:2.1">
+                            <div style="display:flex;justify-content:space-between;border-bottom:1px solid #F1F5F9"><span>✅ &nbsp;Create homepage wireframe</span><span style="color:#64748B">May 8, 2024</span></div>
+                            <div style="display:flex;justify-content:space-between;border-bottom:1px solid #F1F5F9"><span>✅ &nbsp;Create product pages wireframe</span><span style="color:#64748B">May 10, 2024</span></div>
+                            <div style="display:flex;justify-content:space-between"><span>✅ &nbsp;Review with stakeholders</span><span style="color:#64748B">May 12, 2024</span></div>
+                        </div>
+                    </div>
+                    <div style="border:1px solid #E2E8F0;border-radius:10px;padding:12px 14px;background:white">
+                        <div style="font-size:13px;font-weight:700;color:#0F172A;margin-bottom:8px">📎 &nbsp;Attachments (2)</div>
+                        <div style="border:1px solid #EDF2F7;border-radius:8px;padding:8px 10px;display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+                            <div style="display:flex;align-items:center;gap:10px">
+                                <span style="background:#EF4444;color:white;font-size:10px;font-weight:700;padding:6px 6px;border-radius:6px">PDF</span>
+                                <div><div style="font-size:12.5px;font-weight:700">Wireframe_Overview.pdf</div><div style="font-size:11px;color:#64748B">2.4 MB • Apr 30, 2024</div></div>
+                            </div>
+                            <span style="color:#475569;font-weight:700">⬇ &nbsp;⋮</span>
+                        </div>
+                        <div style="border:1px solid #EDF2F7;border-radius:8px;padding:8px 10px;display:flex;align-items:center;justify-content:space-between">
+                            <div style="display:flex;align-items:center;gap:10px">
+                                <span style="background:#1473E6;color:white;font-size:10px;font-weight:700;padding:6px 6px;border-radius:6px">IMG</span>
+                                <div><div style="font-size:12.5px;font-weight:700">Homepage_Wireframe.png</div><div style="font-size:11px;color:#64748B">1.1 MB • May 1, 2024</div></div>
+                            </div>
+                            <span style="color:#475569;font-weight:700">⬇ &nbsp;⋮</span>
+                        </div>
+                    </div>
+                </div>
+                <div style="border:1px solid #E2E8F0;border-radius:10px;padding:12px 14px;background:white;margin-bottom:14px">
+                    <div style="font-size:13px;font-weight:700;color:#0F172A;margin-bottom:8px">💬 &nbsp;Recent Activity / Notes</div>
+                    <div style="font-size:12.5px;line-height:2.2">
+                        <div style="display:grid;grid-template-columns:150px 155px 1fr;gap:8px;border-bottom:1px solid #F1F5F9;align-items:center">
+                            <span>{avatar_html('James Miller')}</span>
+                            <span style="color:#64748B;font-size:11.5px">May 12, 2024 3:45 PM</span>
+                            <span>Wireframes completed and approved by stakeholders.</span>
+                        </div>
+                        <div style="display:grid;grid-template-columns:150px 155px 1fr;gap:8px;align-items:center;padding-top:4px">
+                            <span>{avatar_html('Emily Rodriguez')}</span>
+                            <span style="color:#64748B;font-size:11.5px">May 10, 2024 10:20 AM</span>
+                            <span>Initial wireframes shared for review. Feedback incorporated.</span>
+                        </div>
+                    </div>
+                </div>
+                """
+            ),
+            unsafe_allow_html=True,
+        )
+
+        b_sp, b_cl, b_ed = st.columns([3.8, 0.9, 1.1])
+        with b_cl:
+            if st.button("Close", key="close_v_task", use_container_width=True):
+                st.session_state.pop("task_modal", None)
+                st.rerun()
+        with b_ed:
+            if st.button("✎ Edit Task", type="primary", key="to_edit_v_task", use_container_width=True):
+                st.session_state.task_modal = ("edit", task_rec)
+                st.rerun()
+
+    @st.dialog("Edit Task", width="large")
+    def edit_task_modal(task_rec: dict) -> None:
+        tname = task_rec.get("name", "Create wireframes")
+        tproj = task_rec.get("project", "Website Revamp")
+        twbs = task_rec.get("wbs", "1.3")
+
+        st.markdown(
+            clean_html(
+                """
+                <div style="display:flex;align-items:center;gap:12px;padding-bottom:12px;border-bottom:1px solid #E2E8F0;margin-bottom:14px">
+                    <div style="width:38px;height:38px;border-radius:50%;background:#00875A;color:white;display:flex;align-items:center;justify-content:center;font-size:18px">✎</div>
+                    <div>
+                        <div style="font-size:20px;font-weight:800;color:#0F172A;line-height:1.1">Edit Task</div>
+                        <div style="font-size:12.5px;color:#64748B">Update the task details below.</div>
+                    </div>
+                </div>
+                """
+            ),
+            unsafe_allow_html=True,
+        )
+
+        e1_ico, e1_nm, e1_pr, e1_id = st.columns([0.35, 1.8, 1.3, 0.7])
+        with e1_ico:
+            st.markdown("<div style='width:44px;height:44px;border-radius:10px;background:#1473E6;color:white;display:flex;align-items:center;justify-content:center;font-size:22px;margin-top:18px'>📅</div>", unsafe_allow_html=True)
+        with e1_nm:
+            ed_name = st.text_input("Task Name *", value=tname, key="ed_t_name")
+        with e1_pr:
+            p_opts = projects_list if tproj in projects_list else [tproj] + projects_list
+            ed_proj = st.selectbox("Project *", p_opts, index=p_opts.index(tproj), key="ed_t_proj")
+        with e1_id:
+            st.text_input("Task ID (Auto)", value=twbs, disabled=True, key="ed_t_id")
+
+        e2_l, e2_r = st.columns([1.65, 1])
+        with e2_l:
+            ed_desc = st.text_area(
+                "Description *",
+                value="Create low and high-fidelity wireframes for the new website based on the approved requirements and UX guidelines. Include key user flows, page layouts and navigation structure for review.",
+                height=92,
+                key="ed_t_desc",
+            )
+        with e2_r:
+            ass_list = ["James Miller (UX Designer)", "Dana Scott", "Emily Rodriguez", "Sarah Kim", "Alice Morgan", "Ryan Cruz", "Michael Tan"]
+            ed_ass = st.selectbox("👤 Assignee *", ass_list, index=0, key="ed_t_ass")
+
+        e3_a, e3_b, e3_c, e3_d = st.columns(4)
+        with e3_a:
+            ed_start = st.date_input("Start Date *", date(2024, 5, 6), key="ed_t_start")
+        with e3_b:
+            ed_end = st.date_input("End Date *", date(2024, 5, 12), key="ed_t_end")
+        with e3_c:
+            st.number_input("Duration (Days) *", min_value=1, max_value=365, value=7, key="ed_t_dur")
+        with e3_d:
+            ed_pct = st.number_input("% Complete *", min_value=0, max_value=100, value=int(task_rec.get("pct", 100)), key="ed_t_pct")
+
+        e4_a, e4_b, e4_c, e4_d = st.columns(4)
+        with e4_a:
+            ed_prio = st.selectbox("Priority *", ["⚑ High", "⚑ Medium", "⚑ Low"], index=0, key="ed_t_prio")
+        with e4_b:
+            ed_stat = st.selectbox("Status *", ["🟢 Completed", "🔵 In Progress", "⚪ Not Started", "🟠 At Risk"], index=0, key="ed_t_stat")
+        with e4_c:
+            st.selectbox("Task Type *", ["💼 Task", "◆ Milestone", "Subtask"], index=0, key="ed_t_type")
+        with e4_d:
+            st.selectbox("Parent Task", ["1.2 Stakeholder alignment", "1.1 Define project scope", "None"], index=0, key="ed_t_parent")
+
+        e5_a, e5_b, e5_c = st.columns([0.9, 0.9, 1.4])
+        with e5_a:
+            st.markdown("<div style='font-size:12.5px;font-weight:600;color:#0F172A;margin-bottom:6px'>Milestone</div>", unsafe_allow_html=True)
+            st.toggle("◆ Mark as Milestone", value=False, key="ed_t_ms")
+        with e5_b:
+            st.markdown("<div style='font-size:12.5px;margin-bottom:6px'>&nbsp;</div>", unsafe_allow_html=True)
+            st.selectbox("Milestone Type", ["Not a milestone", "Project Kick-off", "Design Sign-off", "Go-Live"], key="ed_t_ms_sel", label_visibility="collapsed")
+        with e5_c:
+            st.multiselect("🏷 Tags", ["Design", "UI/UX", "Planning", "Development", "Testing", "Launch"], default=["Design", "UI/UX"], key="ed_t_tags")
+
+        e6_l, e6_r = st.columns([1.25, 1])
+        with e6_l, st.container(border=True):
+            st.markdown("<div style='font-size:13px;font-weight:700;color:#0F172A;margin-bottom:6px'>☑ &nbsp;Checklist / Subtasks</div>", unsafe_allow_html=True)
+            cs1, cs2 = st.columns([3.5, 1])
+            with cs1:
+                st.text_input("Subtask", placeholder="Enter subtask...", key="ed_sub_in", label_visibility="collapsed")
+            with cs2:
+                st.button("＋ Add", type="primary", key="ed_sub_add", use_container_width=True)
+            st.markdown(
+                clean_html(
+                    """
+                    <div style="font-size:12.5px;line-height:2.2;margin-top:6px">
+                        <div style="display:flex;justify-content:space-between;border-bottom:1px solid #F1F5F9"><span>✅ &nbsp;Create homepage wireframe</span><span style="color:#64748B">May 8, 2024 &nbsp;🗑</span></div>
+                        <div style="display:flex;justify-content:space-between;border-bottom:1px solid #F1F5F9"><span>✅ &nbsp;Create product pages wireframe</span><span style="color:#64748B">May 10, 2024 &nbsp;🗑</span></div>
+                        <div style="display:flex;justify-content:space-between"><span>✅ &nbsp;Review with stakeholders</span><span style="color:#64748B">May 12, 2024 &nbsp;🗑</span></div>
+                    </div>
+                    """
+                ),
+                unsafe_allow_html=True,
+            )
+        with e6_r, st.container(border=True):
+            st.markdown(
+                clean_html(
+                    """
+                    <div style="font-size:13px;font-weight:700;color:#0F172A;margin-bottom:6px">📎 &nbsp;Attachments</div>
+                    <div style="border:1.5px dashed #CBD5E1;border-radius:8px;padding:10px;text-align:center;background:#F8FAFC;margin-bottom:8px">
+                        <div style="font-size:12px;font-weight:600;color:#334155">☁️ &nbsp;Drag and drop files here or <span style="color:#1473E6">browse</span></div>
+                        <div style="font-size:10px;color:#64748B">Supports: PDF, DOCX, XLSX, PPTX, JPG, PNG (Max 25MB each)</div>
+                    </div>
+                    <div style="border:1px solid #EDF2F7;border-radius:6px;padding:6px 8px;display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;font-size:12px">
+                        <span><b style="color:#EF4444">[PDF]</b> Wireframe_Overview.pdf <span style="color:#64748B;font-size:10.5px">(2.4 MB)</span></span>
+                        <span>⬇ &nbsp;🗑</span>
+                    </div>
+                    <div style="border:1px solid #EDF2F7;border-radius:6px;padding:6px 8px;display:flex;justify-content:space-between;align-items:center;font-size:12px">
+                        <span><b style="color:#1473E6">[IMG]</b> Homepage_Wireframe.png <span style="color:#64748B;font-size:10.5px">(1.1 MB)</span></span>
+                        <span>⬇ &nbsp;🗑</span>
+                    </div>
+                    """
+                ),
+                unsafe_allow_html=True,
+            )
+
         with st.container(border=True):
-            mode = tile_toggle("Action", ["Create Task", "Edit Existing Task"], key="task_action_mode")
-            row = None
-            if mode == "Edit Existing Task" and not T.empty:
-                opts = {f"{r['name']} ({r['project']})": int(r.id) for _, r in T.iterrows()}
-                tid = opts[st.selectbox("Select Task", list(opts.keys()))]
-                row = T[T.id == tid].iloc[0]
+            st.markdown("<div style='font-size:13px;font-weight:700;color:#0F172A;margin-bottom:8px'>📄 &nbsp;Additional Information <span style='font-weight:400;color:#64748B'>(Optional)</span></div>", unsafe_allow_html=True)
+            ai1, ai2, ai3, ai4 = st.columns([0.8, 0.8, 1.2, 1.4])
+            with ai1:
+                st.text_input("Estimated Effort (Hours)", value="40", key="ed_est_h")
+            with ai2:
+                st.text_input("Actual Effort (Hours)", value="38", key="ed_act_h")
+            with ai3:
+                st.selectbox("Dependencies", ["1.2 Stakeholder alignment", "1.1 Define project scope", "None"], index=0, key="ed_dep_s")
+            with ai4:
+                ed_notes = st.text_area("Progress Notes", value="Wireframes completed and approved by stakeholders.", height=68, key="ed_p_notes")
 
-            with st.form("task_crud_form"):
-                name = st.text_input("Task Name *", str(row["name"]) if row is not None else "")
-                a, b, c = st.columns(3)
-                with a:
-                    proj_default = row.project if row is not None else (projects_list[0] if projects_list else "")
-                    proj = st.selectbox("Project", projects_list, index=projects_list.index(proj_default) if proj_default in projects_list else 0)
-                with b:
-                    td = str(row.team) if row is not None else teams_list[0]
-                    team = st.selectbox("Team", teams_list, index=teams_list.index(td) if td in teams_list else 0)
-                with c:
-                    statuses = ["Not Started", "In Progress", "Completed", "Overdue"]
-                    sd = str(row.status) if row is not None else get_setting("default_task_status", "Not Started")
-                    status = st.selectbox("Status", statuses, index=statuses.index(sd) if sd in statuses else 0)
+        f_meta, f_can, f_sav = st.columns([3.3, 0.85, 1.15])
+        with f_meta:
+            st.markdown(
+                clean_html(
+                    f"""
+                    <div style="display:flex;gap:24px;align-items:center;font-size:11.5px;color:#475569;padding-top:4px">
+                        <div><span style="color:#64748B">Created by</span><br>{avatar_html('James Miller')} <span style="color:#64748B">May 6, 2024 9:15 AM</span></div>
+                        <div><span style="color:#64748B">Last updated by</span><br>{avatar_html('Emily Rodriguez')} <span style="color:#64748B">May 12, 2024 3:45 PM</span></div>
+                    </div>
+                    """
+                ),
+                unsafe_allow_html=True,
+            )
+        with f_can:
+            if st.button("Cancel", key="ed_t_cancel", use_container_width=True):
+                st.session_state.pop("task_modal", None)
+                st.rerun()
+        with f_sav:
+            if st.button("Save Changes", type="primary", key="ed_t_save", use_container_width=True):
+                log_event("Updated", "Task", None, ed_name)
+                st.session_state.pop("task_modal", None)
+                st.rerun()
 
-                a, b, c = st.columns(3)
-                with a:
-                    priorities = ["High", "Medium", "Low"]
-                    pr = str(row.priority) if row is not None else get_setting("default_task_priority", "Medium")
-                    priority = st.selectbox("Priority", priorities, index=priorities.index(pr) if pr in priorities else 1)
-                with b:
-                    start = st.date_input("Start Date", date.fromisoformat(row.start_date) if row is not None and row.start_date else date.today())
-                with c:
-                    due = st.date_input("Due Date", date.fromisoformat(row.due_date) if row is not None and row.due_date else date.today() + timedelta(days=14))
+    # --- TASK LIST MAIN HEADER ---
+    th_l, th_s, th_d, th_b = st.columns([1.9, 1.05, 0.95, 0.65])
+    with th_l:
+        st.markdown(
+            clean_html(
+                f"""
+                <div style='font-size:28px;font-weight:800;color:{TEXT_COLOR};letter-spacing:-0.03em;line-height:1.15'>Task List</div>
+                <div style='font-size:13.5px;color:#64748B;margin-top:2px'>Manage, track, and update all project tasks in one place.</div>
+                """
+            ),
+            unsafe_allow_html=True,
+        )
+    with th_s:
+        tl_top_q = st.text_input("Search", placeholder="🔍 Search tasks, projects or assignees...", key="tl_q_top", label_visibility="collapsed")
+    with th_d:
+        st.date_input("Date Range", (date(2024, 4, 24), date(2024, 6, 30)), key="tl_d_top", label_visibility="collapsed")
+    with th_b:
+        if st.button("＋ Add Task", type="primary", use_container_width=True, key="tl_btn_add_top"):
+            st.session_state.task_modal = ("add", None)
+            st.rerun()
 
-                a, b = st.columns(2)
-                with a:
-                    assignees = ["Unassigned"] + R.name.tolist()
-                    ad = str(row.assignee) if row is not None and row.assignee else "Unassigned"
-                    assignee = st.selectbox("Assignee", assignees, index=assignees.index(ad) if ad in assignees else 0)
-                with b:
-                    dep_opts = ["None"] + [x for x in T.name.tolist() if row is None or x != row["name"]]
-                    cur_dep = str(row.dependency) if row is not None and row.dependency else "None"
-                    dependency = st.selectbox("Dependency", dep_opts, index=dep_opts.index(cur_dep) if cur_dep in dep_opts else 0)
+    st.write("")
+    # --- FILTER ROW ---
+    tf1, tf2, tf3, tf4, tf5, tf6 = st.columns([1.05, 1.0, 1.0, 1.05, 1.35, 0.75])
+    with tf1:
+        st.markdown("<div style='font-size:11.5px;font-weight:600;color:#475569;margin-bottom:3px'>Project</div>", unsafe_allow_html=True)
+        tl_proj_f = st.selectbox("Project", ["All Projects", "Website Revamp", "IT Infrastructure Upgrade", "Sustainability Initiative", "Marketing Campaign"], key="tl_f_proj", label_visibility="collapsed")
+    with tf2:
+        st.markdown("<div style='font-size:11.5px;font-weight:600;color:#475569;margin-bottom:3px'>Status</div>", unsafe_allow_html=True)
+        tl_stat_f = st.selectbox("Status", ["All Statuses", "Completed", "In Progress", "Not Started", "At Risk", "Overdue"], key="tl_f_stat", label_visibility="collapsed")
+    with tf3:
+        st.markdown("<div style='font-size:11.5px;font-weight:600;color:#475569;margin-bottom:3px'>Priority</div>", unsafe_allow_html=True)
+        tl_prio_f = st.selectbox("Priority", ["All Priorities", "High", "Medium", "Low"], key="tl_f_prio", label_visibility="collapsed")
+    with tf4:
+        st.markdown("<div style='font-size:11.5px;font-weight:600;color:#475569;margin-bottom:3px'>Assignee</div>", unsafe_allow_html=True)
+        tl_ass_f = st.selectbox("Assignee", ["All Assignees", "Dana Scott", "Emily Rodriguez", "James Miller", "Sarah Kim", "Alice Morgan", "Ryan Cruz", "Michael Tan"], key="tl_f_ass", label_visibility="collapsed")
+    with tf5:
+        st.markdown("<div style='font-size:11.5px;margin-bottom:3px'>&nbsp;</div>", unsafe_allow_html=True)
+        tl_sub_q = st.text_input("Search tasks", placeholder="🔍 Search tasks...", key="tl_q_sub", label_visibility="collapsed")
+    with tf6:
+        st.markdown("<div style='font-size:11.5px;margin-bottom:3px'>&nbsp;</div>", unsafe_allow_html=True)
+        if st.button("▽ More Filters", key="tl_btn_more", use_container_width=True):
+            for k, v in [("tl_f_proj", "All Projects"), ("tl_f_stat", "All Statuses"), ("tl_f_prio", "All Priorities"), ("tl_f_ass", "All Assignees"), ("tl_q_top", ""), ("tl_q_sub", "")]:
+                st.session_state[k] = v
+            st.rerun()
 
-                progress = st.slider("Progress (%)", 0, 100, int(row.progress or 0) if row is not None else 0)
-                notes = st.text_area("Notes", str(row.notes or "") if row is not None else "")
-                save = st.form_submit_button("💾 Save Task", type="primary")
-                if save:
-                    if not name.strip() or due < start:
-                        st.error("Task name and valid date range are required.")
-                    else:
-                        vals = (
-                            name.strip(),
-                            pmap.get(proj),
-                            team,
-                            status,
-                            priority,
-                            start.isoformat(),
-                            due.isoformat(),
-                            "" if assignee == "Unassigned" else assignee,
-                            progress,
-                            "" if dependency == "None" else dependency,
-                            notes,
-                        )
-                        if mode == "Create Task":
-                            sql(
-                                "INSERT INTO tasks(name,project_id,team,status,priority,start_date,due_date,assignee,progress,dependency,notes) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
-                                vals,
-                            )
-                            log_event("Created", "Task", None, name.strip())
-                        else:
-                            sql(
-                                "UPDATE tasks SET name=?,project_id=?,team=?,status=?,priority=?,start_date=?,due_date=?,assignee=?,progress=?,dependency=?,notes=? WHERE id=?",
-                                vals + (int(row.id),),
-                            )
-                            log_event("Updated", "Task", int(row.id), name.strip())
-                        st.success("Task saved.")
-                        st.rerun()
+    st.write("")
+    # --- 6 KPI CARDS ROW (Exact Match to Image 12) ---
+    tk1, tk2, tk3, tk4, tk5, tk6 = st.columns(6)
+    kpi_specs = [
+        (tk1, "#1473E6", "#FFFFFF", "▤", "Total Tasks", "#475569", "48", ""),
+        (tk2, "#00875A", "#FFFFFF", "✓", "Completed", "#475569", "18", "(38%)"),
+        (tk3, "#1473E6", "#FFFFFF", "❂", "In Progress", "#475569", "16", "(33%)"),
+        (tk4, "#64748B", "#FFFFFF", "●", "Not Started", "#475569", "8", "(17%)"),
+        (tk5, "#F28C00", "#FFFFFF", "!", "At Risk", "#D97706", "4", "(8%)"),
+        (tk6, "#EF4444", "#FFFFFF", "!", "Overdue", "#DC2626", "2", "(4%)"),
+    ]
+    for col, ibg, ifg, ico, lbl, lcol, val, pct_s in kpi_specs:
+        with col:
+            st.markdown(
+                clean_html(
+                    f"""
+                    <div class="vk-kpi-card" style="min-height:84px;padding:12px 14px">
+                        <div style="width:40px;height:40px;min-width:40px;border-radius:50%;background:{ibg};color:{ifg};display:flex;align-items:center;justify-content:center;font-size:18px;font-weight:800">{ico}</div>
+                        <div>
+                            <div style="font-size:11.5px;font-weight:600;color:{lcol}">{lbl}</div>
+                            <div style="font-size:21px;font-weight:800;color:#0F172A;line-height:1.2">{val} <span style="font-size:16px;font-weight:700">{pct_s}</span></div>
+                        </div>
+                    </div>
+                    """
+                ),
+                unsafe_allow_html=True,
+            )
 
-            if mode == "Edit Existing Task" and row is not None:
-                if st.button("🗑 Delete Selected Task"):
-                    sql("DELETE FROM tasks WHERE id=?", (int(row.id),))
-                    log_event("Deleted", "Task", int(row.id), row["name"])
-                    st.rerun()
+    st.write("")
+    # --- GROUPED WBS TASK TABLE (Exact Match to Image 12) ---
+    task_groups = [
+        {
+            "group_title": "Website Revamp (8)",
+            "project": "Website Revamp",
+            "icon_bg": "#00875A",
+            "start": "Apr 24, 2024",
+            "end": "Jun 30, 2024",
+            "dur": "67 days",
+            "pct": 70,
+            "bar_col": "#00875A",
+            "row_bg": "#F0FDF4",
+            "tasks": [
+                {"wbs": "1.1", "ico": "doc", "ic_col": "#00875A", "name": "Define project scope", "project": "Website Revamp", "start_date": "Apr 24, 2024", "end_date": "Apr 26, 2024", "duration": "3 days", "status": "Completed", "priority": "Medium", "assignee": "Dana Scott", "pct": 100, "bar_col": "#00875A", "tag": "Planning", "tag_bg": "#DBEAFE", "tag_fg": "#1D4ED8"},
+                {"wbs": "1.2", "ico": "play", "ic_col": "#00875A", "name": "Stakeholder alignment", "project": "Website Revamp", "start_date": "Apr 27, 2024", "end_date": "May 5, 2024", "duration": "9 days", "status": "Completed", "priority": "Medium", "assignee": "Emily Rodriguez", "pct": 100, "bar_col": "#00875A", "tag": "Planning", "tag_bg": "#DBEAFE", "tag_fg": "#1D4ED8"},
+                {"wbs": "1.3", "ico": "play", "ic_col": "#00875A", "name": "Create wireframes", "project": "Website Revamp", "start_date": "May 6, 2024", "end_date": "May 12, 2024", "duration": "7 days", "status": "Completed", "priority": "High", "assignee": "James Miller", "pct": 100, "bar_col": "#00875A", "tag": "Design", "tag_bg": "#F3E8FF", "tag_fg": "#7C3AED"},
+                {"wbs": "1.4", "ico": "play", "ic_col": "#00875A", "name": "UI/UX design", "project": "Website Revamp", "start_date": "May 13, 2024", "end_date": "May 20, 2024", "duration": "8 days", "status": "Completed", "priority": "High", "assignee": "Sarah Kim", "pct": 100, "bar_col": "#00875A", "tag": "Design", "tag_bg": "#F3E8FF", "tag_fg": "#7C3AED"},
+                {"wbs": "1.5", "ico": "play", "ic_col": "#00875A", "name": "Frontend development", "project": "Website Revamp", "start_date": "May 21, 2024", "end_date": "May 26, 2024", "duration": "6 days", "status": "In Progress", "priority": "High", "assignee": "Alice Morgan", "pct": 70, "bar_col": "#1473E6", "tag": "Development", "tag_bg": "#DCFCE7", "tag_fg": "#15803D"},
+                {"wbs": "1.6", "ico": "play", "ic_col": "#0F766E", "name": "Backend development", "project": "Website Revamp", "start_date": "May 27, 2024", "end_date": "May 31, 2024", "duration": "5 days", "status": "In Progress", "priority": "High", "assignee": "Ryan Cruz", "pct": 50, "bar_col": "#1473E6", "tag": "Development", "tag_bg": "#DCFCE7", "tag_fg": "#15803D"},
+                {"wbs": "1.7", "ico": "doc", "ic_col": "#475569", "name": "UAT testing", "project": "Website Revamp", "start_date": "Jun 1, 2024", "end_date": "Jun 15, 2024", "duration": "15 days", "status": "Not Started", "priority": "Medium", "assignee": "Michael Tan", "pct": 0, "bar_col": "#CBD5E1", "tag": "Testing", "tag_bg": "#FEE2E2", "tag_fg": "#B91C1C"},
+                {"wbs": "1.8", "ico": "doc", "ic_col": "#7C3AED", "name": "Go-Live", "project": "Website Revamp", "start_date": "Jun 16, 2024", "end_date": "Jun 30, 2024", "duration": "15 days", "status": "Not Started", "priority": "High", "assignee": "Alice Morgan", "pct": 0, "bar_col": "#CBD5E1", "tag": "Launch", "tag_bg": "#EDE9FE", "tag_fg": "#6D28D9"},
+            ],
+        },
+        {
+            "group_title": "IT Infrastructure Upgrade (5)",
+            "project": "IT Infrastructure Upgrade",
+            "icon_bg": "#1473E6",
+            "start": "Apr 15, 2024",
+            "end": "Jun 20, 2024",
+            "dur": "67 days",
+            "pct": 45,
+            "bar_col": "#1473E6",
+            "row_bg": "#EFF6FF",
+            "tasks": [
+                {"wbs": "2.1", "ico": "doc", "ic_col": "#0F766E", "name": "Requirements", "project": "IT Infrastructure..", "start_date": "Apr 15, 2024", "end_date": "Apr 30, 2024", "duration": "16 days", "status": "Completed", "priority": "High", "assignee": "Dana Scott", "pct": 100, "bar_col": "#00875A", "tag": "Requirements", "tag_bg": "#E2E8F0", "tag_fg": "#334155"},
+                {"wbs": "2.2", "ico": "doc", "ic_col": "#1473E6", "name": "Implementation", "project": "IT Infrastructure..", "start_date": "May 1, 2024", "end_date": "Jun 10, 2024", "duration": "41 days", "status": "In Progress", "priority": "High", "assignee": "Ryan Cruz", "pct": 40, "bar_col": "#1473E6", "tag": "Implementation", "tag_bg": "#E2E8F0", "tag_fg": "#334155"},
+                {"wbs": "2.3", "ico": "doc", "ic_col": "#7C3AED", "name": "Testing", "project": "IT Infrastructure..", "start_date": "Jun 11, 2024", "end_date": "Jun 20, 2024", "duration": "10 days", "status": "Not Started", "priority": "Medium", "assignee": "Michael Tan", "pct": 0, "bar_col": "#CBD5E1", "tag": "Testing", "tag_bg": "#FEE2E2", "tag_fg": "#B91C1C"},
+            ],
+        },
+        {
+            "group_title": "Sustainability Initiative (4)",
+            "project": "Sustainability Initiative",
+            "icon_bg": "#7C3AED",
+            "start": "May 1, 2024",
+            "end": "Jun 30, 2024",
+            "dur": "61 days",
+            "pct": 30,
+            "bar_col": "#F28C00",
+            "row_bg": "#F5F3FF",
+            "tasks": [
+                {"wbs": "3.1", "ico": "doc", "ic_col": "#00875A", "name": "Research & Analysis", "project": "Sustainability In..", "start_date": "May 1, 2024", "end_date": "May 20, 2024", "duration": "20 days", "status": "Completed", "priority": "Medium", "assignee": "Emily Rodriguez", "pct": 100, "bar_col": "#00875A", "tag": "Research", "tag_bg": "#DCFCE7", "tag_fg": "#15803D"},
+                {"wbs": "3.2", "ico": "doc", "ic_col": "#1473E6", "name": "Strategy Development", "project": "Sustainability In..", "start_date": "May 21, 2024", "end_date": "Jun 10, 2024", "duration": "21 days", "status": "In Progress", "priority": "Medium", "assignee": "Sarah Kim", "pct": 40, "bar_col": "#1473E6", "tag": "Strategy", "tag_bg": "#DBEAFE", "tag_fg": "#1D4ED8"},
+                {"wbs": "3.3", "ico": "doc", "ic_col": "#7C3AED", "name": "Implementation", "project": "Sustainability In..", "start_date": "Jun 11, 2024", "end_date": "Jun 30, 2024", "duration": "20 days", "status": "Not Started", "priority": "Low", "assignee": "James Miller", "pct": 0, "bar_col": "#CBD5E1", "tag": "Implementation", "tag_bg": "#F3E8FF", "tag_fg": "#7C3AED"},
+            ],
+        },
+        {
+            "group_title": "Marketing Campaign (3)",
+            "project": "Marketing Campaign",
+            "icon_bg": "#F28C00",
+            "start": "May 6, 2024",
+            "end": "Jun 25, 2024",
+            "dur": "50 days",
+            "pct": 25,
+            "bar_col": "#00875A",
+            "row_bg": "#FFFBEB",
+            "tasks": [
+                {"wbs": "4.1", "ico": "doc", "ic_col": "#00875A", "name": "Content Creation", "project": "Marketing Campaig", "start_date": "May 6, 2024", "end_date": "May 20, 2024", "duration": "15 days", "status": "In Progress", "priority": "Medium", "assignee": "Alice Morgan", "pct": 50, "bar_col": "#1473E6", "tag": "Content", "tag_bg": "#DBEAFE", "tag_fg": "#1D4ED8"},
+                {"wbs": "4.2", "ico": "doc", "ic_col": "#1473E6", "name": "Campaign Setup", "project": "Marketing Campaig", "start_date": "May 21, 2024", "end_date": "Jun 10, 2024", "duration": "20 days", "status": "Not Started", "priority": "Low", "assignee": "Ryan Cruz", "pct": 0, "bar_col": "#CBD5E1", "tag": "Setup", "tag_bg": "#EDE9FE", "tag_fg": "#6D28D9"},
+                {"wbs": "4.3", "ico": "doc", "ic_col": "#475569", "name": "Launch Campaign", "project": "Marketing Campaig", "start_date": "Jun 11, 2024", "end_date": "Jun 25, 2024", "duration": "15 days", "status": "Not Started", "priority": "High", "assignee": "Michael Tan", "pct": 0, "bar_col": "#CBD5E1", "tag": "Launch", "tag_bg": "#EDE9FE", "tag_fg": "#6D28D9"},
+            ],
+        },
+    ]
+
+    # Avatar initials and colors matching Image 12
+    tl_avatars = {
+        "Dana Scott": ("DS", "#0284C7"),
+        "Emily Rodriguez": ("EC", "#0284C7"),
+        "James Miller": ("JM", "#0284C7"),
+        "Sarah Kim": ("SL", "#0284C7"),
+        "Alice Morgan": ("AL", "#0284C7"),
+        "Ryan Cruz": ("RJ", "#0284C7"),
+        "Michael Tan": ("MT", "#0284C7"),
+    }
+
+    with st.container(border=True):
+        col_weights = [0.55, 1.85, 1.05, 0.85, 0.85, 0.65, 0.85, 0.72, 1.25, 1.15, 0.9, 0.7]
+        hdr_cols = st.columns(col_weights)
+        hdr_titles = ["☐ &nbsp; ID", "Task Name &nbsp;▸", "Project", "Start Date", "End Date", "Duration", "Status", "Priority", "Assignee", "% Complete", "Tags", "Actions"]
+        for c, h_t in zip(hdr_cols, hdr_titles):
+            c.markdown(f"<div style='font-size:11.5px;font-weight:700;color:#1E293B;padding-bottom:6px'>{h_t}</div>", unsafe_allow_html=True)
+        st.markdown("<hr style='margin:0 0 6px 0;border-color:#E2E8F0'>", unsafe_allow_html=True)
+
+        q_combined = (tl_top_q + " " + tl_sub_q).strip().lower()
+
+        for grp in task_groups:
+            if tl_proj_f != "All Projects" and grp["project"] != tl_proj_f:
+                continue
+
+            filtered_tasks = []
+            for t_item in grp["tasks"]:
+                if tl_stat_f != "All Statuses" and t_item["status"] != tl_stat_f:
+                    continue
+                if tl_prio_f != "All Priorities" and t_item["priority"] != tl_prio_f:
+                    continue
+                if tl_ass_f != "All Assignees" and t_item["assignee"] != tl_ass_f:
+                    continue
+                if q_combined and not (q_combined in t_item["name"].lower() or q_combined in t_item["assignee"].lower() or q_combined in grp["project"].lower()):
+                    continue
+                filtered_tasks.append(t_item)
+
+            if not filtered_tasks:
+                continue
+
+            # Project Group Banner Row
+            st.markdown(
+                clean_html(
+                    f"""
+                    <div style="display:grid;grid-template-columns:55px 2.8fr 1fr 1fr 0.8fr 0.7fr 3.6fr;align-items:center;background:{grp['row_bg']};padding:8px 10px;border-radius:6px;margin:4px 0 6px 0;font-size:12.5px;font-weight:700;color:#0F172A">
+                        <div>⌄ &nbsp;<span style="display:inline-flex;align-items:center;justify-content:center;width:20px;height:20px;border-radius:5px;background:{grp['icon_bg']};color:white;font-size:11px">▤</span></div>
+                        <div>{html.escape(grp['group_title'])}</div>
+                        <div>{grp['start']}</div>
+                        <div>{grp['end']}</div>
+                        <div>{grp['dur']}</div>
+                        <div>{grp['pct']}%</div>
+                        <div style="padding-right:16px">
+                            <div style="height:11px;background:#CBD5E1;border-radius:99px;overflow:hidden;max-width:340px">
+                                <div style="width:{grp['pct']}%;height:100%;background:{grp['bar_col']};border-radius:99px"></div>
+                            </div>
+                        </div>
+                    </div>
+                    """
+                ),
+                unsafe_allow_html=True,
+            )
+
+            # Individual Task Rows
+            for t_item in filtered_tasks:
+                wbs_id = t_item["wbs"]
+                rc = st.columns(col_weights)
+                with rc[0]:
+                    st.markdown(f"<div style='font-size:12px;color:#475569;padding-top:5px'><span style='color:#94A3B8'>1</span> &nbsp; <b style='color:#1E293B'>{wbs_id}</b></div>", unsafe_allow_html=True)
+                with rc[1]:
+                    t_ico = "▤" if t_item["ico"] == "doc" else "▶"
+                    st.markdown(
+                        clean_html(
+                            f"""
+                            <div style="display:flex;align-items:center;gap:7px;padding-top:4px">
+                                <span style="display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;border-radius:4px;background:{t_item['ic_col']};color:white;font-size:9px">{t_ico}</span>
+                                <span style="font-size:12.5px;font-weight:600;color:#0F172A">{html.escape(t_item['name'])}</span>
+                            </div>
+                            """
+                        ),
+                        unsafe_allow_html=True,
+                    )
+                with rc[2]:
+                    st.markdown(f"<div style='font-size:12px;color:#64748B;padding-top:5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis'>{html.escape(t_item['project'])}</div>", unsafe_allow_html=True)
+                with rc[3]:
+                    st.markdown(f"<div style='font-size:12px;color:#1E293B;padding-top:5px'>{t_item['start_date']}</div>", unsafe_allow_html=True)
+                with rc[4]:
+                    st.markdown(f"<div style='font-size:12px;color:#1E293B;padding-top:5px'>{t_item['end_date']}</div>", unsafe_allow_html=True)
+                with rc[5]:
+                    st.markdown(f"<div style='font-size:12px;color:#1E293B;padding-top:5px'>{t_item['duration']}</div>", unsafe_allow_html=True)
+                with rc[6]:
+                    st.markdown(f"<div style='padding-top:3px'>{badge_html(t_item['status'])}</div>", unsafe_allow_html=True)
+                with rc[7]:
+                    st.markdown(f"<div style='padding-top:3px'>{badge_html(t_item['priority'])}</div>", unsafe_allow_html=True)
+                with rc[8]:
+                    ini, abg = tl_avatars.get(t_item["assignee"], ("JM", "#0284C7"))
+                    st.markdown(
+                        clean_html(
+                            f"""
+                            <div style="display:flex;align-items:center;padding-top:3px;font-size:12px;color:#0F172A;white-space:nowrap">
+                                <span class="vk-avatar" style="background:{abg}">{ini}</span>{html.escape(t_item['assignee'])}
+                            </div>
+                            """
+                        ),
+                        unsafe_allow_html=True,
+                    )
+                with rc[9]:
+                    pct_v = t_item["pct"]
+                    st.markdown(
+                        clean_html(
+                            f"""
+                            <div style="display:flex;align-items:center;gap:8px;padding-top:6px">
+                                <span style="font-size:12px;font-weight:600;color:#1E293B;min-width:30px">{pct_v}%</span>
+                                <div style="flex:1;height:8px;background:#E2E8F0;border-radius:99px;overflow:hidden">
+                                    <div style="width:{pct_v}%;height:100%;background:{t_item['bar_col']};border-radius:99px"></div>
+                                </div>
+                            </div>
+                            """
+                        ),
+                        unsafe_allow_html=True,
+                    )
+                with rc[10]:
+                    st.markdown(
+                        f"<div style='padding-top:4px'><span class='vk-tag' style='background:{t_item['tag_bg']};color:{t_item['tag_fg']}'>{html.escape(t_item['tag'])}</span></div>",
+                        unsafe_allow_html=True,
+                    )
+                with rc[11]:
+                    b_v, b_e = st.columns(2)
+                    with b_v:
+                        if st.button("👁", key=f"tl_v_{wbs_id}", help="View Task"):
+                            st.session_state.task_modal = ("view", t_item)
+                            st.rerun()
+                    with b_e:
+                        if st.button("❐", key=f"tl_e_{wbs_id}", help="Edit Task"):
+                            st.session_state.task_modal = ("edit", t_item)
+                            st.rerun()
+                st.markdown("<hr style='margin:4px 0;border-color:#F1F5F9'>", unsafe_allow_html=True)
+
+        # Pagination Footer
+        st.markdown(
+            clean_html(
+                """
+                <div style="display:flex;align-items:center;justify-content:space-between;padding-top:10px;font-size:12.5px;color:#475569">
+                    <div style="display:flex;align-items:center;gap:8px">
+                        <span>Show</span>
+                        <span style="border:1px solid #CBD5E1;border-radius:6px;padding:3px 10px;background:white;font-weight:600;color:#0F172A">25 &nbsp;▾</span>
+                        <span>entries</span>
+                        <span style="margin-left:14px">Showing 1 to 17 of 17 tasks</span>
+                    </div>
+                    <div style="display:flex;align-items:center;gap:6px">
+                        <span style="border:1px solid #CBD5E1;border-radius:6px;padding:4px 10px;background:white">‹</span>
+                        <span style="border-radius:6px;padding:4px 11px;background:#00875A;color:white;font-weight:700">1</span>
+                        <span style="border:1px solid #CBD5E1;border-radius:6px;padding:4px 10px;background:white">›</span>
+                    </div>
+                </div>
+                """
+            ),
+            unsafe_allow_html=True,
+        )
+
+    # Trigger Task Modal if active
+    if "task_modal" in st.session_state:
+        tm_type, tm_payload = st.session_state.task_modal
+        if tm_type == "add":
+            add_task_modal()
+        elif tm_type == "view":
+            view_task_modal(tm_payload)
+        elif tm_type == "edit":
+            edit_task_modal(tm_payload)
 
 
 # ===========================================================================
