@@ -79,7 +79,7 @@ def _mongo_collection():
 
 
 def _snapshot_tables(c: sqlite3.Connection) -> dict:
-    names = ("projects", "tasks", "resources", "milestones", "settings", "saved_reports", "audit_log", "calendar_events", "project_assignments")
+    names = ("projects", "tasks", "resources", "milestones", "settings", "saved_reports", "audit_log")
     snapshot = {}
     for name in names:
         rows = c.execute(f"SELECT * FROM {name}").fetchall()
@@ -113,7 +113,7 @@ def _restore_snapshot() -> bool:
     if not doc:
         st.session_state["_vektor_mongo_connected"] = True
         return False
-    tables = ("projects", "tasks", "resources", "milestones", "settings", "saved_reports", "audit_log", "calendar_events", "project_assignments")
+    tables = ("projects", "tasks", "resources", "milestones", "settings", "saved_reports", "audit_log")
     with conn() as c:
         for table in tables:
             rows = doc.get(table, [])
@@ -139,7 +139,7 @@ def _clear_mock_records(except_table: str = "") -> None:
     """Remove seeded mock records when the first real project/task/resource is created."""
     if st.session_state.get("_vektor_has_real_data"):
         return
-    tables = ("projects", "tasks", "resources", "milestones", "saved_reports", "calendar_events")
+    tables = ("projects", "tasks", "resources", "milestones", "saved_reports")
     with conn() as c:
         for table in tables:
             if table != except_table:
@@ -158,8 +158,8 @@ def _recalculate_project_rollups() -> None:
                 "SELECT status, progress, due_date FROM tasks WHERE project_id=?", (project["id"],)
             ).fetchall()
             total = len(tasks)
-            done = sum(1 for task in tasks if str(task["status"] or "").strip().lower() == "completed")
-            progress = round((done / total) * 100) if total else 0
+            done = sum(1 for task in tasks if str(task["status"] or "").lower() == "completed")
+            progress = round(sum(max(0, min(100, int(task["progress"] or 0))) for task in tasks) / total) if total else 0
             end_date = None
             try:
                 end_date = date.fromisoformat(str(project["end_date"])[:10])
@@ -187,8 +187,12 @@ def sql(q: str, p: tuple = ()) -> None:
     normalized = " ".join(q.strip().lower().split())
     match = re.search(r"\b(?:insert\s+into|update|delete\s+from)\s+([a-z_]+)", normalized)
     table = match.group(1) if match else ""
-    is_entity_mutation = table in {"projects", "tasks", "resources", "milestones", "saved_reports", "settings", "audit_log", "calendar_events", "project_assignments"}
+    is_entity_mutation = table in {"projects", "tasks", "resources", "milestones", "saved_reports", "settings", "audit_log"}
     is_insert = normalized.startswith("insert into")
+    # First user-created record marks the end of demo-only mode. Keep existing projects
+    # available when the first real task/resource is added so foreign references still work.
+    if is_entity_mutation and is_insert and not st.session_state.get("_vektor_has_real_data"):
+        _clear_mock_records(except_table="projects" if table != "projects" else "")
     with conn() as c:
         c.execute(q, p)
         c.commit()
@@ -217,8 +221,6 @@ def init_db(force_reset: bool = False) -> None:
                 DROP TABLE IF EXISTS settings;
                 DROP TABLE IF EXISTS saved_reports;
                 DROP TABLE IF EXISTS audit_log;
-                DROP TABLE IF EXISTS calendar_events;
-                DROP TABLE IF EXISTS project_assignments;
                 """
             )
 
@@ -266,8 +268,7 @@ def init_db(force_reset: bool = False) -> None:
                 role TEXT,
                 status TEXT,
                 capacity INTEGER,
-                notes TEXT,
-                skills TEXT
+                notes TEXT
             );
             CREATE TABLE IF NOT EXISTS milestones(
                 id INTEGER PRIMARY KEY,
@@ -301,139 +302,201 @@ def init_db(force_reset: bool = False) -> None:
                 details TEXT,
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP
             );
-            CREATE TABLE IF NOT EXISTS calendar_events(
-                id INTEGER PRIMARY KEY,
-                title TEXT NOT NULL,
-                event_type TEXT,
-                project_id INTEGER,
-                task_name TEXT,
-                resources TEXT,
-                start_date TEXT,
-                start_time TEXT,
-                end_date TEXT,
-                end_time TEXT,
-                allocation INTEGER,
-                repeat_rule TEXT,
-                description TEXT,
-                created_at TEXT DEFAULT CURRENT_TIMESTAMP
-            );
-            CREATE TABLE IF NOT EXISTS project_assignments(
-                id INTEGER PRIMARY KEY,
-                resource_id INTEGER,
-                project_id INTEGER,
-                allocation INTEGER,
-                start_date TEXT,
-                end_date TEXT,
-                status TEXT,
-                role TEXT,
-                notes TEXT
-            );
             """
         )
-        _resource_cols = [row[1] for row in c.execute("PRAGMA table_info(resources)").fetchall()]
-        if "skills" not in _resource_cols:
-            c.execute("ALTER TABLE resources ADD COLUMN skills TEXT")
-        c.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_project_assignments_resource_project ON project_assignments(resource_id, project_id)")
 
-        c.commit()
+        if c.execute("SELECT COUNT(*) FROM projects").fetchone()[0] == 0:
+            # Exact 12 projects from the uploaded mockups (List View order #1 to #12)
+            ps = [
+                (
+                    1, "Website Revamp", "Alice Morgan", "Marketing", "Web Development",
+                    "On Track", "High", "2024-04-24", "2024-06-30", 70, 45, 14, 20,
+                    "Web,Marketing,Corporate", "#00875A", "Redesign corporate website",
+                    "Redesign and launch the corporate website with improved user experience.", "Healthy"
+                ),
+                (
+                    2, "E-Commerce Platform", "Brian Taylor", "IT", "IT & Development",
+                    "In Progress", "High", "2024-03-15", "2024-06-15", 50, 30, 12, 24,
+                    "IT,Development", "#1473E6", "Build new e-commerce platform",
+                    "Build new e-commerce platform to expand digital presence.", "Healthy"
+                ),
+                (
+                    3, "Mobile App Development", "Emily Rodriguez", "Design", "Mobile Development",
+                    "At Risk", "Medium", "2024-04-01", "2024-08-30", 30, 90, 8, 26,
+                    "Mobile,Customer", "#7C3AED", "Develop customer mobile app",
+                    "Develop customer mobile application for iOS and Android.", "At Risk"
+                ),
+                (
+                    4, "Data Migration", "Carlos Diaz", "IT", "Cloud & Data",
+                    "On Track", "High", "2024-05-01", "2024-07-31", 80, 60, 18, 22,
+                    "Data,Cloud", "#F28C00", "Migrate legacy data to cloud",
+                    "Migrate legacy data to cloud infrastructure with minimal downtime.", "Healthy"
+                ),
+                (
+                    5, "IT Infrastructure Upgrade", "Dana Scott", "IT", "Infrastructure",
+                    "At Risk", "High", "2024-05-20", "2024-09-15", 20, 110, 6, 28,
+                    "Infrastructure,IT", "#00875A", "Upgrade servers and network",
+                    "Upgrade servers and network infrastructure to support business growth.", "At Risk"
+                ),
+                (
+                    6, "Security Enhancement", "Mark Wilson", "IT", "Security & Compliance",
+                    "On Track", "Medium", "2024-04-10", "2024-07-10", 65, 50, 13, 20,
+                    "Security,Compliance", "#00875A", "Implement security measures",
+                    "Implement security measures to strengthen system protection and compliance.", "Healthy"
+                ),
+                (
+                    7, "Customer Portal", "Sarah Kim", "Marketing", "Web Development",
+                    "On Track", "High", "2024-03-01", "2024-06-30", 90, 45, 18, 20,
+                    "Customer,Web", "#7C3AED", "Enhance customer portal",
+                    "Enhance customer portal with new features and improved user experience.", "Healthy"
+                ),
+                (
+                    8, "AI Integration", "Kevin Lee", "IT", "AI & Innovation",
+                    "Not Started", "Medium", "2024-05-05", "2024-10-31", 15, 140, 3, 18,
+                    "AI,Innovation", "#EC4899", "Integrate AI capabilities",
+                    "Integrate AI capabilities to improve business processes and customer support.", "Healthy"
+                ),
+                (
+                    9, "Process Automation", "Jason Tan", "Operations", "Operations",
+                    "In Progress", "Low", "2024-06-01", "2024-09-30", 40, 120, 8, 20,
+                    "Automation,Operations", "#1473E6", "Automate internal processes",
+                    "Automate internal processes to increase efficiency and reduce manual work.", "Healthy"
+                ),
+                (
+                    10, "Training Program", "Nicole Reyes", "Operations", "HR & Training",
+                    "In Progress", "Low", "2024-04-15", "2024-08-15", 55, 75, 11, 20,
+                    "HR,Training", "#DB2777", "Employee training and upskilling",
+                    "Employee training and upskilling program for new systems.", "Healthy"
+                ),
+                (
+                    11, "Vendor Management System", "David Park", "Operations", "Procurement",
+                    "Not Started", "Medium", "2024-05-10", "2024-11-30", 10, 170, 2, 18,
+                    "Procurement,IT", "#0284C7", "Implement vendor management",
+                    "Implement vendor management system to streamline procurement.", "At Risk"
+                ),
+                (
+                    12, "Sustainability Initiative", "Laura Torres", "Operations", "Sustainability",
+                    "Not Started", "Low", "2024-06-15", "2024-12-31", 5, 200, 1, 24,
+                    "Sustainability,ESG", "#00875A", "Implement green IT practices",
+                    "Implement green IT practices and sustainability programs.", "Critical"
+                ),
+            ]
+            c.executemany(
+                """
+                INSERT INTO projects(
+                    id,name,owner,team,category,status,priority,start_date,end_date,
+                    progress,days_left,tasks_done,tasks_total,tags,bar_color,short_desc,description,health
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                """,
+                ps,
+            )
 
-project_columns = ['id', 'name', 'owner', 'team', 'category', 'status', 'priority', 'start_date', 'end_date', 'progress', 'days_left', 'tasks_done', 'tasks_total', 'tags', 'bar_color', 'short_desc', 'description', 'health']
-task_columns = ['id', 'name', 'project_id', 'team', 'status', 'priority', 'start_date', 'due_date', 'assignee', 'progress', 'dependency', 'notes']
-resource_columns = ['id', 'name', 'email', 'team', 'role', 'status', 'capacity', 'notes', 'skills']
-milestone_columns = ['id', 'name', 'project_id', 'team', 'status', 'start_date', 'due_date', 'completion_date', 'dependency', 'notes']
-report_columns = ['id', 'name', 'report_type', 'config', 'last_generated', 'created_by']
-calendar_event_columns = ['id', 'title', 'event_type', 'project_id', 'task_name', 'resources', 'start_date', 'start_time', 'end_date', 'end_time', 'allocation', 'repeat_rule', 'description', 'created_at']
-assignment_columns = ['id', 'resource_id', 'project_id', 'allocation', 'start_date', 'end_date', 'status', 'role', 'notes']
+            people = [
+                "Alice Morgan", "Brian Taylor", "Emily Rodriguez", "Carlos Diaz", "Dana Scott",
+                "Mark Wilson", "Sarah Kim", "Kevin Lee", "Jason Tan", "Nicole Reyes",
+                "David Park", "Laura Torres", "James Miller", "Ryan Cruz", "Michael Tan",
+                "Daniel Perez", "Ella Ramirez", "Chris Padilla", "Anna Reyes", "Kevin Santos",
+                "Lisa Chan", "David Lim", "Maria Santos", "John Cruz",
+            ]
+            teams_list_seed = [
+                "Marketing", "IT", "Design", "IT", "IT",
+                "IT", "Marketing", "IT", "Operations", "Operations",
+                "Operations", "Operations", "IT", "Operations", "IT",
+                "Operations", "Design", "IT", "Marketing", "Operations",
+                "Design", "IT", "Marketing", "Others",
+            ]
+            for i, (n, t) in enumerate(zip(people, teams_list_seed)):
+                status = "On Leave" if i in (14, 20) else ("Partial" if i in (2, 6, 11, 17) else "Available")
+                role = "Admin" if i in (0, 12) else ("Project Manager" if i < 12 else "Team Member")
+                cap = 0 if status == "On Leave" else (50 if status == "Partial" else 100)
+                c.execute(
+                    "INSERT INTO resources(name,email,team,role,status,capacity,notes) VALUES(?,?,?,?,?,?,?)",
+                    (n, n.lower().replace(" ", ".") + "@vektor.example", t, role, status, cap, ""),
+                )
 
+            tasks_seed = [
+                ("UI/UX Design Complete", 1, "Design", "Completed", "High", "2024-04-01", "2024-04-30", "Alice Morgan", 100, "", "Design phase completed."),
+                ("Homepage Development", 1, "IT", "In Progress", "High", "2024-04-10", "2024-05-15", "James Miller", 65, "UI/UX Design Complete", "Frontend responsive build."),
+                ("Content Review", 7, "Marketing", "In Progress", "Medium", "2024-04-15", "2024-05-20", "Sarah Kim", 55, "", "Copywriting and creative review."),
+                ("Infrastructure Setup", 5, "IT", "Not Started", "High", "2024-05-01", "2024-05-15", "Dana Scott", 0, "Requirements Gathering", "Provisioning cluster nodes."),
+                ("Sustainability Plan", 12, "Operations", "Completed", "Medium", "2024-05-05", "2024-05-30", "Laura Torres", 100, "", "Charter approved by leadership."),
+                ("Process Documentation", 9, "Operations", "In Progress", "Low", "2024-05-10", "2024-06-20", "Jason Tan", 50, "", "Mapping core operational workflows."),
+                ("Training Materials", 10, "Operations", "Not Started", "Medium", "2024-05-20", "2024-06-30", "Nicole Reyes", 0, "Content Review", "Sales enablement deck."),
+                ("QA Testing", 1, "IT", "In Progress", "High", "2024-05-25", "2024-06-25", "Chris Padilla", 35, "Homepage Development", "Cross-browser regression testing."),
+                ("API Integration", 2, "IT", "In Progress", "High", "2024-04-12", "2024-05-25", "Brian Taylor", 60, "", "Payment gateway & cart API."),
+                ("UI Development", 3, "Design", "In Progress", "Medium", "2024-04-18", "2024-06-10", "Emily Rodriguez", 40, "", "Mobile screens implementation."),
+                ("Data Mapping", 4, "IT", "Completed", "Low", "2024-04-01", "2024-04-25", "Carlos Diaz", 100, "", "Schema validation finished."),
+            ]
+            c.executemany(
+                "INSERT INTO tasks(name,project_id,team,status,priority,start_date,due_date,assignee,progress,dependency,notes) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                tasks_seed,
+            )
 
-def _excel_value(value):
-    if pd.isna(value):
-        return None
-    if isinstance(value, (pd.Timestamp, datetime, date)):
-        return value.strftime("%Y-%m-%d")
-    if hasattr(value, "item"):
-        try:
-            return value.item()
-        except Exception:
-            pass
-    return value
+            ms_seed = [
+                ("Project Kick-off", 1, "Marketing", "Completed", "2024-04-20", "2024-04-24", "2024-04-24", "", "Initial kick-off complete."),
+                ("Requirements Finalized", 1, "Marketing", "Completed", "2024-04-25", "2024-05-05", "2024-05-05", "Project Kick-off", "Scope signed off."),
+                ("Design Sign-off", 1, "Design", "Completed", "2024-04-10", "2024-04-30", "2024-04-30", "Requirements Finalized", "Design phase completed."),
+                ("Development Complete", 1, "IT", "In Progress", "2024-05-01", "2024-05-31", "", "Design Sign-off", "Core build underway."),
+                ("UAT Completion", 1, "IT", "Not Started", "2024-06-01", "2024-06-15", "", "Development Complete", "Pending staging build."),
+                ("Go-Live", 1, "IT", "Not Started", "2024-06-16", "2024-06-30", "", "UAT Completion", "Production launch."),
+                ("MVP Release", 3, "Design", "At Risk", "2024-04-15", "2024-05-15", "", "UI Development", "Awaiting final assets."),
+                ("Data Migration Cutover", 4, "IT", "On Track", "2024-05-10", "2024-06-15", "", "Data Mapping", "Environment setup ongoing."),
+                ("Infrastructure Go-Live", 5, "IT", "On Track", "2024-06-01", "2024-07-01", "", "Infrastructure Setup", "Scheduled cutover."),
+            ]
+            c.executemany(
+                "INSERT INTO milestones(name,project_id,team,status,start_date,due_date,completion_date,dependency,notes) VALUES(?,?,?,?,?,?,?,?,?)",
+                ms_seed,
+            )
 
+            default_settings = [
+                ("workspace_name", "Vektor"),
+                ("workspace_description", "Project management workspace for planning, tracking, and delivery."),
+                ("theme", "HPE Green"),
+                ("language", "English"),
+                ("date_format", "MMM DD, YYYY"),
+                ("default_landing", "Overview"),
+                ("default_project_status", "On Track"),
+                ("project_template", "Standard Project"),
+                ("auto_project_id", "true"),
+                ("require_project_desc", "true"),
+                ("allow_project_attachments", "true"),
+                ("project_archiving", "false"),
+                ("default_task_status", "Not Started"),
+                ("default_task_priority", "Medium"),
+                ("task_dependencies", "true"),
+                ("allow_subtasks", "true"),
+                ("recurring_tasks", "false"),
+                ("require_assignee", "true"),
+                ("task_attachments", "true"),
+                ("default_milestone_status", "Not Started"),
+                ("milestones_enabled", "true"),
+                ("milestones_require_due", "true"),
+                ("milestone_dependencies", "true"),
+                ("milestone_notifications", "true"),
+                ("notification_frequency", "Daily digest"),
+                ("integration_Microsoft 365", "true"),
+                ("integration_Slack", "true"),
+                ("integration_Microsoft Teams", "false"),
+                ("integration_OneDrive", "false"),
+                ("audit_logs", "true"),
+                ("data_export", "true"),
+                ("automatic_backups", "true"),
+                ("maintenance_mode", "false"),
+                ("session_timeout", "8 hours"),
+            ]
+            c.executemany("INSERT OR IGNORE INTO settings(key,value) VALUES(?,?)", default_settings)
 
-def import_excel_workbook(uploaded_file) -> dict:
-    """Replace the tables represented by sheets in the uploaded Excel workbook."""
-    sheet_map = {
-        "Projects": ("projects", project_columns), "Tasks": ("tasks", task_columns),
-        "Resources": ("resources", resource_columns), "Milestones": ("milestones", milestone_columns),
-        "Calendar Events": ("calendar_events", calendar_event_columns),
-        "Project Assignments": ("project_assignments", assignment_columns),
-        "Saved Reports": ("saved_reports", report_columns), "Settings": ("settings", ["key", "value"]),
-    }
-    book = pd.ExcelFile(uploaded_file)
-    actual_sheets = {s.strip().lower(): s for s in book.sheet_names}
-    frames = {}
-    for sheet, (table, columns) in sheet_map.items():
-        actual = actual_sheets.get(sheet.lower())
-        if not actual:
-            continue
-        frame = pd.read_excel(book, sheet_name=actual)
-        frame.columns = [str(c).strip() for c in frame.columns]
-        if table == "settings" and not {"key", "value"}.issubset(frame.columns):
-            raise ValueError("Settings sheet requires 'key' and 'value' columns.")
-        if table in {"projects", "tasks", "resources", "milestones", "saved_reports"} and not frame.empty and "name" not in frame:
-            raise ValueError(f"{sheet} sheet requires a 'name' column.")
-        frame = frame[[c for c in frame.columns if c in columns]].copy()
-        for col in columns:
-            if col not in frame:
-                frame[col] = None
-        frames[table] = frame[columns]
-    if not frames:
-        raise ValueError("No recognized Vektor sheets were found. Download and use the provided template.")
-
-    if "projects" in frames:
-        project_ids = set(pd.to_numeric(frames["projects"]["id"], errors="coerce").dropna().astype(int))
-    else:
-        project_ids = set(df("SELECT id FROM projects")["id"].tolist())
-    for table in ("tasks", "milestones", "calendar_events", "project_assignments"):
-        if table in frames and "project_id" in frames[table]:
-            refs = set(pd.to_numeric(frames[table]["project_id"], errors="coerce").dropna().astype(int))
-            missing = refs - project_ids
-            if missing:
-                raise ValueError(f"{table.title()} refers to unknown project IDs: {sorted(missing)[:10]}")
-    if "project_assignments" in frames and "resources" in frames and "resource_id" in frames["project_assignments"]:
-        resource_ids = set(pd.to_numeric(frames["resources"]["id"], errors="coerce").dropna().astype(int))
-        assignment_resource_ids = set(pd.to_numeric(frames["project_assignments"]["resource_id"], errors="coerce").dropna().astype(int))
-        missing_resources = assignment_resource_ids - resource_ids
-        if missing_resources:
-            raise ValueError(f"Project Assignments refers to unknown resource IDs: {sorted(missing_resources)[:10]}")
-
-    order = ["projects", "resources", "tasks", "milestones", "calendar_events", "project_assignments", "saved_reports", "settings"]
-    counts = {}
-    with conn() as c:
-        for table in order:
-            if table not in frames:
-                continue
-            c.execute(f"DELETE FROM {table}")
-            for _, row in frames[table].iterrows():
-                record = {k: _excel_value(v) for k, v in row.to_dict().items()}
-                record = {k: v for k, v in record.items() if v is not None}
-                if table == "settings":
-                    if not record.get("key"):
-                        continue
-                    record["value"] = str(record.get("value", ""))
-                elif table in {"projects", "tasks", "resources", "milestones", "saved_reports"} and not record.get("name"):
-                    continue
-                if not record:
-                    continue
-                cols = list(record)
-                c.execute(f"INSERT OR REPLACE INTO {table} ({','.join(cols)}) VALUES ({','.join('?' for _ in cols)})", [record[k] for k in cols])
-            counts[table] = c.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
-        c.execute("INSERT OR REPLACE INTO settings(key,value) VALUES('legacy_seed_cleanup_v1','true')")
-        c.commit()
-    st.session_state["_vektor_has_real_data"] = True
-    _recalculate_project_rollups()
-    _persist_snapshot()
-    return counts
-
+            if c.execute("SELECT COUNT(*) FROM saved_reports").fetchone()[0] == 0:
+                saved_seed = [
+                    ("Monthly Project Summary", "Project Report", json.dumps({"type": "Project Report", "group": "Status", "metrics": ["Project Status", "Progress"], "viz": "Bar Chart"}), "2024-04-20", "Alice Morgan"),
+                    ("Q2 Resource Allocation", "Resource Report", json.dumps({"type": "Resource Report", "group": "Team", "metrics": ["Team Members"], "viz": "Column Chart"}), "2024-04-18", "Sarah Kim"),
+                    ("Overdue Tasks & Milestones", "Task Report", json.dumps({"type": "Task Report", "group": "Priority", "metrics": ["Task Status", "Priority"], "viz": "Pie Chart"}), "2024-04-15", "Dana Scott"),
+                ]
+                c.executemany(
+                    "INSERT INTO saved_reports(name,report_type,config,last_generated,created_by) VALUES(?,?,?,?,?)",
+                    saved_seed,
+                )
+            c.commit()
 
 
 def get_setting(k: str, default: str = "") -> str:
@@ -470,30 +533,6 @@ except Exception as _mongo_startup_error:
         "The app is currently using its local cache. "
         f"Details: {_mongo_startup_error}"
     )
-
-# One-time migration removes legacy mock rows left by previous script versions.
-try:
-    _legacy_names = ["Website Revamp", "E-Commerce Platform", "Mobile App Development", "Data Migration", "IT Infrastructure Upgrade", "Security Enhancement", "Customer Portal", "AI Integration", "Process Automation", "Training Program", "Vendor Management System", "Sustainability Initiative"]
-    with conn() as _c:
-        _already_clean = _c.execute("SELECT value FROM settings WHERE key='legacy_seed_cleanup_v1'").fetchone()
-        _has_legacy = _c.execute("SELECT COUNT(*) FROM projects WHERE name IN (" + ",".join("?" for _ in _legacy_names) + ")", _legacy_names).fetchone()[0]
-        if _has_legacy and not _already_clean:
-            _c.execute("DELETE FROM tasks WHERE project_id IN (SELECT id FROM projects WHERE name IN (" + ",".join("?" for _ in _legacy_names) + "))", _legacy_names)
-            _c.execute("DELETE FROM milestones WHERE project_id IN (SELECT id FROM projects WHERE name IN (" + ",".join("?" for _ in _legacy_names) + "))", _legacy_names)
-            _c.execute("DELETE FROM calendar_events WHERE project_id IN (SELECT id FROM projects WHERE name IN (" + ",".join("?" for _ in _legacy_names) + "))", _legacy_names)
-            _c.execute("DELETE FROM project_assignments WHERE project_id IN (SELECT id FROM projects WHERE name IN (" + ",".join("?" for _ in _legacy_names) + "))", _legacy_names)
-            _c.execute("DELETE FROM projects WHERE name IN (" + ",".join("?" for _ in _legacy_names) + ")", _legacy_names)
-            _c.execute("DELETE FROM resources WHERE email LIKE '%@vektor.example'")
-            _c.execute("DELETE FROM saved_reports WHERE name IN ('Monthly Project Summary','Q2 Resource Allocation','Overdue Tasks & Milestones')")
-            _c.execute("INSERT OR REPLACE INTO settings(key,value) VALUES('legacy_seed_cleanup_v1','true')")
-        _c.execute("INSERT OR IGNORE INTO settings(key,value) VALUES('legacy_seed_cleanup_v1','true')")
-        _c.commit()
-    _recalculate_project_rollups()
-    _persist_snapshot()
-except Exception:
-    pass
-
-_recalculate_project_rollups()
 
 # Load Dataframes
 P = df("SELECT * FROM projects ORDER BY id")
@@ -1266,31 +1305,56 @@ def clean_html(raw: str) -> str:
     return "".join(line.strip() for line in raw.splitlines() if line.strip())
 
 
-def render_timeline_stepper_html(project_id: int | None = None) -> str:
-    # Render milestones for the selected project without hardcoded demo dates.
-    if project_id is None:
-        milestones = df("SELECT * FROM milestones ORDER BY due_date")
-    else:
-        milestones = df("SELECT * FROM milestones WHERE project_id=? ORDER BY due_date", (project_id,))
-    if milestones.empty:
-        return '<div style="padding:18px;color:#64748B;font-size:12px">No milestones are available for this project yet.</div>'
-    steps = []
-    for _, m in milestones.head(6).iterrows():
-        status = str(m.get("status") or "Not Started")
-        state = "done" if status.lower() == "completed" else ("current" if status.lower() == "in progress" else "todo")
-        box_bg, box_fg = ("#DCFCE7", "#15803D") if state == "done" else (("#DBEAFE", "#1D4ED8") if state == "current" else ("#F1F5F9", "#475569"))
-        steps.append((str(m.get("name") or "Milestone"), fmt_date(m.get("due_date")), state, str(m.get("name") or "Milestone"), status, box_bg, box_fg))
+def render_timeline_stepper_html() -> str:
+    steps = [
+        ("Project Start", "Apr 24", "done", "Project kick-off", "Completed", "#DCFCE7", "#15803D"),
+        ("Planning", "May 5", "done", "Requirements", "Completed", "#DCFCE7", "#15803D"),
+        ("Design", "May 20", "done", "Design sign-off", "Completed", "#DCFCE7", "#15803D"),
+        ("Development", "May 31", "current", "Build and integrate", "In Progress", "#DBEAFE", "#1D4ED8"),
+        ("Testing", "Jun 15", "todo", "UAT and testing", "Not Started", "#F1F5F9", "#475569"),
+        ("Go-Live", "Jun 30", "todo", "Launch", "Not Started", "#F1F5F9", "#475569"),
+    ]
     nodes_html = ""
     for idx, (st_title, st_date, state, box_title, box_sub, box_bg, box_fg) in enumerate(steps):
         if state == "done":
-            circle = '<div style="width:24px;height:24px;border-radius:50%;background:#00875A;color:white;display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:800;z-index:2;position:relative">✓</div>'
+            circle = (
+                '<div style="width:24px;height:24px;border-radius:50%;background:#00875A;'
+                'color:white;display:flex;align-items:center;justify-content:center;'
+                'font-size:13px;font-weight:800;z-index:2;position:relative">✓</div>'
+            )
         elif state == "current":
-            circle = '<div style="width:24px;height:24px;border-radius:50%;background:#1473E6;border:3px solid #BFDBFE;color:white;display:flex;align-items:center;justify-content:center;font-size:10px;z-index:2;position:relative">●</div>'
+            circle = (
+                '<div style="width:24px;height:24px;border-radius:50%;background:#1473E6;'
+                'border:3px solid #BFDBFE;color:white;display:flex;align-items:center;'
+                'justify-content:center;font-size:10px;z-index:2;position:relative">●</div>'
+            )
         else:
-            circle = '<div style="width:22px;height:22px;border-radius:50%;background:#94A3B8;color:white;display:flex;align-items:center;justify-content:center;font-size:10px;z-index:2;position:relative"></div>'
-        line_color = "#00875A" if state == "done" else ("#1473E6" if state == "current" else "#CBD5E1")
-        line_right = f'<div style="position:absolute;top:46px;left:50%;width:100%;height:3px;background:{line_color};z-index:1"></div>' if idx < len(steps)-1 else ""
-        nodes_html += clean_html(f'''<div style="flex:1;position:relative;display:flex;flex-direction:column;align-items:center;text-align:center;padding:0 4px">{line_right}<div style="font-size:11.5px;font-weight:700;color:#1E293B">{html.escape(st_title)}</div><div style="font-size:10.5px;color:#64748B;margin-bottom:6px">{html.escape(st_date)}</div>{circle}<div style="margin-top:10px;background:{box_bg};border-radius:6px;padding:6px;width:94%;min-height:44px"><div style="font-size:10.5px;font-weight:600;color:{box_fg}">{html.escape(box_title)}</div><div style="font-size:10.5px;font-weight:700;color:{box_fg}">{html.escape(box_sub)}</div></div></div>''')
+            circle = (
+                '<div style="width:22px;height:22px;border-radius:50%;background:#94A3B8;'
+                'color:white;display:flex;align-items:center;justify-content:center;'
+                'font-size:10px;z-index:2;position:relative"></div>'
+            )
+
+        line_color = "#00875A" if idx < 2 else ("#1473E6" if idx == 2 else "#CBD5E1")
+        line_right = (
+            f'<div style="position:absolute;top:46px;left:50%;width:100%;height:3px;background:{line_color};z-index:1"></div>'
+            if idx < len(steps) - 1
+            else ""
+        )
+        nodes_html += clean_html(
+            f"""
+            <div style="flex:1;position:relative;display:flex;flex-direction:column;align-items:center;text-align:center;padding:0 4px">
+                {line_right}
+                <div style="font-size:11.5px;font-weight:700;color:#1E293B">{st_title}</div>
+                <div style="font-size:10.5px;color:#64748B;margin-bottom:6px">{st_date}</div>
+                {circle}
+                <div style="margin-top:10px;background:{box_bg};border-radius:6px;padding:6px 6px;width:94%;min-height:44px">
+                    <div style="font-size:10.5px;font-weight:600;color:{box_fg}">{box_title}</div>
+                    <div style="font-size:10.5px;font-weight:700;color:{box_fg}">{box_sub}</div>
+                </div>
+            </div>
+            """
+        )
     return f'<div style="display:flex;align-items:flex-start;justify-content:space-between;padding:8px 0 4px 0">{nodes_html}</div>'
 
 
@@ -1332,7 +1396,11 @@ def view_project_modal(pid: int) -> None:
         return
     r = row_df.iloc[0]
     tags_html = "".join(tag_pill_html(t) for t in str(r.tags or "").split(",") if t.strip())
-    full_desc = str(r.description or r.short_desc or "")
+    full_desc = (
+        "Redesign and launch the corporate website with improved user experience and modern design."
+        if r["name"] == "Website Revamp"
+        else str(r.description or r.short_desc or "")
+    )
     pct = int(r.progress or 0)
 
     st.markdown(
@@ -1372,7 +1440,7 @@ def view_project_modal(pid: int) -> None:
                 </div>
                 <div style="border:1px solid #E2E8F0;border-radius:10px;padding:10px 12px;display:flex;align-items:center;gap:10px;background:white">
                     <div style="width:36px;height:36px;border-radius:50%;background:#DCFCE7;color:#00875A;display:flex;align-items:center;justify-content:center;font-size:16px">🕒</div>
-                    <div><div style="font-size:11px;color:#64748B">Days Left</div><div style="font-size:18px;font-weight:800;color:#00875A;line-height:1">{int(r.days_left) if pd.notna(r.days_left) else 0}</div><div style="font-size:10px;color:#64748B">Days remaining</div></div>
+                    <div><div style="font-size:11px;color:#64748B">Days Left</div><div style="font-size:18px;font-weight:800;color:#00875A;line-height:1">{int(r.days_left or 45)}</div><div style="font-size:10px;color:#64748B">Days remaining</div></div>
                 </div>
             </div>
             """
@@ -1402,7 +1470,7 @@ def view_project_modal(pid: int) -> None:
             )
     with c_right, st.container(border=True):
         section_title("⏳ Timeline", "View Full Timeline →")
-        st.markdown(render_timeline_stepper_html(pid), unsafe_allow_html=True)
+        st.markdown(render_timeline_stepper_html(), unsafe_allow_html=True)
 
     b_left, b_right = st.columns([1.05, 1.95])
     with b_left, st.container(border=True):
@@ -1419,14 +1487,14 @@ def view_project_modal(pid: int) -> None:
                     <div style="display:grid;grid-template-columns:115px 1fr;gap:6px"><span style="color:#64748B">Project Manager</span><span>{html.escape(str(r.owner))}</span></div>
                     <div style="display:grid;grid-template-columns:115px 1fr;gap:6px"><span style="color:#64748B">Start Date</span><span>{fmt_date(r.start_date)}</span></div>
                     <div style="display:grid;grid-template-columns:115px 1fr;gap:6px"><span style="color:#64748B">Target End Date</span><span>{fmt_date(r.end_date)}</span></div>
-                    <div style="display:grid;grid-template-columns:115px 1fr;gap:6px"><span style="color:#64748B">Duration</span><span>{_project_duration} days</span></div>
-                    <div style="display:grid;grid-template-columns:115px 1fr;gap:6px"><span style="color:#64748B">Days Left</span><span style="color:#00875A;font-weight:700">{int(r.days_left) if pd.notna(r.days_left) else 0} days</span></div>
+                    <div style="display:grid;grid-template-columns:115px 1fr;gap:6px"><span style="color:#64748B">Duration</span><span>67 days</span></div>
+                    <div style="display:grid;grid-template-columns:115px 1fr;gap:6px"><span style="color:#64748B">Days Left</span><span style="color:#00875A;font-weight:700">{int(r.days_left or 45)} days</span></div>
                     <div style="display:grid;grid-template-columns:115px 1fr;gap:6px;margin-top:4px"><span style="color:#64748B">Tags</span><span>{tags_html}</span></div>
                 </div>
                 <hr style="border-color:#EEF2F6;margin:12px 0">
                 <div style="font-size:13.5px;font-weight:700;color:#0F172A;margin-bottom:6px">📄 Project Summary</div>
                 <div style="font-size:11.5px;color:#64748B;line-height:1.55">
-                    {html.escape(full_desc or str(r['name']))}. Current progress is {pct}%. The project timeline and milestones shown here reflect the records currently loaded in the workspace.
+                    The {html.escape(r['name'])} project aims to deliver a modern, user-friendly corporate website with improved performance, enhanced user experience, and updated content. The project is currently on track with {pct}% completion. Key development activities are in progress and the team is aligned for the upcoming milestones.
                 </div>
                 """
             ),
@@ -1436,7 +1504,14 @@ def view_project_modal(pid: int) -> None:
     with b_right:
         with st.container(border=True):
             section_title("🎯 Key Milestones", "View All Milestones →")
-            ms_rows = [(int(ms_row.id), "#00875A" if str(ms_row.status).lower() == "completed" else ("#1473E6" if str(ms_row.status).lower() == "in progress" else "#64748B"), str(ms_row.name), fmt_date(ms_row.due_date), str(ms_row.status or "Not Started")) for _, ms_row in M[M.project_id == pid].iterrows()] if not M.empty else []
+            ms_rows = [
+                (1, "#00875A", "Project Kick-off", "Apr 24, 2024", "Completed"),
+                (2, "#00875A", "Requirements Finalized", "May 5, 2024", "Completed"),
+                (3, "#00875A", "Design Sign-off", "Apr 30, 2024", "Completed"),
+                (4, "#1473E6", "Development Complete", "May 31, 2024", "In Progress"),
+                (5, "#64748B", "UAT Completion", "Jun 15, 2024", "Not Started"),
+                (6, "#64748B", "Go-Live", "Jun 30, 2024", "Not Started"),
+            ]
             tr_html = "".join(
                 f"<tr><td><b>{idx}</b></td><td><span style='color:{dot};margin-right:6px'>●</span>{mname}</td><td>{mdue}</td><td>{badge_html(mstat)}</td></tr>"
                 for idx, dot, mname, mdue, mstat in ms_rows
@@ -1448,14 +1523,12 @@ def view_project_modal(pid: int) -> None:
 
         with st.container(border=True):
             section_title("🕒 Recent Activity", "View All Activity →")
-            act_rows = []
-            _project_activity = df("SELECT event,item_type,details,created_at FROM audit_log ORDER BY created_at DESC LIMIT 5")
-            for _, _activity_row in _project_activity.iterrows():
-                _event = str(_activity_row.get("event") or "Updated")
-                _type = str(_activity_row.get("item_type") or "Record")
-                _details = str(_activity_row.get("details") or "")
-                _dot = "#00875A" if _event.lower() in {"created", "completed"} else "#1473E6"
-                act_rows.append((str(_activity_row.get("created_at") or ""), _dot, f"{_type} {_event.lower()}", _details))
+            act_rows = [
+                ("Apr 24, 2024 10:15 AM", "#00875A", "Project created", "Alice Morgan"),
+                ("Apr 23, 2024 04:20 PM", "#1473E6", "Milestone status changed to In Progress", "Emily Rodriguez"),
+                ("Apr 22, 2024 03:45 PM", "#1473E6", "Project details updated", "Alice Morgan"),
+                ("Apr 20, 2024 11:10 AM", "#64748B", "Team member added", "Sarah Kim"),
+            ]
             act_tr = "".join(
                 f"<tr><td>{dt}</td><td><span style='color:{dot};margin-right:6px'>●</span>{act}</td><td>{by}</td></tr>"
                 for dt, dot, act, by in act_rows
@@ -1508,9 +1581,13 @@ def edit_project_modal(pid: int | None = None) -> None:
         section_title("📄 Project Details")
         f_a, f_b = st.columns(2)
         with f_a:
-            p_name = st.text_input("Project Name *", value=str(r["name"]) if r is not None else "")
+            p_name = st.text_input("Project Name *", value=str(r["name"]) if r is not None else "Website Revamp")
         with f_b:
-            default_desc = str(r.description or "") if r is not None else ""
+            default_desc = (
+                "Redesign and launch the corporate website with improved user experience and modern design."
+                if (r is not None and r["name"] == "Website Revamp")
+                else (str(r.description or "") if r is not None else "")
+            )
             p_desc = st.text_area("Description", value=default_desc, height=85)
             st.markdown(f"<div style='text-align:right;font-size:11px;color:#64748B;margin-top:-8px'>{len(p_desc)}/500</div>", unsafe_allow_html=True)
 
@@ -1529,15 +1606,15 @@ def edit_project_modal(pid: int | None = None) -> None:
             p_prio = st.selectbox("Priority *", prios, index=prios.index(cur_pr))
 
         c4, c5, c6 = st.columns(3)
-        mgrs = R.name.tolist() if not R.empty else ["Unassigned"]
+        mgrs = R.name.tolist() if not R.empty else ["Alice Morgan"]
         cur_mgr = str(r.owner) if r is not None and r.owner in mgrs else mgrs[0]
         with c4:
             p_mgr = st.selectbox("Project Manager *", mgrs, index=mgrs.index(cur_mgr))
         with c5:
-            s_dt = date.fromisoformat(r.start_date) if r is not None and r.start_date else date.today()
+            s_dt = date.fromisoformat(r.start_date) if r is not None and r.start_date else date(2024, 4, 24)
             p_start = st.date_input("Start Date *", s_dt)
         with c6:
-            e_dt = date.fromisoformat(r.end_date) if r is not None and r.end_date else date.today() + timedelta(days=30)
+            e_dt = date.fromisoformat(r.end_date) if r is not None and r.end_date else date(2024, 6, 30)
             p_end = st.date_input("Target End Date *", e_dt)
 
         all_tags_pool = ["Web", "Marketing", "Corporate", "IT", "Development", "Mobile", "Customer", "Data", "Cloud", "Infrastructure", "Security", "Compliance", "AI", "Innovation", "Automation", "Operations", "HR", "Training", "Procurement", "Sustainability", "ESG"]
@@ -1564,11 +1641,15 @@ def edit_project_modal(pid: int | None = None) -> None:
 
     with st.container(border=True):
         section_title("📋 Project Timeline & Milestones")
-        st.markdown(render_timeline_stepper_html(pid), unsafe_allow_html=True)
+        st.markdown(render_timeline_stepper_html(), unsafe_allow_html=True)
         ms_edit_rows = [
-            (int(ms_row.id), "#00875A" if str(ms_row.status).lower() == "completed" else ("#1473E6" if str(ms_row.status).lower() == "in progress" else "#64748B"), str(ms_row.name), fmt_date(ms_row.due_date), str(ms_row.status or "Not Started"))
-            for _, ms_row in M[M.project_id == pid].iterrows()
-        ] if not M.empty else []
+            (1, "#00875A", "Project Kick-off", "Apr 24, 2024", "Completed"),
+            (2, "#00875A", "Requirements Finalized", "May 5, 2024", "Completed"),
+            (3, "#00875A", "Design Sign-off", "Apr 30, 2024", "Completed"),
+            (4, "#1473E6", "Development Complete", "May 31, 2024", "In Progress"),
+            (5, "#64748B", "UAT Completion", "Jun 15, 2024", "Not Started"),
+            (6, "#64748B", "Go-Live", "Jun 30, 2024", "Not Started"),
+        ]
         rows_mk = "".join(
             f"<tr><td>{i}</td><td><span style='color:{dot};margin-right:6px'>●</span>{nm}</td><td>{dt}</td><td>{badge_html(st_val)}</td><td>✎ &nbsp; <span style='color:#EF4444'>🗑</span></td></tr>"
             for i, dot, nm, dt, st_val in ms_edit_rows
@@ -1586,7 +1667,7 @@ def edit_project_modal(pid: int | None = None) -> None:
     with b3:
         if st.button("💾 Save Changes", type="primary", use_container_width=True, key="save_edit_modal"):
             tags_str = ",".join(p_tags)
-            days_l = max(0, (p_end - date.today()).days)
+            days_l = max(0, (p_end - date(2024, 5, 16)).days)
             health = "Critical" if p_stat == "Delayed" else ("At Risk" if p_stat == "At Risk" else "Healthy")
             if is_new:
                 sql(
@@ -1664,7 +1745,6 @@ def delete_project_modal(pid: int) -> None:
         if st.button("🗑 Delete Project", type="primary", use_container_width=True, key="confirm_del_modal"):
             sql("DELETE FROM tasks WHERE project_id=?", (pid,))
             sql("DELETE FROM milestones WHERE project_id=?", (pid,))
-            sql("DELETE FROM project_assignments WHERE project_id=?", (pid,))
             sql("DELETE FROM projects WHERE id=?", (pid,))
             log_event("Deleted", "Project", pid, r["name"])
             st.session_state.pop("active_modal", None)
@@ -1685,26 +1765,23 @@ if page == "Overview":
     with h_r1:
         ov_proj_filter = st.selectbox("Project", ["All Projects"] + projects_list, key="ov_proj_sel", label_visibility="collapsed")
     with h_r2:
-        st.date_input("Date Range", (date.today().replace(day=1), date.today()+timedelta(days=30)), key="ov_date_sel", label_visibility="collapsed")
+        st.date_input("Date Range", (date(2024, 4, 24), date(2024, 6, 30)), key="ov_date_sel", label_visibility="collapsed")
 
     st.write("")
-    # KPI values are calculated from the current Excel-fed records.
-    _ov_tasks = T.copy()
-    _ov_status = _ov_tasks.status.fillna("Not Started").astype(str) if not _ov_tasks.empty else pd.Series(dtype=str)
-    _ov_total_tasks = len(_ov_tasks)
-    _ov_completed = int((_ov_status.str.lower() == "completed").sum())
-    _ov_in_progress = int((_ov_status.str.lower() == "in progress").sum())
-    _ov_on_hold = int((_ov_status.str.lower() == "on hold").sum())
-    _ov_due = pd.to_datetime(_ov_tasks.due_date, errors="coerce") if not _ov_tasks.empty else pd.Series(dtype="datetime64[ns]")
-    _ov_overdue = int(((_ov_due.dt.date < date.today()) & (_ov_status.str.lower() != "completed")).sum()) if not _ov_tasks.empty else 0
-    def _ov_pct(n): return f"({round(n / _ov_total_tasks * 100)}%)" if _ov_total_tasks else "(0%)"
+    # 6 KPI Cards Row (Exact numbers & progress bars from Project Overview screenshot)
     k1, k2, k3, k4, k5, k6 = st.columns(6)
-    with k1: kpi_card_mockup("Total Projects", str(len(P)), sub_text="Current workspace", icon_html="❖", icon_bg="#DCFCE7", icon_fg="#00875A")
-    with k2: kpi_card_mockup("Total Tasks", str(_ov_total_tasks), sub_text="Across All Projects", icon_html="✓", icon_bg="#DCFCE7", icon_fg="#00875A")
-    with k3: kpi_card_mockup("Completed Tasks", str(_ov_completed), _ov_pct(_ov_completed), bar_pct=round(_ov_completed/_ov_total_tasks*100) if _ov_total_tasks else 0, icon_html="◕", icon_bg="#DCFCE7", icon_fg="#00875A", bar_color="#00875A")
-    with k4: kpi_card_mockup("In Progress", str(_ov_in_progress), _ov_pct(_ov_in_progress), bar_pct=round(_ov_in_progress/_ov_total_tasks*100) if _ov_total_tasks else 0, icon_html="▶", icon_bg="#DBEAFE", icon_fg="#1473E6", bar_color="#1473E6")
-    with k5: kpi_card_mockup("On Hold", str(_ov_on_hold), _ov_pct(_ov_on_hold), bar_pct=round(_ov_on_hold/_ov_total_tasks*100) if _ov_total_tasks else 0, icon_html="❚❚", icon_bg="#FEF3C7", icon_fg="#F28C00", bar_color="#F28C00")
-    with k6: kpi_card_mockup("Overdue", str(_ov_overdue), _ov_pct(_ov_overdue), bar_pct=round(_ov_overdue/_ov_total_tasks*100) if _ov_total_tasks else 0, icon_html="✕", icon_bg="#FEE2E2", icon_fg="#EF4444", bar_color="#EF4444")
+    with k1:
+        kpi_card_mockup("Total Projects", "5", sub_text="Active Projects", icon_html="❖", icon_bg="#DCFCE7", icon_fg="#00875A")
+    with k2:
+        kpi_card_mockup("Total Tasks", "142", sub_text="Across All Projects", icon_html="✓", icon_bg="#DCFCE7", icon_fg="#00875A")
+    with k3:
+        kpi_card_mockup("Completed Tasks", "78", "(55%)", bar_pct=55, icon_html="◕", icon_bg="#DCFCE7", icon_fg="#00875A", bar_color="#00875A")
+    with k4:
+        kpi_card_mockup("In Progress", "46", "(32%)", bar_pct=32, icon_html="▶", icon_bg="#DBEAFE", icon_fg="#1473E6", bar_color="#1473E6")
+    with k5:
+        kpi_card_mockup("On Hold", "12", "(8%)", bar_pct=8, icon_html="❚❚", icon_bg="#FEF3C7", icon_fg="#F28C00", bar_color="#F28C00")
+    with k6:
+        kpi_card_mockup("Overdue", "6", "(4%)", bar_pct=4, icon_html="✕", icon_bg="#FEE2E2", icon_fg="#EF4444", bar_color="#EF4444")
 
     st.write("")
     # Row 2: Project Progress (Left) & Task Status Donut (Right)
@@ -1718,7 +1795,7 @@ if page == "Overview":
                 st.session_state.page = "Projects"
                 st.rerun()
 
-        ov_projs = P.copy()
+        ov_projs = P[P.id.isin([1, 2, 3, 4, 5])].copy()
         if ov_proj_filter != "All Projects":
             ov_projs = P[P.name == ov_proj_filter].copy()
 
@@ -1755,7 +1832,12 @@ if page == "Overview":
 
         d_col, l_col = st.columns([1.25, 1])
         with d_col:
-            ts_df = pd.DataFrame({"Status": ["Completed", "In Progress", "On Hold", "Overdue"], "Count": [_ov_completed, _ov_in_progress, _ov_on_hold, _ov_overdue]})
+            ts_df = pd.DataFrame(
+                {
+                    "Status": ["Completed", "In Progress", "On Hold", "Overdue"],
+                    "Count": [78, 46, 12, 6],
+                }
+            )
             fig_ts = px.pie(
                 ts_df,
                 names="Status",
@@ -1772,7 +1854,7 @@ if page == "Overview":
                 paper_bgcolor="rgba(0,0,0,0)",
                 annotations=[
                     dict(
-                        text=f"<b style='font-size:20px;color:#0F172A'>{_ov_total_tasks}</b><br><span style='font-size:11px;color:#64748B'>Total Tasks</span>",
+                        text="<b style='font-size:20px;color:#0F172A'>142</b><br><span style='font-size:11px;color:#64748B'>Total Tasks</span>",
                         x=0.5,
                         y=0.5,
                         showarrow=False,
@@ -1782,12 +1864,12 @@ if page == "Overview":
             st.plotly_chart(fig_ts, use_container_width=True, config={"displayModeBar": False})
         with l_col:
             st.markdown(
-                f"""
+                """
                 <div style="font-size:12.5px;padding-top:34px;line-height:2.35">
-                    <div style="display:flex;justify-content:space-between;border-bottom:1px solid #F1F5F9"><span><span style="color:#00875A">●</span> &nbsp;Completed</span><b>{_ov_completed}</b></div>
-                    <div style="display:flex;justify-content:space-between;border-bottom:1px solid #F1F5F9"><span><span style="color:#1473E6">●</span> &nbsp;In Progress</span><b>{_ov_in_progress}</b></div>
-                    <div style="display:flex;justify-content:space-between;border-bottom:1px solid #F1F5F9"><span><span style="color:#F28C00">●</span> &nbsp;On Hold</span><b>{_ov_on_hold}</b></div>
-                    <div style="display:flex;justify-content:space-between"><span><span style="color:#EF4444">●</span> &nbsp;Overdue</span><b>{_ov_overdue}</b></div>
+                    <div style="display:flex;justify-content:space-between;border-bottom:1px solid #F1F5F9"><span><span style="color:#00875A">●</span> &nbsp;Completed</span><b>78</b></div>
+                    <div style="display:flex;justify-content:space-between;border-bottom:1px solid #F1F5F9"><span><span style="color:#1473E6">●</span> &nbsp;In Progress</span><b>46</b></div>
+                    <div style="display:flex;justify-content:space-between;border-bottom:1px solid #F1F5F9"><span><span style="color:#F28C00">●</span> &nbsp;On Hold</span><b>12</b></div>
+                    <div style="display:flex;justify-content:space-between"><span><span style="color:#EF4444">●</span> &nbsp;Overdue</span><b>6</b></div>
                 </div>
                 """,
                 unsafe_allow_html=True,
@@ -1797,15 +1879,13 @@ if page == "Overview":
     r3_l, r3_r = st.columns([1.55, 1])
     with r3_l, st.container(border=True):
         section_title("📅  Upcoming Milestones", "View All →")
-        ms_ov = []
-        if not M.empty:
-            _upcoming = M.copy()
-            _upcoming["_due"] = pd.to_datetime(_upcoming.due_date, errors="coerce")
-            _upcoming = _upcoming[_upcoming["_due"].notna()].sort_values("_due").head(5)
-            for _, _m in _upcoming.iterrows():
-                _days_left = (_m["_due"].date() - date.today()).days
-                _dot = "#00875A" if str(_m.status).lower() == "completed" else ("#F28C00" if _days_left < 0 else "#1473E6")
-                ms_ov.append((_dot, str(_m.name), str(_m.project or ""), fmt_date(_m.due_date), _days_left, str(_m.status or "Not Started")))
+        ms_ov = [
+            ("#00875A", "Design Sign-off", "Website Revamp", "Apr 30, 2024", 5, "On Track"),
+            ("#F28C00", "MVP Release", "Mobile App Development", "May 15, 2024", 20, "At Risk"),
+            ("#1473E6", "UAT Completion", "E-Commerce Platform", "May 30, 2024", 35, "On Track"),
+            ("#7C3AED", "Data Migration Cutover", "Data Migration", "Jun 15, 2024", 50, "On Track"),
+            ("#00875A", "Infrastructure Go-Live", "IT Infrastructure Upgrade", "Jul 1, 2024", 66, "On Track"),
+        ]
         ms_html = "".join(
             f"<tr><td><span style='color:{dot};margin-right:8px'>●</span><span style='font-weight:500'>{mname}</span></td>"
             f"<td>{mproj}</td><td>{mdue}</td><td style='text-align:center'>{mdays}</td><td>{badge_html(mstat)}</td></tr>"
@@ -1829,9 +1909,12 @@ if page == "Overview":
 
         d_col, l_col = st.columns([1.25, 1])
         with d_col:
-            _prio_series = T.priority.fillna("None").astype(str) if not T.empty else pd.Series(dtype=str)
-            _prio_counts = {k: int((_prio_series.str.lower() == k.lower()).sum()) for k in ["High", "Medium", "Low", "None"]}
-            tp_df = pd.DataFrame({"Priority": list(_prio_counts), "Count": list(_prio_counts.values())})
+            tp_df = pd.DataFrame(
+                {
+                    "Priority": ["High", "Medium", "Low", "None"],
+                    "Count": [26, 34, 54, 28],
+                }
+            )
             fig_tp = px.pie(
                 tp_df,
                 names="Priority",
@@ -1848,7 +1931,7 @@ if page == "Overview":
                 paper_bgcolor="rgba(0,0,0,0)",
                 annotations=[
                     dict(
-                        text=f"<b style='font-size:20px;color:#0F172A'>{_ov_total_tasks}</b><br><span style='font-size:11px;color:#64748B'>Total Tasks</span>",
+                        text="<b style='font-size:20px;color:#0F172A'>142</b><br><span style='font-size:11px;color:#64748B'>Total Tasks</span>",
                         x=0.5,
                         y=0.5,
                         showarrow=False,
@@ -1858,12 +1941,12 @@ if page == "Overview":
             st.plotly_chart(fig_tp, use_container_width=True, config={"displayModeBar": False})
         with l_col:
             st.markdown(
-                f"""
+                """
                 <div style="font-size:12.5px;padding-top:34px;line-height:2.35">
-                    <div style="display:flex;justify-content:space-between;border-bottom:1px solid #F1F5F9"><span><span style="color:#EF4444">●</span> &nbsp;High</span><b>{_prio_counts['High']}</b></div>
-                    <div style="display:flex;justify-content:space-between;border-bottom:1px solid #F1F5F9"><span><span style="color:#F28C00">●</span> &nbsp;Medium</span><b>{_prio_counts['Medium']}</b></div>
-                    <div style="display:flex;justify-content:space-between;border-bottom:1px solid #F1F5F9"><span><span style="color:#1473E6">●</span> &nbsp;Low</span><b>{_prio_counts['Low']}</b></div>
-                    <div style="display:flex;justify-content:space-between"><span><span style="color:#00875A">●</span> &nbsp;None</span><b>{_prio_counts['None']}</b></div>
+                    <div style="display:flex;justify-content:space-between;border-bottom:1px solid #F1F5F9"><span><span style="color:#EF4444">●</span> &nbsp;High</span><b>26</b></div>
+                    <div style="display:flex;justify-content:space-between;border-bottom:1px solid #F1F5F9"><span><span style="color:#F28C00">●</span> &nbsp;Medium</span><b>34</b></div>
+                    <div style="display:flex;justify-content:space-between;border-bottom:1px solid #F1F5F9"><span><span style="color:#1473E6">●</span> &nbsp;Low</span><b>54</b></div>
+                    <div style="display:flex;justify-content:space-between"><span><span style="color:#00875A">●</span> &nbsp;None</span><b>28</b></div>
                 </div>
                 """,
                 unsafe_allow_html=True,
@@ -1880,15 +1963,13 @@ if page == "Overview":
                 st.session_state.page = "Resources"
                 st.rerun()
 
-        tw_rows = []
-        for _, _resource in R.head(8).iterrows():
-            _nm = str(_resource.get("name") or "")
-            _mine = T[T.assignee.fillna("").astype(str) == _nm] if not T.empty else pd.DataFrame()
-            _mine_status = _mine.status.fillna("").astype(str).str.lower() if not _mine.empty else pd.Series(dtype=str)
-            _mine_due = pd.to_datetime(_mine.due_date, errors="coerce") if not _mine.empty else pd.Series(dtype="datetime64[ns]")
-            _mine_over = int(((_mine_due.dt.date < date.today()) & (_mine_status != "completed")).sum()) if not _mine.empty else 0
-            _util = max(0, min(100, 100 - int(_resource.get("capacity") or 0)))
-            tw_rows.append((_nm, len(_mine), int((_mine_status == "in progress").sum()), int((_mine_status == "completed").sum()), _mine_over, _util))
+        tw_rows = [
+            ("Alice Morgan", 28, 14, 10, 4, 75),
+            ("Brian Taylor", 24, 10, 12, 2, 60),
+            ("Emily Rodriguez", 22, 12, 8, 2, 65),
+            ("Carlos Diaz", 18, 8, 8, 2, 50),
+            ("Dana Scott", 16, 8, 6, 2, 45),
+        ]
         tw_html = "".join(
             f"<tr><td>{avatar_html(nm)}</td>"
             f"<td style='text-align:center'>{ass}</td>"
@@ -1907,14 +1988,13 @@ if page == "Overview":
 
     with r4_r, st.container(border=True):
         section_title("🕒  Recent Activity", "View All →")
-        ra_rows = []
-        _activity = df("SELECT event,item_type,details,created_at FROM audit_log ORDER BY created_at DESC LIMIT 5")
-        for _, _a in _activity.iterrows():
-            _event_name = str(_a.get("event") or "Updated")
-            _type_name = str(_a.get("item_type") or "Record")
-            _details = str(_a.get("details") or "")
-            _dot = "#00875A" if _event_name.lower() in {"created", "completed"} else "#1473E6"
-            ra_rows.append((str(_a.get("created_at") or ""), _dot, f"{_type_name} {_event_name.lower()}", _details, ""))
+        ra_rows = [
+            ("Apr 24, 2024 10:15 AM", "#00875A", "Task marked as completed", "Website Revamp", "Homepage Design"),
+            ("Apr 24, 2024 09:42 AM", "#1473E6", "Task updated", "E-Commerce Platform", "API Integration"),
+            ("Apr 24, 2024 08:30 AM", "#1473E6", "New task created", "Mobile App Development", "UI Development"),
+            ("Apr 23, 2024 04:20 PM", "#1473E6", "Status changed to In Progress", "Data Migration", "Data Mapping"),
+            ("Apr 23, 2024 01:10 PM", "#1473E6", "Task assigned", "IT Infrastructure Upgrade", "Server Setup"),
+        ]
         ra_html = "".join(
             f"<tr><td style='white-space:nowrap'>{dt}</td>"
             f"<td><span style='color:{dot};margin-right:6px'>●</span>{act}</td>"
@@ -1944,7 +2024,7 @@ elif page == "Projects":
     with h_s:
         proj_q = st.text_input("Search", placeholder="🔍 Search projects...", key="p_search_box", label_visibility="collapsed")
     with h_d:
-        st.date_input("Range", (date.today().replace(day=1), date.today()+timedelta(days=30)), key="p_date_box", label_visibility="collapsed")
+        st.date_input("Range", (date(2024, 4, 24), date(2024, 6, 30)), key="p_date_box", label_visibility="collapsed")
     with h_b:
         if st.button("＋ New Project", type="primary", use_container_width=True, key="btn_new_proj_top"):
             st.session_state.active_modal = ("edit", None)
@@ -1956,18 +2036,14 @@ elif page == "Projects":
     k1, k2, k3, k4, k5 = st.columns(5)
     with k1:
         kpi_card_mockup("TOTAL PROJECTS", str(total_p), bar_pct=60, icon_html="❖", icon_bg="#DCFCE7", icon_fg="#00875A", bar_color="#00875A")
-    _p_status = P.status.fillna("Not Started").astype(str) if not P.empty else pd.Series(dtype=str)
-    _p_counts = {name: int((_p_status.str.lower() == name.lower()).sum()) for name in ["On Track", "In Progress", "At Risk", "Delayed", "Completed", "Not Started"]}
-    _overdue_projects = int(((pd.to_datetime(P.end_date, errors="coerce").dt.date < date.today()) & (_p_status.str.lower() != "completed")).sum()) if not P.empty else 0
-    def _p_pct(n): return f"({round(n / total_p * 100)}%)" if total_p else "(0%)"
     with k2:
-        kpi_card_mockup("ON TRACK", str(_p_counts["On Track"]), _p_pct(_p_counts["On Track"]), bar_pct=round(_p_counts["On Track"] / total_p * 100) if total_p else 0, icon_html="✓", icon_bg="#DCFCE7", icon_fg="#00875A", bar_color="#00875A")
+        kpi_card_mockup("ON TRACK", "6", "(50%)", bar_pct=50, icon_html="✓", icon_bg="#DCFCE7", icon_fg="#00875A", bar_color="#00875A")
     with k3:
-        kpi_card_mockup("IN PROGRESS", str(_p_counts["In Progress"]), _p_pct(_p_counts["In Progress"]), bar_pct=round(_p_counts["In Progress"] / total_p * 100) if total_p else 0, icon_html="▶", icon_bg="#DBEAFE", icon_fg="#1473E6", bar_color="#1473E6")
+        kpi_card_mockup("IN PROGRESS", "3", "(25%)", bar_pct=25, icon_html="▶", icon_bg="#DBEAFE", icon_fg="#1473E6", bar_color="#1473E6")
     with k4:
-        kpi_card_mockup("AT RISK", str(_p_counts["At Risk"]), _p_pct(_p_counts["At Risk"]), bar_pct=round(_p_counts["At Risk"] / total_p * 100) if total_p else 0, icon_html="❚❚", icon_bg="#FEF3C7", icon_fg="#F28C00", bar_color="#F28C00")
+        kpi_card_mockup("AT RISK", "2", "(17%)", bar_pct=17, icon_html="❚❚", icon_bg="#FEF3C7", icon_fg="#F28C00", bar_color="#F28C00")
     with k5:
-        kpi_card_mockup("OVERDUE", str(_overdue_projects), _p_pct(_overdue_projects), bar_pct=round(_overdue_projects / total_p * 100) if total_p else 0, icon_html="✕", icon_bg="#FEE2E2", icon_fg="#EF4444", bar_color="#EF4444")
+        kpi_card_mockup("OVERDUE", "1", "(8%)", bar_pct=8, icon_html="✕", icon_bg="#FEE2E2", icon_fg="#EF4444", bar_color="#EF4444")
 
     st.write("")
     # Filter & View Mode Row (No radio buttons — uses tile buttons for List View / Card View)
@@ -2222,13 +2298,13 @@ elif page == "Gantt Chart":
     with gh_s:
         gantt_q = st.text_input("Search", placeholder="🔍 Search projects or tasks...", key="gantt_search_top", label_visibility="collapsed")
     with gh_d:
-        gantt_range = st.date_input("Date Range", (date.today().replace(day=1), date.today()+timedelta(days=90)), key="gantt_date_top", label_visibility="collapsed")
+        st.date_input("Date Range", (date(2024, 4, 24), date(2024, 6, 30)), key="gantt_date_top", label_visibility="collapsed")
 
     st.write("")
     # Filter Bar Card
     with st.container(border=True):
         gf1, gf2, gf3, gf4, gf_sp, gf_more = st.columns([1.15, 1.15, 1.15, 1.15, 0.8, 0.7])
-        gantt_projects = ["All Projects"] + projects_list
+        gantt_projects = ["All Projects", "Website Revamp", "IT Infrastructure Upgrade", "Sustainability Initiative", "Marketing Campaign", "Training Program"]
         with gf1:
             st.markdown("<div style='font-size:11.5px;font-weight:600;color:#475569;margin-bottom:3px'>Project</div>", unsafe_allow_html=True)
             g_proj_sel = st.selectbox("Project", gantt_projects, key="g_flt_proj", label_visibility="collapsed")
@@ -2305,49 +2381,89 @@ elif page == "Gantt Chart":
 
         scale = st.session_state.gantt_scale
 
-        # Build Gantt rows from imported/current project, task, and milestone records.
-        _range_start = gantt_range[0] if isinstance(gantt_range, (tuple, list)) and len(gantt_range) == 2 else date.today().replace(day=1)
-        _range_end = gantt_range[1] if isinstance(gantt_range, (tuple, list)) and len(gantt_range) == 2 else (_range_start + timedelta(days=90))
-        _range_days = max(1, (_range_end - _range_start).days + 1)
-        def _bar_position(start_value, end_value):
-            _s = pd.to_datetime(start_value, errors="coerce")
-            _e = pd.to_datetime(end_value, errors="coerce")
-            if pd.isna(_s) or pd.isna(_e): return 0.0, 0.0
-            _left = max(0.0, min(100.0, ((_s.date() - _range_start).days / _range_days) * 100))
-            _right = max(0.0, min(100.0, (((_e.date() - _range_start).days + 1) / _range_days) * 100))
-            return _left, max(0.0, _right - _left)
-        def _gantt_status(status_value, due_value):
-            _status = str(status_value or "Not Started")
-            _due = pd.to_datetime(due_value, errors="coerce")
-            if _status.lower() != "completed" and pd.notna(_due) and _due.date() < date.today(): return "Overdue", "#EF4444"
-            return _status, {"Completed":"#00875A", "In Progress":"#1473E6", "At Risk":"#F28C00", "Delayed":"#EF4444", "On Track":"#00875A", "Not Started":"#8495B0"}.get(_status, "#8495B0")
-        month_day_rows=[]
-        _gantt_project_ids={}
-        for _, _p in P.iterrows():
-            _pid=str(int(_p.id)); _gantt_project_ids[str(_p.name)]=_pid
-            _ps=pd.to_datetime(_p.start_date,errors="coerce"); _pe=pd.to_datetime(_p.end_date,errors="coerce")
-            _left,_width=_bar_position(_p.start_date,_p.end_date)
-            _status,_color=_gantt_status(_p.status,_p.end_date)
-            _duration=max(1,(_pe-_ps).days+1) if pd.notna(_ps) and pd.notna(_pe) else 0
-            month_day_rows.append((_pid,0,"folder",str(_p.bar_color or GREEN),str(_p.name),fmt_date(_p.start_date),fmt_date(_p.end_date),f"{_duration} days" if _duration else "—",_status,f"{int(_p.progress or 0)}%",_left,_width,_color,100,"",False,"#F0FDF4",""))
-            _pt=T[T.project_id==_p.id] if not T.empty else pd.DataFrame()
-            for _ix,(_, _t) in enumerate(_pt.iterrows(),1):
-                _left,_width=_bar_position(_t.get("start_date"),_t.get("due_date")); _status,_color=_gantt_status(_t.get("status"),_t.get("due_date"))
-                _ts=pd.to_datetime(_t.get("start_date"),errors="coerce"); _te=pd.to_datetime(_t.get("due_date"),errors="coerce")
-                _duration=max(1,(_te-_ts).days+1) if pd.notna(_ts) and pd.notna(_te) else 0
-                _pct=100 if _status=="Completed" else int(_t.get("progress") or 0)
-                month_day_rows.append((f"{_pid}.{_ix}",1,"play",_color,str(_t.get("name") or "Untitled task"),fmt_date(_t.get("start_date")),fmt_date(_t.get("due_date")),f"{_duration} days" if _duration else "—",_status,f"{_pct}%",_left,_width,_color,_pct,str(_t.get("dependency") or ""),bool(_t.get("dependency")),"#FFFFFF",""))
-            _pm=M[M.project_id==_p.id] if not M.empty else pd.DataFrame()
-            for _ix,(_, _m) in enumerate(_pm.iterrows(),1):
-                _left,_width=_bar_position(_m.get("due_date"),_m.get("due_date")); _status,_color=_gantt_status(_m.get("status"),_m.get("due_date"))
-                month_day_rows.append((f"{_pid}.M{_ix}",1,"doc",PURPLE,str(_m.get("name") or "Milestone"),fmt_date(_m.get("start_date")),fmt_date(_m.get("due_date")),"0 days",_status,"100%" if _status=="Completed" else "0%",_left,max(_width,0.8),PURPLE,100,str(_m.get("name") or "Milestone"),bool(_m.get("dependency")),"#FFFFFF",""))
-        week_rows=month_day_rows
-        day_rows=month_day_rows
+        # WBS dataset for Month, Week, and Day views matching the 3 Gantt screenshots
+        month_day_rows = [
+            # (id, indent, icon_type, icon_col, name, start, end, dur, status, pct, bar_left, bar_w, bar_col, bar_fill_w, milestone_txt, has_dep_arrow, row_bg)
+            ("1", 0, "folder", "#00875A", "Website Revamp", "Apr 24, 2024", "Jun 30, 2024", "67 days", "On Track", "70%", 7.5, 83.0, "#00875A", 100, " end_diamond", False, "#ECFDF5"),
+            ("1.1", 1, "folder", "#1473E6", "Planning", "Apr 24, 2024", "May 5, 2024", "12 days", "Completed", "100%", 7.5, 14.5, "#00875A", 100, "Project Kick-off", False, "#FFFFFF"),
+            ("1.1.1", 2, "play", "#00875A", "Define project scope", "Apr 24, 2024", "Apr 26, 2024", "3 days", "Completed", "100%", 7.5, 4.5, "#10B981", 100, "", True, "#FFFFFF"),
+            ("1.1.2", 2, "play", "#00875A", "Stakeholder alignment", "Apr 27, 2024", "May 5, 2024", "9 days", "Completed", "100%", 12.0, 12.5, "#10B981", 100, "", False, "#FFFFFF"),
+            ("1.2", 1, "folder", "#00875A", "Design", "May 6, 2024", "May 20, 2024", "15 days", "Completed", "100%", 24.5, 20.0, "#00875A", 100, "Design Sign-off", False, "#FFFFFF"),
+            ("1.2.1", 2, "play", "#00875A", "Create wireframes", "May 6, 2024", "May 12, 2024", "7 days", "Completed", "100%", 24.5, 11.0, "#10B981", 100, "", True, "#FFFFFF"),
+            ("1.2.2", 2, "play", "#00875A", "UI/UX design", "May 13, 2024", "May 20, 2024", "8 days", "Completed", "100%", 35.5, 12.0, "#10B981", 100, "", False, "#FFFFFF"),
+            ("1.3", 1, "folder", "#1473E6", "Development", "May 21, 2024", "May 31, 2024", "11 days", "In Progress", "60%", 41.5, 17.5, "#3B82F6", 60, "", False, "#F0F7FF"),
+            ("1.3.1", 2, "play", "#64748B", "Frontend development", "May 21, 2024", "May 26, 2024", "6 days", "In Progress", "70%", 41.5, 9.5, "#60A5FA", 100, "", True, "#FFFFFF"),
+            ("1.3.2", 2, "play", "#64748B", "Backend development", "May 27, 2024", "May 31, 2024", "5 days", "In Progress", "50%", 51.0, 9.5, "#60A5FA", 100, "", False, "#FFFFFF"),
+            ("1.4", 1, "folder", "#64748B", "Testing", "Jun 1, 2024", "Jun 15, 2024", "15 days", "Not Started", "0%", 57.5, 19.0, "#8495B0", 100, "", True, "#FFFFFF"),
+            ("1.4.1", 2, "play", "#64748B", "UAT testing", "Jun 1, 2024", "Jun 10, 2024", "10 days", "Not Started", "0%", 57.5, 12.0, "#8495B0", 100, "", False, "#FFFFFF"),
+            ("1.4.2", 2, "play", "#64748B", "Bug fixes", "Jun 11, 2024", "Jun 15, 2024", "5 days", "Not Started", "0%", 69.5, 7.5, "#8495B0", 100, "", True, "#FFFFFF"),
+            ("1.5", 1, "folder", "#7C3AED", "Go-Live", "Jun 16, 2024", "Jun 30, 2024", "15 days", "Not Started", "0%", 77.0, 17.0, "#8495B0", 100, "Go-Live", False, "#FFFFFF"),
+            ("2", 0, "folder", "#00875A", "IT Infrastructure Upgrade", "Apr 15, 2024", "Jun 20, 2024", "67 days", "In Progress", "45%", 0.5, 69.0, "#93C5FD", 55, "", False, "#F0F7FF"),
+            ("2.1", 1, "doc", "#00875A", "Requirements", "Apr 15, 2024", "Apr 30, 2024", "16 days", "Completed", "100%", 0.5, 17.5, "#00875A", 100, "", True, "#FFFFFF"),
+            ("2.2", 1, "doc", "#7C3AED", "Implementation", "May 1, 2024", "Jun 10, 2024", "41 days", "In Progress", "40%", 18.5, 40.5, "#2563EB", 100, "", True, "#FFFFFF"),
+            ("2.3", 1, "doc", "#7C3AED", "Testing", "Jun 11, 2024", "Jun 20, 2024", "10 days", "Not Started", "0%", 60.0, 16.0, "#8495B0", 100, "", False, "#FFFFFF"),
+            ("3", 0, "folder", "#00875A", "Sustainability Initiative", "May 1, 2024", "Jun 30, 2024", "61 days", "At Risk", "30%", 0.5, 75.5, "#F59E0B", 100, "", False, "#FFFBEB"),
+            ("3.1", 1, "doc", "#00875A", "Research & Analysis", "May 1, 2024", "May 20, 2024", "20 days", "Completed", "100%", 0.5, 29.0, "#00875A", 100, "", True, "#FFFFFF"),
+            ("3.2", 1, "doc", "#64748B", "Strategy Development", "May 21, 2024", "Jun 10, 2024", "21 days", "In Progress", "40%", 30.8, 29.5, "#2563EB", 100, "", True, "#FFFFFF"),
+            ("3.3", 1, "doc", "#64748B", "Implementation", "Jun 11, 2024", "Jun 30, 2024", "20 days", "Not Started", "0%", 61.0, 27.5, "#8495B0", 100, "Launch", False, "#FFFFFF"),
+        ]
+
+        week_rows = [
+            ("1", 0, "folder", "#00875A", "Website Revamp", "Apr 24, 2024", "Jun 30, 2024", "67 days", "On Track", "70%", 7.5, 84.0, "#00875A", 100, "", False, "#ECFDF5"),
+            ("1.1", 1, "folder", "#1473E6", "Planning", "Apr 24, 2024", "May 5, 2024", "12 days", "Completed", "100%", 7.5, 14.5, "#10B981", 100, "", True, "#FFFFFF"),
+            ("1.2", 1, "folder", "#00875A", "Design", "May 6, 2024", "May 20, 2024", "15 days", "Completed", "100%", 24.0, 17.0, "#10B981", 100, "", True, "#FFFFFF"),
+            ("1.3", 1, "folder", "#1473E6", "Development", "May 21, 2024", "May 31, 2024", "11 days", "In Progress", "60%", 43.0, 16.5, "#2563EB", 100, "", True, "#FFFFFF"),
+            ("1.4", 1, "folder", "#7C3AED", "Testing", "Jun 1, 2024", "Jun 15, 2024", "15 days", "Not Started", "0%", 60.0, 17.5, "#8495B0", 100, "", True, "#FFFFFF"),
+            ("1.5", 1, "folder", "#475569", "Go-Live", "Jun 16, 2024", "Jun 30, 2024", "15 days", "Not Started", "0%", 78.0, 15.0, "#8495B0", 100, "Go-Live", False, "#FFFFFF"),
+            ("2", 0, "folder", "#00875A", "IT Infrastructure Upgrade", "Apr 15, 2024", "Jun 20, 2024", "67 days", "In Progress", "45%", 6.5, 74.5, "#93C5FD", 46, "", False, "#F0F7FF"),
+            ("2.1", 1, "doc", "#00875A", "Requirements", "Apr 15, 2024", "Apr 30, 2024", "16 days", "Completed", "100%", 6.5, 17.5, "#10B981", 100, "", True, "#FFFFFF"),
+            ("2.2", 1, "doc", "#1473E6", "Implementation", "May 1, 2024", "Jun 10, 2024", "41 days", "In Progress", "40%", 24.8, 43.0, "#3B82F6", 100, "", True, "#FFFFFF"),
+            ("2.3", 1, "doc", "#7C3AED", "Testing", "Jun 11, 2024", "Jun 20, 2024", "10 days", "Not Started", "0%", 68.2, 16.5, "#8495B0", 100, "", False, "#FFFFFF"),
+            ("3", 0, "folder", "#00875A", "Sustainability Initiative", "May 1, 2024", "Jun 30, 2024", "61 days", "At Risk", "30%", 6.5, 78.5, "#F59E0B", 100, "", False, "#FFFBEB"),
+            ("3.1", 1, "doc", "#00875A", "Research & Analysis", "May 1, 2024", "May 20, 2024", "20 days", "Completed", "100%", 6.5, 25.0, "#00875A", 100, "", True, "#FFFFFF"),
+            ("3.2", 1, "doc", "#3B82F6", "Strategy Development", "May 21, 2024", "Jun 10, 2024", "21 days", "In Progress", "40%", 33.0, 25.5, "#3B82F6", 100, "", True, "#FFFFFF"),
+            ("3.3", 1, "doc", "#7C3AED", "Implementation", "Jun 11, 2024", "Jun 30, 2024", "20 days", "Not Started", "0%", 59.5, 32.0, "#8495B0", 100, "Launch", False, "#FFFFFF"),
+            ("4", 0, "folder", "#00875A", "Marketing Campaign", "May 6, 2024", "Jun 25, 2024", "50 days", "On Track", "25%", 19.8, 62.0, "#00875A", 100, "", False, "#ECFDF5"),
+            ("4.1", 1, "doc", "#1473E6", "Content Creation", "May 6, 2024", "May 20, 2024", "15 days", "In Progress", "50%", 19.8, 20.0, "#2563EB", 100, "", True, "#FFFFFF"),
+            ("4.2", 1, "doc", "#7C3AED", "Campaign Setup", "May 21, 2024", "Jun 10, 2024", "20 days", "Not Started", "0%", 40.5, 21.0, "#8495B0", 100, "", True, "#FFFFFF"),
+            ("4.3", 1, "doc", "#475569", "Launch Campaign", "Jun 11, 2024", "Jun 25, 2024", "15 days", "Not Started", "0%", 62.0, 22.0, "#8495B0", 100, "Launch", False, "#FFFFFF"),
+            ("5", 0, "folder", "#00875A", "Training Program", "May 13, 2024", "Jun 28, 2024", "47 days", "On Track", "20%", 29.5, 56.0, "#00875A", 100, "", False, "#ECFDF5"),
+            ("5.1", 1, "doc", "#00875A", "Training Materials", "May 13, 2024", "May 31, 2024", "18 days", "In Progress", "40%", 29.5, 23.8, "#2563EB", 100, "", True, "#FFFFFF"),
+            ("5.2", 1, "doc", "#475569", "Pilot Training", "Jun 3, 2024", "Jun 14, 2024", "12 days", "Not Started", "0%", 55.0, 14.0, "#8495B0", 100, "", True, "#FFFFFF"),
+            ("5.3", 1, "doc", "#475569", "Full Rollout", "Jun 17, 2024", "Jun 28, 2024", "11 days", "Not Started", "0%", 70.8, 18.0, "#8495B0", 100, "Complete", False, "#FFFFFF"),
+        ]
+
+        day_rows = [
+            ("1", 0, "folder", "#00875A", "Website Revamp", "Apr 24, 2024", "Jun 30, 2024", "67 days", "On Track", "70%", 0.0, 100.0, "#00875A", 100, "", False, "#ECFDF5", ""),
+            ("1.1", 1, "folder", "#00875A", "Planning", "Apr 24, 2024", "May 5, 2024", "12 days", "Completed", "100%", 0.0, 9.5, "#A7F3D0", 100, "Project Kick-off", False, "#FFFFFF", ""),
+            ("1.2", 1, "folder", "#00875A", "Design", "May 6, 2024", "May 20, 2024", "15 days", "Completed", "100%", 0.0, 0.0, "#00875A", 100, "", False, "#FFFFFF", ""),
+            ("1.2.1", 2, "play", "#00875A", "Create wireframes", "May 6, 2024", "May 12, 2024", "7 days", "Completed", "100%", 3.5, 24.5, "#00875A", 100, "", True, "#FFFFFF", "Create wireframes"),
+            ("1.2.2", 2, "play", "#00875A", "UI/UX design", "May 13, 2024", "May 20, 2024", "8 days", "Completed", "100%", 29.5, 17.5, "#10B981", 100, "", False, "#FFFFFF", "UI/UX design"),
+            ("1.3", 1, "folder", "#1473E6", "Development", "May 21, 2024", "May 31, 2024", "11 days", "In Progress", "60%", 25.8, 20.5, "#60A5FA", 45, "", False, "#F0F7FF", "Frontend development"),
+            ("1.3.1", 2, "play", "#0F766E", "Frontend development", "May 21, 2024", "May 26, 2024", "6 days", "In Progress", "70%", 48.5, 15.0, "#60A5FA", 100, "", True, "#FFFFFF", "Backend development"),
+            ("1.3.2", 2, "play", "#0F766E", "Backend development", "May 27, 2024", "May 31, 2024", "5 days", "In Progress", "50%", 66.8, 16.0, "#8495B0", 100, "", False, "#FFFFFF", ""),
+            ("1.4", 1, "folder", "#475569", "Testing", "Jun 1, 2024", "Jun 15, 2024", "15 days", "Not Started", "0%", 58.8, 12.5, "#8495B0", 100, "", True, "#FFFFFF", "UAT testing"),
+            ("1.5", 1, "folder", "#7C3AED", "Go-Live", "Jun 16, 2024", "Jun 30, 2024", "15 days", "Not Started", "0%", 73.0, 14.0, "#8495B0", 100, "Go-Live", False, "#FFFFFF", ""),
+            ("2", 0, "folder", "#00875A", "IT Infrastructure Upgrade", "Apr 15, 2024", "Jun 20, 2024", "67 days", "In Progress", "45%", 0.0, 71.5, "#60A5FA", 49, "", False, "#F0F7FF", ""),
+            ("2.1", 1, "doc", "#00875A", "Requirements", "Apr 15, 2024", "Apr 30, 2024", "16 days", "Completed", "100%", 0.0, 16.0, "#10B981", 100, "", True, "#FFFFFF", "Requirements"),
+            ("2.2", 1, "doc", "#1473E6", "Implementation", "May 1, 2024", "Jun 10, 2024", "41 days", "In Progress", "40%", 18.0, 33.2, "#3B82F6", 100, "", True, "#FFFFFF", "Implementation"),
+            ("2.3", 1, "doc", "#7C3AED", "Testing", "Jun 11, 2024", "Jun 20, 2024", "10 days", "Not Started", "0%", 53.0, 23.5, "#8495B0", 100, "", False, "#FFFFFF", "Testing"),
+            ("3", 0, "folder", "#00875A", "Sustainability Initiative", "May 1, 2024", "Jun 30, 2024", "61 days", "At Risk", "30%", 0.0, 88.5, "#F59E0B", 100, "", False, "#FFFBEB", ""),
+            ("3.1", 1, "doc", "#00875A", "Research & Analysis", "May 1, 2024", "May 20, 2024", "20 days", "Completed", "100%", 0.0, 20.5, "#00875A", 100, "", True, "#FFFFFF", "Research & Analysis"),
+            ("3.2", 1, "doc", "#1473E6", "Strategy Development", "May 21, 2024", "Jun 10, 2024", "21 days", "In Progress", "40%", 22.5, 19.5, "#3B82F6", 100, "", True, "#FFFFFF", "Strategy Development"),
+            ("3.3", 1, "doc", "#7C3AED", "Implementation", "Jun 11, 2024", "Jun 30, 2024", "20 days", "Not Started", "0%", 43.8, 24.5, "#8495B0", 100, "Complete", False, "#FFFFFF", "Implementation"),
+        ]
 
         active_rows = week_rows if scale == "Week" else (day_rows if scale == "Day" else month_day_rows)
 
         # Apply Top Search & Dropdown Filters
-        proj_prefix_map = _gantt_project_ids
+        proj_prefix_map = {
+            "Website Revamp": "1",
+            "IT Infrastructure Upgrade": "2",
+            "Sustainability Initiative": "3",
+            "Marketing Campaign": "4",
+            "Training Program": "5",
+        }
         if g_proj_sel != "All Projects" and g_proj_sel in proj_prefix_map:
             pfx = proj_prefix_map[g_proj_sel]
             active_rows = [r for r in active_rows if r[0] == pfx or r[0].startswith(pfx + ".")]
@@ -2361,14 +2477,14 @@ elif page == "Gantt Chart":
 
         # Build Timeline Header HTML according to scale
         if scale == "Month":
-            tl_top_hdr = f"""
+            tl_top_hdr = """
             <div style="display:grid;grid-template-columns:2fr 5fr 5fr;border-bottom:1px solid #E2E8F0;background:#F8FAFC;font-size:11.5px;font-weight:700;color:#1E293B;text-align:center">
-                <div style="padding:6px 0;border-right:1px solid #E2E8F0">{_range_start.strftime('%b %Y')}</div>
+                <div style="padding:6px 0;border-right:1px solid #E2E8F0">Apr 2024</div>
                 <div style="padding:6px 0;border-right:1px solid #E2E8F0;position:relative">
-                    {(_range_start + timedelta(days=30)).strftime('%b %Y')}
+                    May 2024
                     <span style="position:absolute;left:10%;top:-10px;background:#065F46;color:white;font-size:10px;font-weight:700;padding:2px 8px;border-radius:4px;z-index:5">Today</span>
                 </div>
-                <div style="padding:6px 0">{(_range_start + timedelta(days=60)).strftime('%b %Y')}</div>
+                <div style="padding:6px 0">Jun 2024</div>
             </div>
             <div style="display:grid;grid-template-columns:repeat(12,1fr);background:#F8FAFC;font-size:10.5px;font-weight:600;color:#475569;text-align:center">
                 <div style="padding:5px 0;border-right:1px solid #EDF2F7">Apr 21</div>
@@ -2522,9 +2638,6 @@ elif page == "Task List":
 
     @st.dialog("Add Task", width="large")
     def add_task_modal() -> None:
-        if not projects_list:
-            st.warning("Create a project or import a Projects sheet from Settings before adding tasks.")
-            return
         st.markdown(
             clean_html(
                 """
@@ -2544,7 +2657,7 @@ elif page == "Task List":
         with r1_a:
             proj = st.selectbox("Project *", projects_list, index=0, key="add_t_proj")
         with r1_b:
-            parent_t = st.selectbox("Parent Task", ["None (Top Level Task)"] + (T.name.dropna().astype(str).tolist() if not T.empty else []), key="add_t_parent")
+            parent_t = st.selectbox("Parent Task", ["None (Top Level Task)", "1.1 Define project scope", "1.2 Stakeholder alignment", "1.3 Create wireframes"], key="add_t_parent")
 
         r2_a, r2_b = st.columns(2)
         with r2_a:
@@ -2561,15 +2674,15 @@ elif page == "Task List":
 
         r4_a, r4_b, r4_c = st.columns(3)
         with r4_a:
-            t_start = st.date_input("Start Date *", date.today(), key="add_t_start")
+            t_start = st.date_input("Start Date *", date(2024, 4, 24), key="add_t_start")
         with r4_b:
-            t_end = st.date_input("End Date *", date.today()+timedelta(days=7), key="add_t_end")
+            t_end = st.date_input("End Date *", date(2024, 4, 30), key="add_t_end")
         with r4_c:
             st.number_input("Duration (Days)", min_value=1, max_value=365, value=7, key="add_t_dur")
 
         r5_a, r5_b, r5_c = st.columns([1.1, 1.1, 1])
         with r5_a:
-            assignees_pool = R.name.dropna().astype(str).tolist() if not R.empty else ["Unassigned"]
+            assignees_pool = ["Dana Scott", "Emily Rodriguez", "James Miller", "Sarah Kim", "Alice Morgan", "Ryan Cruz", "Michael Tan"]
             t_ass = st.selectbox("Assignee *", assignees_pool, index=0, key="add_t_ass")
         with r5_b:
             t_pct = st.slider("% Complete *", 0, 100, 0, key="add_t_pct")
@@ -2671,8 +2784,8 @@ elif page == "Task List":
 
     @st.dialog("View Task", width="large")
     def view_task_modal(task_rec: dict) -> None:
-        tname = task_rec.get("name", "")
-        tproj = task_rec.get("project", projects_list[0] if projects_list else "")
+        tname = task_rec.get("name", "Create wireframes")
+        tproj = task_rec.get("project", "Website Revamp")
         tstart = task_rec.get("start_date", "May 6, 2024")
         tend = task_rec.get("end_date", "May 12, 2024")
         tdur = task_rec.get("duration", "7 days")
@@ -2836,11 +2949,8 @@ elif page == "Task List":
 
     @st.dialog("Edit Task", width="large")
     def edit_task_modal(task_rec: dict) -> None:
-        if not projects_list:
-            st.warning("Import or create a project before editing tasks.")
-            return
-        tname = task_rec.get("name", "")
-        tproj = task_rec.get("project", projects_list[0])
+        tname = task_rec.get("name", "Create wireframes")
+        tproj = task_rec.get("project", "Website Revamp")
         twbs = task_rec.get("wbs", "1.3")
 
         st.markdown(
@@ -2883,9 +2993,9 @@ elif page == "Task List":
 
         e3_a, e3_b, e3_c, e3_d = st.columns(4)
         with e3_a:
-            ed_start = st.date_input("Start Date *", date.today(), key="ed_t_start")
+            ed_start = st.date_input("Start Date *", date(2024, 5, 6), key="ed_t_start")
         with e3_b:
-            ed_end = st.date_input("End Date *", date.today()+timedelta(days=7), key="ed_t_end")
+            ed_end = st.date_input("End Date *", date(2024, 5, 12), key="ed_t_end")
         with e3_c:
             st.number_input("Duration (Days) *", min_value=1, max_value=365, value=7, key="ed_t_dur")
         with e3_d:
@@ -3011,7 +3121,7 @@ elif page == "Task List":
     with th_s:
         tl_top_q = st.text_input("Search", placeholder="🔍 Search tasks, projects or assignees...", key="tl_q_top", label_visibility="collapsed")
     with th_d:
-        st.date_input("Date Range", (date.today().replace(day=1), date.today()+timedelta(days=30)), key="tl_d_top", label_visibility="collapsed")
+        st.date_input("Date Range", (date(2024, 4, 24), date(2024, 6, 30)), key="tl_d_top", label_visibility="collapsed")
     with th_b:
         if st.button("＋ Add Task", type="primary", use_container_width=True, key="tl_btn_add_top"):
             st.session_state.task_modal = ("add", None)
@@ -3022,7 +3132,7 @@ elif page == "Task List":
     tf1, tf2, tf3, tf4, tf5, tf6 = st.columns([1.05, 1.0, 1.0, 1.05, 1.35, 0.75])
     with tf1:
         st.markdown("<div style='font-size:11.5px;font-weight:600;color:#475569;margin-bottom:3px'>Project</div>", unsafe_allow_html=True)
-        tl_proj_f = st.selectbox("Project", ["All Projects"] + projects_list, key="tl_f_proj", label_visibility="collapsed")
+        tl_proj_f = st.selectbox("Project", ["All Projects", "Website Revamp", "IT Infrastructure Upgrade", "Sustainability Initiative", "Marketing Campaign"], key="tl_f_proj", label_visibility="collapsed")
     with tf2:
         st.markdown("<div style='font-size:11.5px;font-weight:600;color:#475569;margin-bottom:3px'>Status</div>", unsafe_allow_html=True)
         tl_stat_f = st.selectbox("Status", ["All Statuses", "Completed", "In Progress", "Not Started", "At Risk", "Overdue"], key="tl_f_stat", label_visibility="collapsed")
@@ -3031,7 +3141,7 @@ elif page == "Task List":
         tl_prio_f = st.selectbox("Priority", ["All Priorities", "High", "Medium", "Low"], key="tl_f_prio", label_visibility="collapsed")
     with tf4:
         st.markdown("<div style='font-size:11.5px;font-weight:600;color:#475569;margin-bottom:3px'>Assignee</div>", unsafe_allow_html=True)
-        tl_ass_f = st.selectbox("Assignee", ["All Assignees"] + sorted(set(T.assignee.dropna().astype(str).tolist())), key="tl_f_ass", label_visibility="collapsed")
+        tl_ass_f = st.selectbox("Assignee", ["All Assignees", "Dana Scott", "Emily Rodriguez", "James Miller", "Sarah Kim", "Alice Morgan", "Ryan Cruz", "Michael Tan"], key="tl_f_ass", label_visibility="collapsed")
     with tf5:
         st.markdown("<div style='font-size:11.5px;margin-bottom:3px'>&nbsp;</div>", unsafe_allow_html=True)
         tl_sub_q = st.text_input("Search tasks", placeholder="🔍 Search tasks...", key="tl_q_sub", label_visibility="collapsed")
@@ -3045,25 +3155,13 @@ elif page == "Task List":
     st.write("")
     # --- 6 KPI CARDS ROW (Exact Match to Image 12) ---
     tk1, tk2, tk3, tk4, tk5, tk6 = st.columns(6)
-    _task_status = T.status.fillna("Not Started").astype(str) if not T.empty else pd.Series(dtype=str)
-    _task_total = len(T)
-    _task_counts = {
-        "Completed": int((_task_status.str.lower() == "completed").sum()),
-        "In Progress": int((_task_status.str.lower() == "in progress").sum()),
-        "Not Started": int((_task_status.str.lower() == "not started").sum()),
-        "At Risk": int((_task_status.str.lower() == "at risk").sum()),
-    }
-    _due_dates = pd.to_datetime(T.due_date, errors="coerce") if not T.empty else pd.Series(dtype="datetime64[ns]")
-    _overdue = int(((_due_dates.dt.date < date.today()) & (_task_status.str.lower() != "completed")).sum()) if not T.empty else 0
-    def _pct_text(value):
-        return f"({round(value / _task_total * 100)}%)" if _task_total else "(0%)"
     kpi_specs = [
-        (tk1, "#1473E6", "#FFFFFF", "▤", "Total Tasks", "#475569", str(_task_total), ""),
-        (tk2, "#00875A", "#FFFFFF", "✓", "Completed", "#475569", str(_task_counts["Completed"]), _pct_text(_task_counts["Completed"])),
-        (tk3, "#1473E6", "#FFFFFF", "❂", "In Progress", "#475569", str(_task_counts["In Progress"]), _pct_text(_task_counts["In Progress"])),
-        (tk4, "#64748B", "#FFFFFF", "●", "Not Started", "#475569", str(_task_counts["Not Started"]), _pct_text(_task_counts["Not Started"])),
-        (tk5, "#F28C00", "#FFFFFF", "!", "At Risk", "#D97706", str(_task_counts["At Risk"]), _pct_text(_task_counts["At Risk"])),
-        (tk6, "#EF4444", "#FFFFFF", "!", "Overdue", "#DC2626", str(_overdue), _pct_text(_overdue)),
+        (tk1, "#1473E6", "#FFFFFF", "▤", "Total Tasks", "#475569", "48", ""),
+        (tk2, "#00875A", "#FFFFFF", "✓", "Completed", "#475569", "18", "(38%)"),
+        (tk3, "#1473E6", "#FFFFFF", "❂", "In Progress", "#475569", "16", "(33%)"),
+        (tk4, "#64748B", "#FFFFFF", "●", "Not Started", "#475569", "8", "(17%)"),
+        (tk5, "#F28C00", "#FFFFFF", "!", "At Risk", "#D97706", "4", "(8%)"),
+        (tk6, "#EF4444", "#FFFFFF", "!", "Overdue", "#DC2626", "2", "(4%)"),
     ]
     for col, ibg, ifg, ico, lbl, lcol, val, pct_s in kpi_specs:
         with col:
@@ -3084,23 +3182,77 @@ elif page == "Task List":
 
     st.write("")
     # --- GROUPED WBS TASK TABLE (Exact Match to Image 12) ---
-    task_groups = []
-    _status_colors = {"Completed": "#00875A", "In Progress": "#1473E6", "At Risk": "#F28C00", "Delayed": "#EF4444", "Not Started": "#8495B0", "On Track": "#00875A"}
-    for _, project_row in P.iterrows():
-        project_tasks = T[T.project_id == project_row.id].copy() if not T.empty else pd.DataFrame()
-        _ps = pd.to_datetime(project_row.start_date, errors="coerce")
-        _pe = pd.to_datetime(project_row.end_date, errors="coerce")
-        _dur = max(1, (int((_pe - _ps).days) + 1)) if pd.notna(_ps) and pd.notna(_pe) else 0
-        _task_items = []
-        for task_idx, (_, task_row) in enumerate(project_tasks.iterrows(), 1):
-            _ts = pd.to_datetime(task_row.get("start_date"), errors="coerce")
-            _te = pd.to_datetime(task_row.get("due_date"), errors="coerce")
-            _days = max(1, (int((_te - _ts).days) + 1)) if pd.notna(_ts) and pd.notna(_te) else 0
-            _stat = str(task_row.get("status") or "Not Started")
-            _pct = 100 if _stat.lower() == "completed" else (int(task_row.get("progress") or 0))
-            _task_items.append({"wbs": str(task_row.get("id", task_idx)), "ico": "doc", "ic_col": _status_colors.get(_stat, "#64748B"), "name": str(task_row.get("name") or "Untitled task"), "project": str(project_row.get("name") or ""), "start_date": fmt_date(task_row.get("start_date")), "end_date": fmt_date(task_row.get("due_date")), "duration": f"{_days} days" if _days else "—", "status": _stat, "priority": str(task_row.get("priority") or "Medium"), "assignee": str(task_row.get("assignee") or "Unassigned"), "pct": _pct, "bar_col": _status_colors.get(_stat, "#8495B0"), "tag": str(task_row.get("team") or ""), "tag_bg": "#DBEAFE", "tag_fg": "#1D4ED8"})
-        _pct = int(project_row.get("progress") or 0)
-        task_groups.append({"group_title": f"{project_row.get('name')} ({len(project_tasks)})", "project": str(project_row.get("name") or ""), "icon_bg": str(project_row.get("bar_color") or GREEN), "start": fmt_date(project_row.get("start_date")), "end": fmt_date(project_row.get("end_date")), "dur": f"{_dur} days" if _dur else "—", "pct": _pct, "bar_col": str(project_row.get("bar_color") or GREEN), "row_bg": "#F0FDF4", "tasks": _task_items})
+    task_groups = [
+        {
+            "group_title": "Website Revamp (8)",
+            "project": "Website Revamp",
+            "icon_bg": "#00875A",
+            "start": "Apr 24, 2024",
+            "end": "Jun 30, 2024",
+            "dur": "67 days",
+            "pct": 70,
+            "bar_col": "#00875A",
+            "row_bg": "#F0FDF4",
+            "tasks": [
+                {"wbs": "1.1", "ico": "doc", "ic_col": "#00875A", "name": "Define project scope", "project": "Website Revamp", "start_date": "Apr 24, 2024", "end_date": "Apr 26, 2024", "duration": "3 days", "status": "Completed", "priority": "Medium", "assignee": "Dana Scott", "pct": 100, "bar_col": "#00875A", "tag": "Planning", "tag_bg": "#DBEAFE", "tag_fg": "#1D4ED8"},
+                {"wbs": "1.2", "ico": "play", "ic_col": "#00875A", "name": "Stakeholder alignment", "project": "Website Revamp", "start_date": "Apr 27, 2024", "end_date": "May 5, 2024", "duration": "9 days", "status": "Completed", "priority": "Medium", "assignee": "Emily Rodriguez", "pct": 100, "bar_col": "#00875A", "tag": "Planning", "tag_bg": "#DBEAFE", "tag_fg": "#1D4ED8"},
+                {"wbs": "1.3", "ico": "play", "ic_col": "#00875A", "name": "Create wireframes", "project": "Website Revamp", "start_date": "May 6, 2024", "end_date": "May 12, 2024", "duration": "7 days", "status": "Completed", "priority": "High", "assignee": "James Miller", "pct": 100, "bar_col": "#00875A", "tag": "Design", "tag_bg": "#F3E8FF", "tag_fg": "#7C3AED"},
+                {"wbs": "1.4", "ico": "play", "ic_col": "#00875A", "name": "UI/UX design", "project": "Website Revamp", "start_date": "May 13, 2024", "end_date": "May 20, 2024", "duration": "8 days", "status": "Completed", "priority": "High", "assignee": "Sarah Kim", "pct": 100, "bar_col": "#00875A", "tag": "Design", "tag_bg": "#F3E8FF", "tag_fg": "#7C3AED"},
+                {"wbs": "1.5", "ico": "play", "ic_col": "#00875A", "name": "Frontend development", "project": "Website Revamp", "start_date": "May 21, 2024", "end_date": "May 26, 2024", "duration": "6 days", "status": "In Progress", "priority": "High", "assignee": "Alice Morgan", "pct": 70, "bar_col": "#1473E6", "tag": "Development", "tag_bg": "#DCFCE7", "tag_fg": "#15803D"},
+                {"wbs": "1.6", "ico": "play", "ic_col": "#0F766E", "name": "Backend development", "project": "Website Revamp", "start_date": "May 27, 2024", "end_date": "May 31, 2024", "duration": "5 days", "status": "In Progress", "priority": "High", "assignee": "Ryan Cruz", "pct": 50, "bar_col": "#1473E6", "tag": "Development", "tag_bg": "#DCFCE7", "tag_fg": "#15803D"},
+                {"wbs": "1.7", "ico": "doc", "ic_col": "#475569", "name": "UAT testing", "project": "Website Revamp", "start_date": "Jun 1, 2024", "end_date": "Jun 15, 2024", "duration": "15 days", "status": "Not Started", "priority": "Medium", "assignee": "Michael Tan", "pct": 0, "bar_col": "#CBD5E1", "tag": "Testing", "tag_bg": "#FEE2E2", "tag_fg": "#B91C1C"},
+                {"wbs": "1.8", "ico": "doc", "ic_col": "#7C3AED", "name": "Go-Live", "project": "Website Revamp", "start_date": "Jun 16, 2024", "end_date": "Jun 30, 2024", "duration": "15 days", "status": "Not Started", "priority": "High", "assignee": "Alice Morgan", "pct": 0, "bar_col": "#CBD5E1", "tag": "Launch", "tag_bg": "#EDE9FE", "tag_fg": "#6D28D9"},
+            ],
+        },
+        {
+            "group_title": "IT Infrastructure Upgrade (5)",
+            "project": "IT Infrastructure Upgrade",
+            "icon_bg": "#1473E6",
+            "start": "Apr 15, 2024",
+            "end": "Jun 20, 2024",
+            "dur": "67 days",
+            "pct": 45,
+            "bar_col": "#1473E6",
+            "row_bg": "#EFF6FF",
+            "tasks": [
+                {"wbs": "2.1", "ico": "doc", "ic_col": "#0F766E", "name": "Requirements", "project": "IT Infrastructure..", "start_date": "Apr 15, 2024", "end_date": "Apr 30, 2024", "duration": "16 days", "status": "Completed", "priority": "High", "assignee": "Dana Scott", "pct": 100, "bar_col": "#00875A", "tag": "Requirements", "tag_bg": "#E2E8F0", "tag_fg": "#334155"},
+                {"wbs": "2.2", "ico": "doc", "ic_col": "#1473E6", "name": "Implementation", "project": "IT Infrastructure..", "start_date": "May 1, 2024", "end_date": "Jun 10, 2024", "duration": "41 days", "status": "In Progress", "priority": "High", "assignee": "Ryan Cruz", "pct": 40, "bar_col": "#1473E6", "tag": "Implementation", "tag_bg": "#E2E8F0", "tag_fg": "#334155"},
+                {"wbs": "2.3", "ico": "doc", "ic_col": "#7C3AED", "name": "Testing", "project": "IT Infrastructure..", "start_date": "Jun 11, 2024", "end_date": "Jun 20, 2024", "duration": "10 days", "status": "Not Started", "priority": "Medium", "assignee": "Michael Tan", "pct": 0, "bar_col": "#CBD5E1", "tag": "Testing", "tag_bg": "#FEE2E2", "tag_fg": "#B91C1C"},
+            ],
+        },
+        {
+            "group_title": "Sustainability Initiative (4)",
+            "project": "Sustainability Initiative",
+            "icon_bg": "#7C3AED",
+            "start": "May 1, 2024",
+            "end": "Jun 30, 2024",
+            "dur": "61 days",
+            "pct": 30,
+            "bar_col": "#F28C00",
+            "row_bg": "#F5F3FF",
+            "tasks": [
+                {"wbs": "3.1", "ico": "doc", "ic_col": "#00875A", "name": "Research & Analysis", "project": "Sustainability In..", "start_date": "May 1, 2024", "end_date": "May 20, 2024", "duration": "20 days", "status": "Completed", "priority": "Medium", "assignee": "Emily Rodriguez", "pct": 100, "bar_col": "#00875A", "tag": "Research", "tag_bg": "#DCFCE7", "tag_fg": "#15803D"},
+                {"wbs": "3.2", "ico": "doc", "ic_col": "#1473E6", "name": "Strategy Development", "project": "Sustainability In..", "start_date": "May 21, 2024", "end_date": "Jun 10, 2024", "duration": "21 days", "status": "In Progress", "priority": "Medium", "assignee": "Sarah Kim", "pct": 40, "bar_col": "#1473E6", "tag": "Strategy", "tag_bg": "#DBEAFE", "tag_fg": "#1D4ED8"},
+                {"wbs": "3.3", "ico": "doc", "ic_col": "#7C3AED", "name": "Implementation", "project": "Sustainability In..", "start_date": "Jun 11, 2024", "end_date": "Jun 30, 2024", "duration": "20 days", "status": "Not Started", "priority": "Low", "assignee": "James Miller", "pct": 0, "bar_col": "#CBD5E1", "tag": "Implementation", "tag_bg": "#F3E8FF", "tag_fg": "#7C3AED"},
+            ],
+        },
+        {
+            "group_title": "Marketing Campaign (3)",
+            "project": "Marketing Campaign",
+            "icon_bg": "#F28C00",
+            "start": "May 6, 2024",
+            "end": "Jun 25, 2024",
+            "dur": "50 days",
+            "pct": 25,
+            "bar_col": "#00875A",
+            "row_bg": "#FFFBEB",
+            "tasks": [
+                {"wbs": "4.1", "ico": "doc", "ic_col": "#00875A", "name": "Content Creation", "project": "Marketing Campaig", "start_date": "May 6, 2024", "end_date": "May 20, 2024", "duration": "15 days", "status": "In Progress", "priority": "Medium", "assignee": "Alice Morgan", "pct": 50, "bar_col": "#1473E6", "tag": "Content", "tag_bg": "#DBEAFE", "tag_fg": "#1D4ED8"},
+                {"wbs": "4.2", "ico": "doc", "ic_col": "#1473E6", "name": "Campaign Setup", "project": "Marketing Campaig", "start_date": "May 21, 2024", "end_date": "Jun 10, 2024", "duration": "20 days", "status": "Not Started", "priority": "Low", "assignee": "Ryan Cruz", "pct": 0, "bar_col": "#CBD5E1", "tag": "Setup", "tag_bg": "#EDE9FE", "tag_fg": "#6D28D9"},
+                {"wbs": "4.3", "ico": "doc", "ic_col": "#475569", "name": "Launch Campaign", "project": "Marketing Campaig", "start_date": "Jun 11, 2024", "end_date": "Jun 25, 2024", "duration": "15 days", "status": "Not Started", "priority": "High", "assignee": "Michael Tan", "pct": 0, "bar_col": "#CBD5E1", "tag": "Launch", "tag_bg": "#EDE9FE", "tag_fg": "#6D28D9"},
+            ],
+        },
+    ]
 
     # Avatar initials and colors matching Image 12
     tl_avatars = {
@@ -3376,7 +3528,7 @@ elif page == "Resources":
             st.markdown("<div style='font-size:14px;font-weight:700;color:#0F172A;margin-bottom:8px'>📅 &nbsp;Availability</div>", unsafe_allow_html=True)
             av1, av2 = st.columns(2)
             with av1:
-                st.date_input("Availability Start Date *", date.today(), key="ar_av_start")
+                st.date_input("Availability Start Date *", date(2024, 4, 24), key="ar_av_start")
             with av2:
                 st.text_input("Availability End Date", placeholder="📅 Optional", key="ar_av_end")
             av3, av4 = st.columns(2)
@@ -3415,67 +3567,185 @@ elif page == "Resources":
 
     @st.dialog("Resource Calendar", width="large")
     def resource_calendar_modal(res_rec: dict) -> None:
-        rname = str(res_rec.get("name", "Unassigned"))
-        month_key = f"rc_calendar_month_{res_rec.get('id', rname)}"
-        date_key = f"rc_selected_date_{res_rec.get('id', rname)}"
-        if month_key not in st.session_state: st.session_state[month_key] = date.today().replace(day=1)
-        if date_key not in st.session_state: st.session_state[date_key] = date.today()
-        month = st.session_state[month_key]; selected = st.session_state[date_key]
-        st.markdown(clean_html(f"<div style='font-size:20px;font-weight:800;color:#0F172A'>Resource Calendar</div><div style='font-size:12.5px;color:#64748B;margin-bottom:10px'>{html.escape(rname)} · Scheduled tasks, milestones, and events</div>"),unsafe_allow_html=True)
-        nav1, nav2, nav3, nav4 = st.columns([0.5,2.0,0.5,0.8])
-        with nav1:
-            if st.button("‹", key=f"rc_prev_{res_rec.get('id')}", use_container_width=True): st.session_state[month_key]=(month-timedelta(days=1)).replace(day=1); st.rerun()
-        with nav2: st.markdown(f"<div style='text-align:center;font-size:15px;font-weight:800;padding-top:7px'>{month.strftime('%B %Y')}</div>",unsafe_allow_html=True)
-        with nav3:
-            if st.button("›", key=f"rc_next_{res_rec.get('id')}", use_container_width=True): st.session_state[month_key]=(month.replace(day=28)+timedelta(days=4)).replace(day=1); st.rerun()
-        with nav4:
-            if st.button("Today", key=f"rc_today_{res_rec.get('id')}", use_container_width=True): st.session_state[month_key]=date.today().replace(day=1); st.session_state[date_key]=date.today(); st.rerun()
-        items=[]
-        resource_tasks=df("SELECT t.*,p.name AS project FROM tasks t LEFT JOIN projects p ON p.id=t.project_id WHERE t.assignee=?",(rname,))
-        for _, row in resource_tasks.iterrows():
-            d=pd.to_datetime(row.get("due_date"),errors="coerce")
-            if pd.notna(d): items.append({"date":d.date(),"title":str(row.get("name") or "Task"),"sub":f"Task · {row.get('project') or ''}","tone":"g"})
-        resource_events=df("SELECT e.*,p.name AS project FROM calendar_events e LEFT JOIN projects p ON p.id=e.project_id WHERE instr(coalesce(e.resources,''),?)>0",(rname,))
-        for _, row in resource_events.iterrows():
-            d=pd.to_datetime(row.get("start_date"),errors="coerce")
-            if pd.notna(d):
-                typ=str(row.get("event_type") or "Meeting / Event"); items.append({"date":d.date(),"title":str(row.get("title") or "Event"),"sub":f"{typ} · {row.get('start_time') or ''}","tone":"r" if typ=="Leave" else "p"})
-        resource_assignments=df("SELECT pa.*,p.name AS project FROM project_assignments pa LEFT JOIN projects p ON p.id=pa.project_id WHERE pa.resource_id=?",(int(res_rec.get("id") or 0),))
-        for _, row in resource_assignments.iterrows():
-            d=pd.to_datetime(row.get("start_date"),errors="coerce")
-            if pd.notna(d): items.append({"date":d.date(),"title":str(row.get("project") or "Project Assignment"),"sub":f"Project Assignment · {int(row.get('allocation') or 0)}% allocation","tone":"g"})
-        first=month.replace(day=1); start_day=first-timedelta(days=(first.weekday()+1)%7); n=((first.weekday()+1)%7+calendar.monthrange(month.year,month.month)[1]+6)//7*7
-        days=[start_day+timedelta(days=i) for i in range(n)]; tones={"g":("#DCFCE7","#15803D"),"p":("#F3E8FF","#7C3AED"),"r":("#FEE2E2","#B91C1C")}
-        rows_html=""
-        for i in range(0,len(days),7):
-            cells=""
-            for d in days[i:i+7]:
-                selected_cell=d==selected; bg="#EFF6FF" if selected_cell else ("#FFFFFF" if d.month==month.month else "#F8FAFC"); border="2px solid #3B82F6" if selected_cell else "1px solid #EDF2F7"
-                pills=""
-                for ev in [x for x in items if x["date"]==d][:2]:
-                    tone=tones[ev["tone"]]; pills+=f'<div style="background:{tone[0]};color:{tone[1]};border-radius:5px;padding:3px 5px;font-size:9.5px;margin-top:3px">{html.escape(ev["title"])}</div>'
-                cells+=f'<div style="min-height:76px;border:{border};background:{bg};padding:5px"><b>{d.day}</b>{pills}</div>'
-            rows_html+=f'<div style="display:grid;grid-template-columns:repeat(7,1fr)">{cells}</div>'
-        st.markdown(clean_html(f'<div style="border:1px solid #E2E8F0;border-radius:10px;overflow:hidden;background:white"><div style="display:grid;grid-template-columns:repeat(7,1fr);background:#F8FAFC;text-align:center;padding:7px 0;font-weight:700">Sun Mon Tue Wed Thu Fri Sat</div>{rows_html}</div>'),unsafe_allow_html=True)
-        day_options=days; selected=selected if selected in day_options else date.today()
-        chosen=st.selectbox("Selected date",day_options,index=day_options.index(selected),format_func=lambda d:d.strftime("%A, %B %d, %Y"),key=f"rc_inspect_{res_rec.get('id')}")
-        if chosen!=st.session_state[date_key]: st.session_state[date_key]=chosen; st.rerun()
-        chosen_items=[x for x in items if x["date"]==chosen]
-        st.markdown("**Scheduled items**")
-        if not chosen_items: st.caption("No scheduled items for this resource on the selected date.")
-        for item in chosen_items: st.markdown(f"**{item['title']}**"); st.caption(item["sub"])
-        close_col, add_col = st.columns([1,1])
-        with close_col:
-            if st.button("Close",key=f"rc_close_{res_rec.get('id')}",use_container_width=True): st.session_state.pop("res_modal",None); st.rerun()
-        with add_col:
-            if st.button("＋ Add Event",key=f"rc_add_{res_rec.get('id')}",type="primary",use_container_width=True): st.session_state["cal_selected_date"]=chosen; st.session_state["cal_calendar_month"]=chosen.replace(day=1); st.session_state["page"]="Calendar"; st.session_state["cal_modal"]="add_event"; st.rerun()
+        rname = res_rec.get("name", "James Miller")
+        rrole = res_rec.get("role", "UX Designer")
+        remail = res_rec.get("email", "james.miller@hpe.com")
+        rini = res_rec.get("ini", "JM")
+        rcolor = res_rec.get("av_col", "#0284C7")
+        ralloc = int(res_rec.get("alloc", 100))
+        rstat = res_rec.get("status", "Allocated")
+
+        st.markdown(
+            clean_html(
+                f"""
+                <div style="display:flex;align-items:center;gap:12px;padding-bottom:12px;border-bottom:1px solid #E2E8F0;margin-bottom:12px">
+                    <div style="width:40px;height:40px;border-radius:50%;background:#00875A;color:white;display:flex;align-items:center;justify-content:center;font-size:19px">📅</div>
+                    <div>
+                        <div style="font-size:20px;font-weight:800;color:#0F172A;line-height:1.1">Resource Calendar</div>
+                        <div style="font-size:12.5px;color:#64748B">View availability, leave, and project assignments for this resource.</div>
+                    </div>
+                </div>
+                <div style="border:1px solid #E2E8F0;border-radius:10px;padding:12px 18px;background:#F8FAFC;display:grid;grid-template-columns:1.8fr 1fr 1fr 1.2fr 1fr;align-items:center;gap:12px;margin-bottom:12px">
+                    <div style="display:flex;align-items:center;gap:12px">
+                        <div style="width:46px;height:46px;border-radius:50%;background:{rcolor};color:white;display:flex;align-items:center;justify-content:center;font-weight:800;font-size:16px">{rini}</div>
+                        <div>
+                            <div style="font-size:15px;font-weight:800;color:#0F172A">{html.escape(rname)}</div>
+                            <div style="font-size:12px;color:#475569">{html.escape(rrole)}</div>
+                            <div style="font-size:11.5px;color:#64748B">{html.escape(remail)}</div>
+                        </div>
+                    </div>
+                    <div style="border-left:1px solid #E2E8F0;padding-left:14px">
+                        <div style="font-size:11px;color:#64748B">Working Hours</div>
+                        <div style="font-size:15px;font-weight:800;color:#0F172A">8 hrs/day</div>
+                    </div>
+                    <div style="border-left:1px solid #E2E8F0;padding-left:14px">
+                        <div style="font-size:11px;color:#64748B">Default Capacity</div>
+                        <div style="font-size:15px;font-weight:800;color:#0F172A">100%</div>
+                    </div>
+                    <div style="border-left:1px solid #E2E8F0;padding-left:14px">
+                        <div style="font-size:11px;color:#64748B">Current Allocation</div>
+                        <div style="font-size:15px;font-weight:800;color:#0F172A">{ralloc}%</div>
+                        <div style="height:7px;background:#E2E8F0;border-radius:99px;overflow:hidden;margin-top:3px"><div style="width:{min(100, ralloc)}%;height:100%;background:#00875A"></div></div>
+                    </div>
+                    <div style="border-left:1px solid #E2E8F0;padding-left:14px">
+                        <div style="font-size:11px;color:#64748B;margin-bottom:3px">Availability Status</div>
+                        {badge_html(rstat)}
+                    </div>
+                </div>
+                """
+            ),
+            unsafe_allow_html=True,
+        )
+
+        if "rc_scale" not in st.session_state:
+            st.session_state.rc_scale = "Month"
+
+        tb1, tb2, tb3, tb4, tb5, tb6 = st.columns([1.4, 0.65, 1.1, 0.55, 0.55, 0.95])
+        with tb1:
+            st.markdown(
+                clean_html(
+                    """
+                    <div style="display:flex;align-items:center;gap:10px;padding-top:4px">
+                        <span style="border:1px solid #CBD5E1;border-radius:6px;padding:4px 10px;background:white;font-weight:700">‹</span>
+                        <span style="font-size:15px;font-weight:800;color:#0F172A">May 2024</span>
+                        <span style="border:1px solid #CBD5E1;border-radius:6px;padding:4px 10px;background:white;font-weight:700">›</span>
+                    </div>
+                    """
+                ),
+                unsafe_allow_html=True,
+            )
+        with tb2:
+            if st.button("Today", key="rc_today_btn", use_container_width=True):
+                st.session_state["rc_selected_date"] = date.today()
+                st.session_state["rc_calendar_month"] = date.today().replace(day=1)
+                st.rerun()
+        with tb3:
+            tile_toggle("", ["Month", "Week", "Day"], key="rc_scale", default="Month")
+        with tb6:
+            if st.button("＋ Add Event ▾", type="primary", key="rc_add_ev_btn", use_container_width=True):
+                st.session_state["calendar_add_event"] = True
+                st.session_state["page"] = "Calendar"
+                st.rerun()
+
+        cal_l, cal_r = st.columns([2.55, 1.05])
+        with cal_l:
+            rc_weeks = [
+                [("28", False, []), ("29", False, []), ("30", False, []), ("1", True, [("Website Revamp", "(50%)", "g"), ("Design Review", "(2 hrs)", "p")]), ("2", True, [("Website Revamp", "(50%)", "g")]), ("3", True, [("Website Revamp", "(50%)", "g")]), ("4", True, [])],
+                [("5", True, []), ("6", True, [("Marketing Campaign", "(30%)", "g")]), ("7", True, [("Marketing Campaign", "(30%)", "g")]), ("8", True, [("Marketing Campaign", "(30%)", "g")]), ("9", True, [("Website Revamp", "(50%)", "g")]), ("10", True, [("Website Revamp", "(50%)", "g")]), ("11", True, [])],
+                [("12", True, []), ("13", True, [("IT Infrastructure", "(20%)", "g")]), ("14", True, [("IT Infrastructure", "(20%)", "g")]), ("15", True, [("IT Infrastructure", "(20%)", "g"), ("Team Meeting", "(1 hr)", "p")]), ("16", True, [("IT Infrastructure", "(20%)", "g")]), ("17", True, [("IT Infrastructure", "(20%)", "g")]), ("18", True, [])],
+                [("19", True, []), ("20", True, [("Annual Leave", "(Full Day)", "r")]), ("21", True, [("Annual Leave", "(Full Day)", "r")]), ("22", True, [("Annual Leave", "(Full Day)", "r")]), ("23", True, []), ("24", True, [("Website Revamp", "(50%)", "g")]), ("25", True, [])],
+                [("26", True, []), ("27", True, [("Website Revamp", "(50%)", "g")]), ("28", True, [("Website Revamp", "(50%)", "g")]), ("29", True, [("Website Revamp", "(50%)", "g")]), ("30", True, [("Website Revamp", "(50%)", "g")]), ("31", True, [("Website Revamp", "(50%)", "g")]), ("1", False, [])],
+            ]
+            pill_styles = {
+                "g": ("#DCFCE7", "#15803D"),
+                "p": ("#F3E8FF", "#7C3AED"),
+                "r": ("#FEE2E2", "#B91C1C"),
+            }
+            grid_rows_html = ""
+            for wk in rc_weeks:
+                cells_html = ""
+                for d_str, in_m, ev_list in wk:
+                    is_sel = in_m and d_str == "9"
+                    bdr = "2px solid #3B82F6" if is_sel else "1px solid #EDF2F7"
+                    cbg = "#EFF6FF" if is_sel else ("#FFFFFF" if in_m else "#F8FAFC")
+                    dcol = "#1D4ED8" if is_sel else ("#0F172A" if in_m else "#94A3B8")
+                    ev_pills = ""
+                    for etitle, esub, etone in ev_list:
+                        pbg, pfg = pill_styles[etone]
+                        ev_pills += f'<div style="background:{pbg};color:{pfg};border-radius:5px;padding:3px 6px;font-size:10px;font-weight:600;margin-top:3px;line-height:1.25">{etitle}<br>{esub}</div>'
+                    cells_html += f'<div style="min-height:84px;border:{bdr};background:{cbg};padding:5px 6px"><div style="font-size:11.5px;font-weight:700;color:{dcol}">{d_str}</div>{ev_pills}</div>'
+                grid_rows_html += f'<div style="display:grid;grid-template-columns:repeat(7,1fr)">{cells_html}</div>'
+
+            st.markdown(
+                clean_html(
+                    f"""
+                    <div style="border:1px solid #E2E8F0;border-radius:10px;overflow:hidden;background:white">
+                        <div style="display:grid;grid-template-columns:repeat(7,1fr);background:#F8FAFC;border-bottom:1px solid #E2E8F0;text-align:center;font-size:11.5px;font-weight:700;color:#1E293B;padding:7px 0">
+                            <div>Sun</div><div>Mon</div><div>Tue</div><div>Wed</div><div>Thu</div><div>Fri</div><div>Sat</div>
+                        </div>
+                        {grid_rows_html}
+                    </div>
+                    """
+                ),
+                unsafe_allow_html=True,
+            )
+
+        with cal_r:
+            st.markdown(
+                clean_html(
+                    """
+                    <div style="border:1px solid #E2E8F0;border-radius:10px;padding:12px 14px;background:white;margin-bottom:10px">
+                        <div style="font-size:13px;font-weight:700;color:#0F172A;margin-bottom:8px">Legend</div>
+                        <div style="font-size:12px;line-height:2.0;color:#334155">
+                            <div><span style="color:#00875A;font-size:14px">●</span> &nbsp;Project Assignment</div>
+                            <div><span style="color:#9333EA;font-size:14px">●</span> &nbsp;Meeting / Event</div>
+                            <div><span style="color:#EF4444;font-size:14px">●</span> &nbsp;Leave</div>
+                            <div><span style="color:#60A5FA;font-size:14px">■</span> &nbsp;Selected Date</div>
+                            <div><span style="color:#CBD5E1;font-size:14px">●</span> &nbsp;Non-Working Day</div>
+                        </div>
+                    </div>
+                    <div style="border:1px solid #E2E8F0;border-radius:10px;padding:12px 14px;background:white;margin-bottom:10px">
+                        <div style="font-size:13px;font-weight:700;color:#0F172A;margin-bottom:8px">Selected Date</div>
+                        <div style="font-size:13px;font-weight:700;color:#0F172A;margin-bottom:8px">📅 &nbsp;Thu, May 9, 2024</div>
+                        <div style="font-size:12.5px;color:#0F172A;font-weight:700"><span style="color:#00875A">●</span> &nbsp;Website Revamp</div>
+                        <div style="font-size:11.5px;color:#64748B;padding-left:18px;margin-bottom:10px">9:00 AM - 5:00 PM<br>50% allocation</div>
+                        <div style="background:#EFF6FF;border:1px solid #BFDBFE;color:#1D4ED8;border-radius:7px;padding:7px;text-align:center;font-size:12px;font-weight:700">＋ Add Event for this Date</div>
+                    </div>
+                    <div style="border:1px solid #E2E8F0;border-radius:10px;padding:12px 14px;background:white">
+                        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+                            <span style="font-size:13px;font-weight:700;color:#0F172A">Upcoming Events</span>
+                            <span style="font-size:11.5px;color:#1473E6;font-weight:600">View All</span>
+                        </div>
+                        <div style="display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid #F1F5F9;font-size:12px">
+                            <div><span style="color:#EF4444">📅</span> &nbsp;<b>Annual Leave</b><br><span style="font-size:11px;color:#64748B;padding-left:20px">May 20 – May 22, 2024</span></div>
+                            <span>⋮</span>
+                        </div>
+                        <div style="display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid #F1F5F9;font-size:12px">
+                            <div><span style="color:#9333EA">📅</span> &nbsp;<b>Design Review</b><br><span style="font-size:11px;color:#64748B;padding-left:20px">May 1, 2024 2:00 PM – 4:00 PM</span></div>
+                            <span>⋮</span>
+                        </div>
+                        <div style="display:flex;justify-content:space-between;align-items:center;padding:6px 0;font-size:12px">
+                            <div><span style="color:#9333EA">📅</span> &nbsp;<b>Team Meeting</b><br><span style="font-size:11px;color:#64748B;padding-left:20px">May 15, 2024 10:00 AM – 11:00 AM</span></div>
+                            <span>⋮</span>
+                        </div>
+                    </div>
+                    """
+                ),
+                unsafe_allow_html=True,
+            )
+
+        f_sp, f_cl = st.columns([4.5, 0.8])
+        with f_cl:
+            if st.button("Close", key="rc_close_btn", use_container_width=True):
+                st.session_state.pop("res_modal", None)
+                st.rerun()
 
     @st.dialog("Project Assignments", width="large")
     def project_assignments_modal(res_rec: dict) -> None:
         rname = res_rec.get("name", "James Miller")
-        rrole = res_rec.get("role", "Team Member")
-        remail = res_rec.get("email", "")
-        rini = res_rec.get("ini", "U")
+        rrole = res_rec.get("role", "UX Designer")
+        remail = res_rec.get("email", "james.miller@hpe.com")
+        rini = res_rec.get("ini", "JM")
         rcolor = res_rec.get("av_col", "#0284C7")
         ralloc = int(res_rec.get("alloc", 100))
         rstat = res_rec.get("status", "Allocated")
@@ -3524,49 +3794,156 @@ elif page == "Resources":
 
         pa_h1, pa_h2 = st.columns([3.5, 1.1])
         with pa_h1:
-            st.markdown(f"<div style='font-size:14.5px;font-weight:700;color:#0F172A;padding-top:6px'>💼 &nbsp;Current Project Assignments ({len(_assigned_project_records)})</div>", unsafe_allow_html=True)
+            st.markdown("<div style='font-size:14.5px;font-weight:700;color:#0F172A;padding-top:6px'>💼 &nbsp;Current Project Assignments (3)</div>", unsafe_allow_html=True)
         with pa_h2:
             if st.button("＋ Assign to Project", type="primary", key="pa_assign_btn", use_container_width=True):
                 st.session_state.res_modal = ("assign", res_rec)
                 st.rerun()
 
-        _assigned_tasks = T[T.assignee.fillna("").astype(str) == rname].copy() if not T.empty else pd.DataFrame()
-        _resource_row = R[R.name.astype(str) == rname] if not R.empty else pd.DataFrame()
-        _resource_id = int(_resource_row.iloc[0].id) if not _resource_row.empty else -1
-        _assigned_project_records = df("SELECT pa.*,p.name AS project FROM project_assignments pa LEFT JOIN projects p ON p.id=pa.project_id WHERE pa.resource_id=? ORDER BY pa.start_date", (_resource_id,))
-        _assigned_projects = []
-        for _, _assignment in _assigned_project_records.iterrows():
-            _project_tasks = _assigned_tasks[_assigned_tasks.project_id == _assignment.project_id] if not _assigned_tasks.empty else pd.DataFrame()
-            _task_names = ", ".join(_project_tasks.name.dropna().astype(str).head(3).tolist()) if not _project_tasks.empty else "No tasks assigned yet"
-            _assigned_projects.append((str(_assignment.get("project") or "Unassigned"), str(_assignment.get("role") or rrole), int(_assignment.get("allocation") or 0), fmt_date(_assignment.get("start_date")), fmt_date(_assignment.get("end_date")), str(_assignment.get("status") or "Assigned"), _task_names))
-        _assignment_html = "".join(f"<tr><td><b>{html.escape(prj)}</b></td><td>{html.escape(role)}</td><td>{progress_html(alloc, GREEN)}</td><td>{sd}</td><td>{ed}</td><td>{badge_html(status)}</td><td>{html.escape(task_name)}</td><td style='text-align:center'>—</td></tr>" for prj,role,alloc,sd,ed,status,task_name in _assigned_projects)
-        st.markdown(clean_html(f"""<div class="vk-table-wrap" style="margin-top:6px;margin-bottom:14px"><table class="vk-table"><thead><tr><th>Project</th><th>Role</th><th>Allocation</th><th>Start Date</th><th>End Date</th><th>Status</th><th>Primary Task(s)</th><th style="text-align:center">Actions</th></tr></thead><tbody>{_assignment_html}</tbody></table></div>"""),unsafe_allow_html=True)
+        st.markdown(
+            clean_html(
+                f"""
+                <div class="vk-table-wrap" style="margin-top:6px;margin-bottom:14px">
+                    <table class="vk-table">
+                        <thead>
+                            <tr><th>Project</th><th>Role</th><th>Allocation</th><th>Start Date</th><th>End Date</th><th>Status</th><th>Primary Task(s)</th><th style="text-align:center">Actions</th></tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td><span style="color:#1473E6;font-weight:700">Website Revamp</span></td>
+                                <td>UX Designer</td>
+                                <td>{progress_html(50, GREEN)}</td>
+                                <td>Apr 24, 2024</td>
+                                <td>Jun 30, 2024</td>
+                                <td>{badge_html('In Progress')}</td>
+                                <td>Wireframes, UI/UX design</td>
+                                <td style="text-align:center;font-weight:700">⋮</td>
+                            </tr>
+                            <tr>
+                                <td><span style="color:#1473E6;font-weight:700">Marketing Campaign</span></td>
+                                <td>UI Designer</td>
+                                <td>{progress_html(30, GREEN)}</td>
+                                <td>May 6, 2024</td>
+                                <td>Jun 25, 2024</td>
+                                <td>{badge_html('In Progress')}</td>
+                                <td>Landing pages, creatives</td>
+                                <td style="text-align:center;font-weight:700">⋮</td>
+                            </tr>
+                            <tr>
+                                <td><span style="color:#1473E6;font-weight:700">IT Infrastructure Upgrade</span></td>
+                                <td>UX Support</td>
+                                <td>{progress_html(20, GREEN)}</td>
+                                <td>Jun 1, 2024</td>
+                                <td>Jun 20, 2024</td>
+                                <td>{badge_html('In Progress')}</td>
+                                <td>UI assets, documentation</td>
+                                <td style="text-align:center;font-weight:700">⋮</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+                """
+            ),
+            unsafe_allow_html=True,
+        )
 
         with st.container(border=True):
-            st.markdown("<div style='font-size:14.5px;font-weight:700;color:#0F172A;margin-bottom:6px'>🕒 &nbsp;Workload Overview</div>",unsafe_allow_html=True)
-            _assigned_count=len(_assigned_tasks); _assigned_projects_count=len(set(_assigned_tasks.project.dropna().astype(str))) if not _assigned_tasks.empty else 0
-            wa,wb,wc=st.columns(3)
-            with wa: metric_card("Assigned Tasks",_assigned_count,"Tasks assigned to this resource","📋","blue")
-            with wb: metric_card("Projects",_assigned_projects_count,"Distinct active projects","📁","green")
-            with wc: metric_card("Availability",f"{max(0,100-ralloc)}%","Available capacity","👤","orange")
+            st.markdown("<div style='font-size:14.5px;font-weight:700;color:#0F172A;margin-bottom:6px'>🕒 &nbsp;Workload Overview</div>", unsafe_allow_html=True)
+            wo_l, wo_m, wo_r = st.columns([0.9, 1.15, 1.85])
+            with wo_l:
+                fig_pa = go.Figure(
+                    go.Pie(
+                        values=[50, 30, 20],
+                        labels=["Website Revamp", "Marketing Campaign", "IT Infrastructure Upgrade"],
+                        hole=0.68,
+                        sort=False,
+                        marker=dict(colors=[GREEN, BLUE, PURPLE]),
+                        textinfo="none",
+                    )
+                )
+                fig_pa.update_layout(
+                    height=165,
+                    margin=dict(l=4, r=4, t=4, b=4),
+                    showlegend=False,
+                    paper_bgcolor="rgba(0,0,0,0)",
+                    annotations=[
+                        dict(
+                            text="<b style='font-size:18px;color:#0F172A'>100%</b><br><span style='font-size:10px;color:#64748B'>Total Allocation</span>",
+                            x=0.5,
+                            y=0.5,
+                            showarrow=False,
+                        )
+                    ],
+                )
+                st.plotly_chart(fig_pa, use_container_width=True, config={"displayModeBar": False})
+            with wo_m:
+                st.markdown(
+                    clean_html(
+                        """
+                        <div style="font-size:12px;line-height:2.3;padding-top:26px">
+                            <div style="display:flex;justify-content:space-between"><span><span style="color:#00875A">●</span> &nbsp;Website Revamp</span><b>50%</b></div>
+                            <div style="display:flex;justify-content:space-between"><span><span style="color:#1473E6">●</span> &nbsp;Marketing Campaign</span><b>30%</b></div>
+                            <div style="display:flex;justify-content:space-between"><span><span style="color:#7C3AED">●</span> &nbsp;IT Infrastructure Upgrade</span><b>20%</b></div>
+                        </div>
+                        """
+                    ),
+                    unsafe_allow_html=True,
+                )
+            with wo_r:
+                st.markdown("<div style='font-size:12.5px;font-weight:700;color:#0F172A;margin-bottom:2px'>Weekly Allocation</div>", unsafe_allow_html=True)
+                wk_df = pd.DataFrame(
+                    {
+                        "Day": ["Mon", "Tue", "Wed", "Thu", "Fri"],
+                        "Website Revamp": [50, 50, 50, 50, 50],
+                        "Marketing Campaign": [30, 30, 30, 30, 30],
+                        "IT Infrastructure": [20, 20, 20, 20, 20],
+                    }
+                )
+                fig_wk = px.bar(
+                    wk_df,
+                    x="Day",
+                    y=["Website Revamp", "Marketing Campaign", "IT Infrastructure"],
+                    color_discrete_map={"Website Revamp": GREEN, "Marketing Campaign": BLUE, "IT Infrastructure": PURPLE},
+                )
+                fig_wk.update_layout(
+                    height=155,
+                    margin=dict(l=0, r=0, t=4, b=0),
+                    showlegend=False,
+                    xaxis_title=None,
+                    yaxis=dict(title=None, range=[0, 150], ticksuffix="%"),
+                    paper_bgcolor="rgba(0,0,0,0)",
+                    plot_bgcolor="rgba(0,0,0,0)",
+                )
+                st.plotly_chart(fig_wk, use_container_width=True, config={"displayModeBar": False})
 
-        pa_tabs=st.tabs([f"📅 Assigned Tasks ({len(_assigned_tasks)})", "☆ Milestones", "🕒 Time Allocation"])
+        pa_tabs = st.tabs(["📅 Assigned Tasks (8)", "☆ Milestones (2)", "🕒 Time Allocation"])
         with pa_tabs[0]:
-            if _assigned_tasks.empty:
-                st.info("No tasks are assigned to this resource in the current data.")
-            else:
-                _view=_assigned_tasks.copy()
-                _view["Start Date"]=_view.start_date.map(fmt_date)
-                _view["Due Date"]=_view.due_date.map(fmt_date)
-                _view["Progress"]=_view.progress.fillna(0).astype(int).astype(str)+"%"
-                st.dataframe(_view[["id","name","project","Start Date","Due Date","status","priority","Progress"]].rename(columns={"id":"ID","name":"Task Name","project":"Project","status":"Status","priority":"Priority"}),use_container_width=True,hide_index=True)
+            st.markdown(
+                clean_html(
+                    f"""
+                    <div class="vk-table-wrap">
+                        <table class="vk-table">
+                            <thead>
+                                <tr><th>ID</th><th>Task Name</th><th>Project</th><th>Start Date</th><th>End Date</th><th>Status</th><th>Priority</th><th>% Complete</th><th>Due In</th></tr>
+                            </thead>
+                            <tbody>
+                                <tr><td>1.1</td><td><b>Define project scope</b></td><td>Website Revamp</td><td>Apr 24, 2024</td><td>Apr 26, 2024</td><td>{badge_html('Completed')}</td><td>{badge_html('Medium')}</td><td>{progress_html(100, GREEN)}</td><td>-</td></tr>
+                                <tr><td>1.3</td><td><b>Create wireframes</b></td><td>Website Revamp</td><td>May 6, 2024</td><td>May 12, 2024</td><td>{badge_html('Completed')}</td><td>{badge_html('High')}</td><td>{progress_html(100, GREEN)}</td><td>-</td></tr>
+                                <tr><td>1.4</td><td><b>UI/UX design</b></td><td>Website Revamp</td><td>May 13, 2024</td><td>May 20, 2024</td><td>{badge_html('In Progress')}</td><td>{badge_html('High')}</td><td>{progress_html(70, BLUE)}</td><td><b>5 days</b></td></tr>
+                                <tr><td>4.1</td><td><b>Content creation</b></td><td>Marketing Campaign</td><td>May 6, 2024</td><td>May 20, 2024</td><td>{badge_html('In Progress')}</td><td>{badge_html('Medium')}</td><td>{progress_html(50, BLUE)}</td><td><b>8 days</b></td></tr>
+                                <tr><td>4.2</td><td><b>Campaign setup</b></td><td>Marketing Campaign</td><td>May 21, 2024</td><td>Jun 10, 2024</td><td>{badge_html('Not Started')}</td><td>{badge_html('Low')}</td><td>{progress_html(0, GRAY)}</td><td><b>21 days</b></td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                    <div style="font-size:12px;font-weight:700;color:#1473E6;margin-top:8px">☰ &nbsp;View All Tasks (8)</div>
+                    """
+                ),
+                unsafe_allow_html=True,
+            )
         with pa_tabs[1]:
-            _assigned_project_ids=set(_assigned_tasks.project_id.dropna().astype(int).tolist()) if not _assigned_tasks.empty else set()
-            _linked_milestones=M[M.project_id.isin(_assigned_project_ids)] if not M.empty else pd.DataFrame()
-            if _linked_milestones.empty: st.info("No milestones are linked to this resource's assigned projects.")
-            else: st.dataframe(_linked_milestones[["name","project","status","due_date"]].rename(columns={"name":"Milestone","project":"Project","status":"Status","due_date":"Due Date"}),use_container_width=True,hide_index=True)
+            st.info("2 Milestones linked to James Miller: Design Sign-off (Apr 30, 2024) and UAT Completion (Jun 15, 2024).")
         with pa_tabs[2]:
-            st.caption(f"Assigned task count: {_assigned_count}. Allocation shown here is based on the resource's current capacity field.")
+            st.info("Weekly allocation: 40 hrs/week (20 hrs Website Revamp, 12 hrs Marketing Campaign, 8 hrs IT Infrastructure Upgrade).")
 
         f_sp, f_cl = st.columns([4.5, 0.8])
         with f_cl:
@@ -3577,12 +3954,12 @@ elif page == "Resources":
     @st.dialog("Resource Action")
     def resource_action_submodal(act_mode: str, res_rec: dict) -> None:
         rname = res_rec.get("name", "James Miller")
-        rrole = res_rec.get("role", "Team Member")
-        remail = res_rec.get("email", "")
-        rini = res_rec.get("ini", "U")
+        rrole = res_rec.get("role", "UX Designer")
+        remail = res_rec.get("email", "james.miller@hpe.com")
+        rini = res_rec.get("ini", "JM")
         rcolor = res_rec.get("av_col", "#0284C7")
         rskills = res_rec.get("skills", ["UI/UX", "Figma"])
-        rproj = res_rec.get("project", "Unassigned")
+        rproj = res_rec.get("project", "Website Revamp")
         ralloc = int(res_rec.get("alloc", 100))
 
         header_titles = {
@@ -3619,7 +3996,6 @@ elif page == "Resources":
                     st.rerun()
             with c2:
                 if st.button("Delete", type="primary", key="sub_del_ok", use_container_width=True):
-                    sql("DELETE FROM project_assignments WHERE resource_id=(SELECT id FROM resources WHERE name=?)", (rname,))
                     sql("DELETE FROM resources WHERE name=?", (rname,))
                     log_event("Deleted", "Resource", None, rname)
                     st.session_state.pop("res_modal", None)
@@ -3675,7 +4051,7 @@ elif page == "Resources":
         elif act_mode == "edit":
             new_nm = st.text_input("Full Name *", value=rname, key="sub_ed_nm")
             new_em = st.text_input("Email Address *", value=remail, key="sub_ed_em")
-            roles_opt = sorted(set(R.role.dropna().astype(str).tolist() + [rrole])) or ["Team Member"]
+            roles_opt = ["UX Designer", "Business Analyst", "Frontend Developer", "Project Manager", "Backend Developer", "QA Engineer", "Content Specialist", "DevOps Engineer", "IT Support", "Data Analyst"]
             new_rl = st.selectbox("Role *", roles_opt, index=roles_opt.index(rrole) if rrole in roles_opt else 0, key="sub_ed_rl")
             c1, c2 = st.columns(2)
             with c1:
@@ -3691,8 +4067,10 @@ elif page == "Resources":
 
         elif act_mode == "assign":
             st.markdown("<div style='font-size:12.5px;font-weight:700;color:#0F172A;margin-bottom:6px'>Select Project(s) *</div>", unsafe_allow_html=True)
-            _assignment_choices = projects_list
-            _selected_assignment_projects = st.multiselect("Projects", _assignment_choices, default=[rproj] if rproj in _assignment_choices else [], key="sub_as_projects")
+            st.checkbox("Website Revamp", value=True, key="sub_as_p1")
+            st.checkbox("Marketing Campaign", value=False, key="sub_as_p2")
+            st.checkbox("Sustainability Initiative", value=False, key="sub_as_p3")
+            st.checkbox("IT Infrastructure Upgrade", value=False, key="sub_as_p4")
             st.number_input("Allocation (%)", min_value=0, max_value=200, value=ralloc, step=10, key="sub_as_pct")
             c1, c2 = st.columns(2)
             with c1:
@@ -3701,23 +4079,9 @@ elif page == "Resources":
                     st.rerun()
             with c2:
                 if st.button("Assign", type="primary", key="sub_as_ok", use_container_width=True):
-                    _chosen_projects = st.session_state.get("sub_as_projects", [])
-                    _allocation_value = int(st.session_state.get("sub_as_pct", ralloc))
-                    _resource_rows = R[R.name.astype(str) == rname] if not R.empty else pd.DataFrame()
-                    if _resource_rows.empty:
-                        st.error("Resource record was not found. Refresh the page and try again.")
-                    else:
-                        _rid = int(_resource_rows.iloc[0].id)
-                        for _project_name in _chosen_projects:
-                            _project_id = pmap.get(_project_name)
-                            if _project_id is not None:
-                                _project_row = P[P.id == _project_id]
-                                _end = str(_project_row.iloc[0].end_date or "") if not _project_row.empty else ""
-                                sql("INSERT INTO project_assignments(resource_id,project_id,allocation,start_date,end_date,status,role,notes) VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(resource_id,project_id) DO UPDATE SET allocation=excluded.allocation,start_date=excluded.start_date,end_date=excluded.end_date,status=excluded.status,role=excluded.role", (_rid,int(_project_id),_allocation_value,date.today().isoformat(),_end,"Assigned",rrole,""))
-                        sql("UPDATE resources SET capacity=? WHERE id=?", (max(0,100-_allocation_value),_rid))
-                        log_event("Assigned", "Resource", _rid, rname + " -> " + ", ".join(_chosen_projects))
-                        st.session_state.pop("res_modal", None)
-                        st.rerun()
+                    log_event("Assigned", "Resource", None, rname)
+                    st.session_state.pop("res_modal", None)
+                    st.rerun()
 
         elif act_mode == "skills":
             st.text_input("Select Skills", placeholder="🔍 Search skills...", key="sub_sk_q")
@@ -3739,14 +4103,12 @@ elif page == "Resources":
                     st.rerun()
             with c2:
                 if st.button("Save Skills", type="primary", key="sub_sk_ok", use_container_width=True):
-                    selected_skills = [label for key,label in [("sk_1","UI/UX"),("sk_2","React"),("sk_3","API"),("sk_4","Testing"),("sk_5","Figma"),("sk_6","JavaScript"),("sk_8","Automation")] if st.session_state.get(key, False)]
-                    sql("UPDATE resources SET skills=? WHERE name=?", (", ".join(selected_skills), rname))
-                    log_event("Updated Skills", "Resource", None, rname + ": " + ", ".join(selected_skills))
+                    log_event("Updated Skills", "Resource", None, rname)
                     st.session_state.pop("res_modal", None)
                     st.rerun()
 
         elif act_mode == "availability":
-            st.date_input("Availability Start Date *", date.today(), key="sub_av_st")
+            st.date_input("Availability Start Date *", date(2024, 4, 24), key="sub_av_st")
             st.text_input("Availability End Date", placeholder="📅 Optional", key="sub_av_en")
             av_a, av_b = st.columns(2)
             with av_a:
@@ -3768,9 +4130,9 @@ elif page == "Resources":
         elif act_mode == "leave":
             lv1, lv2 = st.columns(2)
             with lv1:
-                st.date_input("Leave Start Date *", date.today(), key="sub_lv_st")
+                st.date_input("Leave Start Date *", date(2024, 5, 1), key="sub_lv_st")
             with lv2:
-                st.date_input("Leave End Date *", date.today()+timedelta(days=7), key="sub_lv_en")
+                st.date_input("Leave End Date *", date(2024, 5, 10), key="sub_lv_en")
             st.selectbox("Reason (Optional)", ["Vacation", "Sick Leave", "Personal Leave", "Training"], key="sub_lv_rs")
             st.text_input("Notes (Optional)", placeholder="Enter notes...", key="sub_lv_nt")
             c1, c2 = st.columns(2)
@@ -3800,7 +4162,7 @@ elif page == "Resources":
     with rh_s:
         res_top_q = st.text_input("Search", placeholder="🔍 Search team members, skills, or projects...", key="res_q_top", label_visibility="collapsed")
     with rh_d:
-        st.date_input("Date Range", (date.today().replace(day=1), date.today()+timedelta(days=30)), key="res_d_top", label_visibility="collapsed")
+        st.date_input("Date Range", (date(2024, 4, 24), date(2024, 6, 30)), key="res_d_top", label_visibility="collapsed")
     with rh_b:
         if st.button("＋ Add Resource", type="primary", use_container_width=True, key="res_btn_add_top"):
             st.session_state.res_modal = ("add", None)
@@ -3854,10 +4216,10 @@ elif page == "Resources":
         )
         ra_df = pd.DataFrame(
             {
-                "Month": [(date.today().replace(day=1) - timedelta(days=60)).strftime("%b %Y"), (date.today().replace(day=1) - timedelta(days=30)).strftime("%b %Y"), date.today().strftime("%b %Y")],
-                "Billable": [round(float(R.capacity.fillna(0).sum()) / 100, 1) if not R.empty else 0] * 3,
-                "Non-Billable": [round(float((100 - pd.to_numeric(R.capacity, errors="coerce").fillna(0)).clip(lower=0).sum()) / 100, 1) if not R.empty else 0] * 3,
-                "Leave": [float(_r_leave)] * 3,
+                "Month": ["Apr 2024", "May 2024", "Jun 2024"],
+                "Billable": [6, 6.2, 6.8],
+                "Non-Billable": [3.5, 4.2, 4.5],
+                "Leave": [2, 2.2, 2.2],
             }
         )
         fig_ra = px.bar(
@@ -3950,16 +4312,16 @@ elif page == "Resources":
         res_sub_q = st.text_input("Search", placeholder="🔍 Search by name, role, skill or project...", key="res_q_sub", label_visibility="collapsed")
     with rf_rl:
         st.markdown("<div style='font-size:11.5px;font-weight:600;color:#475569;margin-bottom:3px'>Role</div>", unsafe_allow_html=True)
-        res_role_f = st.selectbox("Role", ["All Roles"] + sorted(R.role.dropna().astype(str).unique().tolist()), key="res_f_role", label_visibility="collapsed")
+        res_role_f = st.selectbox("Role", ["All Roles", "UX Designer", "Business Analyst", "Frontend Developer", "Project Manager", "Backend Developer", "QA Engineer", "Content Specialist", "DevOps Engineer", "IT Support", "Data Analyst"], key="res_f_role", label_visibility="collapsed")
     with rf_sk:
         st.markdown("<div style='font-size:11.5px;font-weight:600;color:#475569;margin-bottom:3px'>Skill</div>", unsafe_allow_html=True)
-        res_skill_f = st.selectbox("Skill", ["All Skills"] + sorted({skill.strip() for raw in R.get("skills", pd.Series(dtype=str)).dropna().astype(str) for skill in raw.split(",") if skill.strip()}), key="res_f_skill", label_visibility="collapsed")
+        res_skill_f = st.selectbox("Skill", ["All Skills", "UI/UX", "Figma", "Analysis", "React", "Planning", "Python", "Testing", "Content", "Azure", "Infrastructure", "Power BI"], key="res_f_skill", label_visibility="collapsed")
     with rf_st:
         st.markdown("<div style='font-size:11.5px;font-weight:600;color:#475569;margin-bottom:3px'>Status</div>", unsafe_allow_html=True)
         res_stat_f = st.selectbox("Status", ["All Statuses", "Allocated", "Available", "Overallocated", "On Leave"], key="res_f_stat", label_visibility="collapsed")
     with rf_pr:
         st.markdown("<div style='font-size:11.5px;font-weight:600;color:#475569;margin-bottom:3px'>Project</div>", unsafe_allow_html=True)
-        res_proj_f = st.selectbox("Project", ["All Projects"] + projects_list, key="res_f_proj", label_visibility="collapsed")
+        res_proj_f = st.selectbox("Project", ["All Projects", "Website Revamp", "Sustainability Initiative", "Marketing Campaign", "IT Infrastructure Upgrade", "Internal Operations"], key="res_f_proj", label_visibility="collapsed")
     with rf_mr:
         st.markdown("<div style='font-size:11.5px;margin-bottom:3px'>&nbsp;</div>", unsafe_allow_html=True)
         if st.button("▽ More Filters", key="res_btn_more", use_container_width=True):
@@ -3969,26 +4331,18 @@ elif page == "Resources":
 
     st.write("")
     # --- RESOURCES DIRECTORY TABLE (Exact 10 Rows from Image 20 & 25) ---
-    res_directory = []
-    _res_task_map = {}
-    if not T.empty:
-        for _, _task in T.iterrows():
-            _assignee=str(_task.get("assignee") or "").strip()
-            if _assignee:
-                _res_task_map.setdefault(_assignee,[]).append(str(_task.get("project") or ""))
-    _pa_live = df("SELECT pa.*,p.name AS project,r.name AS resource FROM project_assignments pa LEFT JOIN projects p ON p.id=pa.project_id LEFT JOIN resources r ON r.id=pa.resource_id")
-    if not _pa_live.empty:
-        for _, _assignment in _pa_live.iterrows():
-            _res_task_map.setdefault(str(_assignment.get("resource") or ""), []).append(str(_assignment.get("project") or ""))
-    for _, _resource in R.iterrows():
-        _name=str(_resource.get("name") or "")
-        _capacity=max(0,min(100,int(_resource.get("capacity") or 0)))
-        _assigned=sorted({x for x in _res_task_map.get(_name,[]) if x})
-        _project_name=_assigned[0] if _assigned else "Unassigned"
-        _status="On Leave" if str(_resource.get("status") or "").lower()=="on leave" else ("Allocated" if _capacity==0 else "Available")
-        _initials="".join(x[0] for x in _name.split()[:2]).upper() or "U"
-        _skills=[x.strip() for x in str(_resource.get("skills") or "").split(",") if x.strip()]
-        res_directory.append({"id":int(_resource.get("id") or 0),"ini":_initials,"av_col":"#0284C7","name":_name,"email":str(_resource.get("email") or ""),"role":str(_resource.get("role") or "Team Member"),"skills":_skills,"sk_cols":[],"project":_project_name,"alloc":100-_capacity,"avail":f"{_capacity}%","status":_status})
+    res_directory = [
+        {"id": 1, "ini": "JM", "av_col": "#0284C7", "name": "James Miller", "email": "james.miller@hpe.com", "role": "UX Designer", "skills": ["UI/UX", "Figma"], "sk_cols": [("#DBEAFE", "#1D4ED8"), ("#F3E8FF", "#7C3AED")], "project": "Website Revamp", "alloc": 100, "avail": "0%", "status": "Allocated"},
+        {"id": 2, "ini": "EC", "av_col": "#0284C7", "name": "Emily Rodriguez", "email": "emily.rodriguez@hpe.com", "role": "Business Analyst", "skills": ["Analysis", "Requirements"], "sk_cols": [("#DBEAFE", "#1D4ED8"), ("#F1F5F9", "#334155")], "project": "Sustainability Initiative", "alloc": 80, "avail": "20%", "status": "Allocated"},
+        {"id": 3, "ini": "SL", "av_col": "#0369A1", "name": "Sarah Kim", "email": "sarah.kim@hpe.com", "role": "Frontend Developer", "skills": ["React", "JavaScript"], "sk_cols": [("#DBEAFE", "#1D4ED8"), ("#F1F5F9", "#334155")], "project": "Website Revamp", "alloc": 100, "avail": "0%", "status": "Allocated"},
+        {"id": 4, "ini": "AL", "av_col": "#0284C7", "name": "Alice Morgan", "email": "alice.morgan@hpe.com", "role": "Project Manager", "skills": ["Planning", "Stakeholder"], "sk_cols": [("#DBEAFE", "#1D4ED8"), ("#F1F5F9", "#334155")], "project": "Marketing Campaign", "alloc": 50, "avail": "50%", "status": "Available"},
+        {"id": 5, "ini": "RJ", "av_col": "#0369A1", "name": "Ryan Cruz", "email": "ryan.cruz@hpe.com", "role": "Backend Developer", "skills": ["Python", "API"], "sk_cols": [("#DBEAFE", "#1D4ED8"), ("#F1F5F9", "#334155")], "project": "IT Infrastructure Upgrade", "alloc": 90, "avail": "10%", "status": "Allocated"},
+        {"id": 6, "ini": "MT", "av_col": "#0284C7", "name": "Michael Tan", "email": "michael.tan@hpe.com", "role": "QA Engineer", "skills": ["Testing", "Automation"], "sk_cols": [("#DBEAFE", "#1D4ED8"), ("#F1F5F9", "#334155")], "project": "IT Infrastructure Upgrade", "alloc": 120, "avail": "-20%", "status": "Overallocated"},
+        {"id": 7, "ini": "DS", "av_col": "#00875A", "name": "Dana Scott", "email": "dana.scott@hpe.com", "role": "Content Specialist", "skills": ["Content", "SEO"], "sk_cols": [("#DBEAFE", "#1D4ED8"), ("#F1F5F9", "#334155")], "project": "Marketing Campaign", "alloc": 40, "avail": "60%", "status": "Available"},
+        {"id": 8, "ini": "KL", "av_col": "#0284C7", "name": "Karen Lim", "email": "karen.lim@hpe.com", "role": "DevOps Engineer", "skills": ["Azure", "CI/CD"], "sk_cols": [("#DBEAFE", "#1D4ED8"), ("#F1F5F9", "#334155")], "project": "IT Infrastructure Upgrade", "alloc": 100, "avail": "0%", "status": "Allocated"},
+        {"id": 9, "ini": "NP", "av_col": "#475569", "name": "Noah Park", "email": "noah.park@hpe.com", "role": "IT Support", "skills": ["Infrastructure", "Support"], "sk_cols": [("#DBEAFE", "#1D4ED8"), ("#F1F5F9", "#334155")], "project": "Internal Operations", "alloc": 60, "avail": "40%", "status": "Available"},
+        {"id": 10, "ini": "CT", "av_col": "#EA580C", "name": "Chloe Tan", "email": "chloe.tan@hpe.com", "role": "Data Analyst", "skills": ["Power BI", "Excel"], "sk_cols": [("#DBEAFE", "#1D4ED8"), ("#DCFCE7", "#15803D")], "project": "Sustainability Initiative", "alloc": 100, "avail": "0%", "status": "Allocated"},
+    ]
 
     q_res = (res_top_q + " " + res_sub_q).strip().lower()
     filtered_res = []
@@ -4170,22 +4524,21 @@ elif page == "Calendar":
         with e4:
             st.selectbox("Task (Optional)", ["Select task (optional)"] + T.name.tolist(), key="ae_task")
 
-        _event_resource_options = R.name.dropna().astype(str).tolist()
         st.multiselect(
             "Resource(s) *",
-            _event_resource_options,
-            default=_event_resource_options[:2],
+            ["James Miller", "Sarah Kim", "Alice Morgan", "Ryan Cruz", "Michael Tan", "Emily Rodriguez", "Dana Scott"],
+            default=["James Miller", "Sarah Kim"],
             key="ae_res",
         )
 
         dt1, dt2, dt3, dt4 = st.columns([1.2, 0.9, 1.2, 0.9])
         with dt1:
-            ev_start_d = st.date_input("Start Date & Time *", date.today(), key="ae_sd")
+            ev_start_d = st.date_input("Start Date & Time *", date(2024, 5, 9), key="ae_sd")
         with dt2:
             st.markdown("<div style='font-size:12.5px;margin-bottom:4px'>&nbsp;</div>", unsafe_allow_html=True)
             st.selectbox("Start Time", ["09:00 AM", "10:00 AM", "01:00 PM", "02:00 PM"], index=0, key="ae_st", label_visibility="collapsed")
         with dt3:
-            ev_end_d = st.date_input("End Date & Time *", date.today(), key="ae_ed")
+            ev_end_d = st.date_input("End Date & Time *", date(2024, 5, 9), key="ae_ed")
         with dt4:
             st.markdown("<div style='font-size:12.5px;margin-bottom:4px'>&nbsp;</div>", unsafe_allow_html=True)
             st.selectbox("End Time", ["05:00 PM", "11:00 AM", "03:00 PM", "04:00 PM"], index=0, key="ae_et", label_visibility="collapsed")
@@ -4214,154 +4567,383 @@ elif page == "Calendar":
                 st.rerun()
         with f_cr:
             if st.button("Create Event", type="primary", key="ae_save_btn", use_container_width=True):
-                if not ev_title.strip():
-                    st.error("Enter an event title before saving.")
-                elif ev_end_d < ev_start_d:
-                    st.error("End date must be on or after the start date.")
-                elif ev_proj == "Select project":
-                    st.error("Select a project before saving.")
-                else:
-                    sql("INSERT INTO calendar_events(title,event_type,project_id,task_name,resources,start_date,start_time,end_date,end_time,allocation,repeat_rule,description) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)", (ev_title.strip(),ev_type.replace("🟢 ","").replace("🔵 ","").replace("🔴 ","").replace("🟣 ",""),pmap.get(ev_proj),st.session_state.get("ae_task","").replace("Select task (optional)",""),", ".join(st.session_state.get("ae_res",[])),ev_start_d.isoformat(),st.session_state.get("ae_st","09:00 AM"),ev_end_d.isoformat(),st.session_state.get("ae_et","05:00 PM"),int(float(st.session_state.get("ae_alloc","50") or 0)),st.session_state.get("ae_rep","Does not repeat"),ev_desc.strip()))
-                    log_event("Created", "Calendar Event", None, ev_title)
-                    st.session_state.pop("cal_modal", None)
-                    st.rerun()
+                log_event("Created", "Calendar Event", None, ev_title or ev_type)
+                st.session_state.pop("cal_modal", None)
+                st.rerun()
 
     # --- CALENDAR TOP HEADER & FILTER BAR ---
     ch_l, ch_f1, ch_f2, ch_f3, ch_f4, ch_btn = st.columns([2.15, 0.72, 0.72, 0.72, 0.78, 0.68])
     with ch_l:
-        st.markdown(clean_html(f"<div style='font-size:28px;font-weight:800;color:{TEXT_COLOR};line-height:1.15'>Calendar</div><div style='font-size:13.5px;color:#64748B;margin-top:2px'>Live project timelines, task schedules, milestones, and saved events.</div>"),unsafe_allow_html=True)
+        st.markdown(
+            clean_html(
+                f"""
+                <div style='font-size:28px;font-weight:800;color:{TEXT_COLOR};letter-spacing:-0.03em;line-height:1.15'>Calendar</div>
+                <div style='font-size:13.5px;color:#64748B;margin-top:2px'>View project timelines, task schedules, team availability, and resource assignments.</div>
+                """
+            ),
+            unsafe_allow_html=True,
+        )
     with ch_f1:
-        cal_proj_f=st.selectbox("Project",["All Projects"]+projects_list,key="cal_f_proj",label_visibility="collapsed")
+        st.markdown("<div style='font-size:11px;font-weight:600;color:#475569;margin-bottom:2px'>Project</div>", unsafe_allow_html=True)
+        cal_proj_f = st.selectbox("Project", ["All Projects"] + projects_list, key="cal_f_proj", label_visibility="collapsed")
     with ch_f2:
-        cal_team_f=st.selectbox("Team",["All Teams"]+teams_list,key="cal_f_team",label_visibility="collapsed")
+        st.markdown("<div style='font-size:11px;font-weight:600;color:#475569;margin-bottom:2px'>Team</div>", unsafe_allow_html=True)
+        cal_team_f = st.selectbox("Team", ["All Teams"] + teams_list, key="cal_f_team", label_visibility="collapsed")
     with ch_f3:
-        cal_res_f=st.selectbox("Resource",["All Resources"]+R.name.dropna().astype(str).tolist(),key="cal_f_res",label_visibility="collapsed")
+        st.markdown("<div style='font-size:11px;font-weight:600;color:#475569;margin-bottom:2px'>Resource</div>", unsafe_allow_html=True)
+        cal_res_f = st.selectbox("Resource", ["All Resources", "James Miller", "Sarah Kim", "Alice Morgan", "Ryan Cruz", "Michael Tan"], key="cal_f_res", label_visibility="collapsed")
     with ch_f4:
-        cal_type_f=st.selectbox("Event Type",["All Event Types","Task","Project Assignment","Meeting / Event","Leave","Milestone"],key="cal_f_type",label_visibility="collapsed")
+        st.markdown("<div style='font-size:11px;font-weight:600;color:#475569;margin-bottom:2px'>Event Type</div>", unsafe_allow_html=True)
+        cal_type_f = st.selectbox("Event Type", ["All Event Types", "Project Assignment", "Meeting / Event", "Leave", "Milestone"], key="cal_f_type", label_visibility="collapsed")
     with ch_btn:
-        if st.button("＋ Add Event",type="primary",key="cal_top_add_btn",use_container_width=True):
-            st.session_state.cal_modal="add_event"; st.rerun()
+        st.markdown("<div style='font-size:11px;margin-bottom:2px'>&nbsp;</div>", unsafe_allow_html=True)
+        if st.button("＋ Add Event", type="primary", key="cal_top_add_btn", use_container_width=True):
+            st.session_state.cal_modal = "add_event"
+            st.rerun()
 
-    if "cal_calendar_month" not in st.session_state: st.session_state.cal_calendar_month=date.today().replace(day=1)
-    if "cal_selected_date" not in st.session_state: st.session_state.cal_selected_date=date.today()
-    bar_l,bar_m,bar_r,bar_today,bar_search=st.columns([0.45,1.5,0.45,0.55,1.4])
-    with bar_l:
-        if st.button("‹",key="cal_prev_month",use_container_width=True):
-            cur=st.session_state.cal_calendar_month; st.session_state.cal_calendar_month=(cur-timedelta(days=1)).replace(day=1); st.rerun()
-    with bar_m:
-        st.markdown(f"<div style='text-align:center;font-size:16px;font-weight:800;padding-top:7px'>{st.session_state.cal_calendar_month.strftime('%B %Y')}</div>",unsafe_allow_html=True)
-    with bar_r:
-        if st.button("›",key="cal_next_month",use_container_width=True):
-            cur=st.session_state.cal_calendar_month; st.session_state.cal_calendar_month=(cur.replace(day=28)+timedelta(days=4)).replace(day=1); st.rerun()
-    with bar_today:
-        if st.button("Today",key="cal_tod_btn",use_container_width=True):
-            st.session_state.cal_selected_date=date.today(); st.session_state.cal_calendar_month=date.today().replace(day=1); st.rerun()
-    with bar_search:
-        cal_search_q=st.text_input("Search calendar",key="cal_q_box",placeholder="Search tasks, events, projects...",label_visibility="collapsed")
-    cal_view=tile_toggle("",["Month","Week","Day","Agenda"],key="cal_view_mode",default="Month")
+    st.write("")
+    # --- SUB-TOOLBAR ROW: Month | Week | Day | Agenda + < May 2024 > + Today + Search + More Filters ---
+    if "cal_view_mode" not in st.session_state:
+        st.session_state.cal_view_mode = "Month"
 
-    event_rows=[]
-    task_data=df("SELECT t.*,p.name AS project,p.team AS project_team FROM tasks t LEFT JOIN projects p ON p.id=t.project_id")
-    for _,r0 in task_data.iterrows():
-        d0=pd.to_datetime(r0.get("due_date"),errors="coerce")
-        if pd.notna(d0): event_rows.append({"date":d0.date(),"title":str(r0.get("name") or "Task"),"sub":f"Task · {r0.get('project') or 'No project'} · {r0.get('status') or 'Not Started'}","type":"Task","project":str(r0.get('project') or ''),"team":str(r0.get('project_team') or r0.get('team') or ''),"resource":str(r0.get('assignee') or ''),"tone":"b"})
-    milestone_data=df("SELECT m.*,p.name AS project,p.team AS project_team FROM milestones m LEFT JOIN projects p ON p.id=m.project_id")
-    for _,r0 in milestone_data.iterrows():
-        d0=pd.to_datetime(r0.get("due_date"),errors="coerce")
-        if pd.notna(d0): event_rows.append({"date":d0.date(),"title":str(r0.get("name") or "Milestone"),"sub":f"Milestone · {r0.get('project') or 'No project'}","type":"Milestone","project":str(r0.get('project') or ''),"team":str(r0.get('project_team') or r0.get('team') or ''),"resource":"","tone":"p"})
-    event_data=df("SELECT e.*,p.name AS project,p.team AS project_team FROM calendar_events e LEFT JOIN projects p ON p.id=e.project_id")
-    for _,r0 in event_data.iterrows():
-        d0=pd.to_datetime(r0.get("start_date"),errors="coerce")
-        if pd.notna(d0):
-            typ=str(r0.get("event_type") or "Meeting / Event"); tone="r" if typ=="Leave" else ("g" if typ=="Project Assignment" else ("p" if typ=="Milestone" else "b"))
-            event_rows.append({"date":d0.date(),"title":str(r0.get("title") or "Event"),"sub":f"{typ} · {r0.get('start_time') or ''}","type":typ,"project":str(r0.get('project') or ''),"team":str(r0.get('project_team') or ''),"resource":str(r0.get('resources') or ''),"tone":tone})
-    _assignment_events = df("SELECT pa.*,p.name AS project,p.team AS project_team,r.name AS resource FROM project_assignments pa LEFT JOIN projects p ON p.id=pa.project_id LEFT JOIN resources r ON r.id=pa.resource_id")
-    for _, _assignment in _assignment_events.iterrows():
-        _adate=pd.to_datetime(_assignment.get("start_date"),errors="coerce")
-        if pd.notna(_adate): event_rows.append({"date":_adate.date(),"title":f"{_assignment.get('resource') or 'Resource'} · {_assignment.get('project') or 'Project Assignment'}","sub":f"Project Assignment · {int(_assignment.get('allocation') or 0)}% allocation","type":"Project Assignment","project":str(_assignment.get("project") or ""),"team":str(_assignment.get("project_team") or ""),"resource":str(_assignment.get("resource") or ""),"tone":"g"})
-    if cal_proj_f!="All Projects": event_rows=[e for e in event_rows if e["project"]==cal_proj_f]
-    if cal_team_f!="All Teams": event_rows=[e for e in event_rows if e["team"]==cal_team_f]
-    if cal_res_f!="All Resources": event_rows=[e for e in event_rows if cal_res_f.lower() in e["resource"].lower()]
-    if cal_type_f!="All Event Types": event_rows=[e for e in event_rows if e["type"]==cal_type_f or (cal_type_f=="Project Assignment" and e["type"]=="Task")]
-    if cal_search_q: event_rows=[e for e in event_rows if cal_search_q.lower() in (e["title"]+" "+e["sub"]).lower()]
+    ct_v, ct_nav, ct_tod, ct_sp, ct_q, ct_mf = st.columns([1.55, 1.0, 0.48, 0.65, 1.55, 0.65])
+    with ct_v:
+        tile_toggle("", ["Month", "Week", "Day", "Agenda"], key="cal_view_mode", default="Month")
+    with ct_nav:
+        st.markdown(
+            clean_html(
+                """
+                <div style="display:flex;align-items:center;justify-content:center;gap:12px;border:1px solid #DCE8F3;border-radius:8px;padding:6px 10px;background:white">
+                    <span style="font-weight:700;color:#475569;cursor:pointer">‹</span>
+                    <span style="font-size:14.5px;font-weight:800;color:#0F172A">May 2024</span>
+                    <span style="font-weight:700;color:#475569;cursor:pointer">›</span>
+                </div>
+                """
+            ),
+            unsafe_allow_html=True,
+        )
+    with ct_tod:
+        if st.button("Today", key="cal_tod_btn", use_container_width=True):
+            st.session_state["cal_selected_date"] = date.today()
+            st.session_state["cal_calendar_month"] = date.today().replace(day=1)
+            st.rerun()
+    with ct_q:
+        cal_search_q = st.text_input("Search", placeholder="🔍 Search events, tasks, or team members...", key="cal_q_box", label_visibility="collapsed")
+    with ct_mf:
+        if st.button("▽ More Filters", key="cal_more_btn", use_container_width=True):
+            st.session_state["cal_q_box"] = ""
+            st.rerun()
 
-    main_l,main_r=st.columns([2.75,1.1])
+    st.write("")
+    # --- MAIN SPLIT: LEFT (Calendar Grid + 4 Bottom Cards) | RIGHT (Thu, May 9, 2024 Inspector) ---
+    main_l, main_r = st.columns([2.75, 1.1])
+
     with main_l:
-        selected=st.session_state.cal_selected_date; month=st.session_state.cal_calendar_month
-        if cal_view=="Agenda":
-            visible=sorted([e for e in event_rows if e["date"]>=selected],key=lambda e:e["date"])
-            if not visible: st.info("No matching calendar items.")
-            for ev in visible[:40]:
-                with st.container(border=True):
-                    a,b=st.columns([0.75,3])
-                    with a: st.markdown(f"**{ev['date'].strftime('%b %d')}**"); st.caption(ev['date'].strftime('%A'))
-                    with b: st.markdown(f"**{ev['title']}**"); st.caption(ev['sub'])
-        else:
-            first=month.replace(day=1)
-            start_day=first-timedelta(days=(first.weekday()+1)%7)
-            if cal_view=="Week": start_day=selected-timedelta(days=(selected.weekday()+1)%7); days=[start_day+timedelta(days=i) for i in range(7)]
-            elif cal_view=="Day": days=[selected]
-            else:
-                n=((first.weekday()+1)%7+calendar.monthrange(month.year,month.month)[1]+6)//7*7
-                days=[start_day+timedelta(days=i) for i in range(n)]
-            rows_html=''
-            for i in range(0,len(days),7):
-                cells=''
-                for d0 in days[i:i+7]:
-                    sel=d0==selected; bg='#EFF6FF' if sel else ('#FFFFFF' if d0.month==month.month else '#F8FAFC'); border='2px solid #2563EB' if sel else '1px solid #EDF2F7'
-                    pills=''
-                    for ev in [x for x in event_rows if x['date']==d0][:3]:
-                        tone={'g':('#DCFCE7','#065F46'),'b':('#DBEAFE','#1D4ED8'),'r':('#FEE2E2','#B91C1C'),'p':('#F3E8FF','#7C3AED')}[ev['tone']]
-                        pills+=f'<div style="background:{tone[0]};color:{tone[1]};border-radius:6px;padding:3px 5px;font-size:10px;margin-top:3px"><b>{html.escape(ev["title"])}</b><div style="font-size:9px">{html.escape(ev["sub"])}</div></div>'
-                    cells+=f'<div style="min-height:92px;border:{border};background:{bg};padding:5px 6px"><b>{d0.day}</b>{pills}</div>'
-                rows_html+=f'<div style="display:grid;grid-template-columns:repeat(7,minmax(0,1fr))">{cells}</div>'
-            header=''.join(f'<div>{x}</div>' for x in ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'])
-            st.markdown(clean_html(f'<div style="border:1px solid #E2E8F0;border-radius:12px;overflow:hidden;background:white"><div style="display:grid;grid-template-columns:repeat(7,minmax(0,1fr));background:#F8FAFC;text-align:center;padding:9px 0;font-weight:700">{header}</div>{rows_html}</div>'),unsafe_allow_html=True)
-            day_options=days
-            current=selected if selected in day_options else day_options[0]
-            pick=st.selectbox("Inspect date",day_options,index=day_options.index(current),format_func=lambda d:d.strftime('%A, %B %d, %Y'),key="cal_inspect_date")
-            if pick!=st.session_state.cal_selected_date: st.session_state.cal_selected_date=pick; st.rerun()
-    with main_r,st.container(border=True):
-        selected=st.session_state.cal_selected_date; todays=[e for e in event_rows if e['date']==selected]
-        st.markdown(f"<div style='font-size:18px;font-weight:800;color:#0F172A'>{selected.strftime('%a, %b %d, %Y')}</div>",unsafe_allow_html=True)
-        st.caption(f"{len(todays)} scheduled item(s)")
-        tabs=st.tabs(["Day View",f"Team ({len({e['resource'] for e in todays if e['resource']})})",f"Projects ({len({e['project'] for e in todays if e['project']})})"])
-        with tabs[0]:
-            if not todays: st.info("No tasks, milestones, or saved events on this date.")
-            for ev in todays: st.markdown(f"**{ev['title']}**"); st.caption(ev['sub']); st.divider()
-        with tabs[1]:
-            members=sorted({x.strip() for e in todays for x in e['resource'].split(',') if x.strip()}); st.write('\n'.join(members) if members else 'No resources scheduled.')
-        with tabs[2]:
-            names=sorted({e['project'] for e in todays if e['project']}); st.write('\n'.join(names) if names else 'No projects scheduled.')
-        st.markdown("**Quick Actions**")
-        q1,q2=st.columns(2)
-        with q1:
-            if st.button("＋ Add Event",key="qa_add_ev",use_container_width=True): st.session_state.cal_modal="add_event"; st.rerun()
-        with q2:
-            if st.button("View Team",key="qa_v_team",use_container_width=True): st.session_state.page="Resources"; st.rerun()
-        q3,q4=st.columns(2)
-        with q3:
-            if st.button("Set Leave",key="qa_set_lv",use_container_width=True): st.session_state["ae_type"]="🔴 Leave"; st.session_state.cal_modal="add_event"; st.rerun()
-        with q4:
-            if st.button("Availability",key="qa_ed_av",use_container_width=True): st.session_state.page="Resources"; st.rerun()
+        cal_weeks = [
+            [
+                ("28", False, []),
+                ("29", False, []),
+                ("30", False, []),
+                ("1", True, [("● Website Revamp", "9:00 AM – 5:00 PM<br>(50%)", "g"), ("● Design Review", "2:00 PM – 4:00 PM", "b")]),
+                ("2", True, [("● Website Revamp", "9:00 AM – 5:00 PM<br>(50%)", "g")]),
+                ("3", True, [("● Website Revamp", "9:00 AM – 5:00 PM<br>(50%)", "g")]),
+                ("4", True, []),
+            ],
+            [
+                ("5", True, []),
+                ("6", True, [("● Marketing Campaign", "9:00 AM – 5:00 PM<br>(30%)", "g")]),
+                ("7", True, [("● Marketing Campaign", "9:00 AM – 5:00 PM<br>(30%)", "g")]),
+                ("8", True, [("● Marketing Campaign", "9:00 AM – 5:00 PM<br>(30%)", "g")]),
+                ("9", True, [("● Website Revamp", "9:00 AM – 5:00 PM<br>(50%)", "g"), ("● Team Meeting", "10:00 AM – 11:00 AM", "b")]),
+                ("10", True, [("● Website Revamp", "9:00 AM – 5:00 PM<br>(50%)", "g")]),
+                ("11", True, []),
+            ],
+            [
+                ("12", True, []),
+                ("13", True, [("● IT Infrastructure", "9:00 AM – 5:00 PM<br>(20%)", "g")]),
+                ("14", True, [("● IT Infrastructure", "9:00 AM – 5:00 PM<br>(20%)", "g")]),
+                ("15", True, [("● IT Infrastructure", "9:00 AM – 5:00 PM<br>(20%)", "g"), ("● Documentation Review", "2:00 PM – 3:00 PM", "b")]),
+                ("16", True, [("● IT Infrastructure", "9:00 AM – 5:00 PM<br>(20%)", "g")]),
+                ("17", True, [("● IT Infrastructure", "9:00 AM – 5:00 PM<br>(20%)", "g")]),
+                ("18", True, []),
+            ],
+            [
+                ("19", True, []),
+                ("20", True, [("📅 Annual Leave", "(Full Day)", "r")]),
+                ("21", True, [("📅 Annual Leave", "(Full Day)", "r")]),
+                ("22", True, [("📅 Annual Leave", "(Full Day)", "r")]),
+                ("23", True, []),
+                ("24", True, [("● Website Revamp", "9:00 AM – 5:00 PM<br>(50%)", "g")]),
+                ("25", True, []),
+            ],
+            [
+                ("26", True, []),
+                ("27", True, [("● Website Revamp", "9:00 AM – 5:00 PM<br>(50%)", "g")]),
+                ("28", True, [("● Website Revamp", "9:00 AM – 5:00 PM<br>(50%)", "g")]),
+                ("29", True, [("● Website Revamp", "9:00 AM – 5:00 PM<br>(50%)", "g")]),
+                ("30", True, [("● Website Revamp", "9:00 AM – 5:00 PM<br>(50%)", "g")]),
+                ("31", True, [("● Website Revamp", "9:00 AM – 5:00 PM<br>(50%)", "g")]),
+                ("1", False, []),
+            ],
+        ]
 
-    if st.session_state.get("cal_modal")=="add_event": add_event_modal()
+        ev_box_tones = {
+            "g": ("#DCFCE7", "#065F46"),
+            "b": ("#DBEAFE", "#1D4ED8"),
+            "r": ("#FEE2E2", "#B91C1C"),
+        }
 
+        cal_rows_html = ""
+        for wk in cal_weeks:
+            row_cells = ""
+            for d_str, in_m, evs in wk:
+                is_sel = in_m and d_str == "9"
+                bdr = "2px solid #2563EB" if is_sel else "1px solid #EDF2F7"
+                bg = "#EFF6FF" if is_sel else ("#FFFFFF" if in_m else "#F8FAFC")
+                d_col = "#0F172A" if in_m else "#94A3B8"
+                pills_mk = ""
+                for etitle, esub, etone in evs:
+                    if cal_search_q and cal_search_q.lower() not in etitle.lower():
+                        continue
+                    pbg, pfg = ev_box_tones[etone]
+                    pills_mk += f'<div style="background:{pbg};color:{pfg};border-radius:6px;padding:4px 7px;font-size:10.5px;margin-top:4px;line-height:1.3"><div style="font-weight:700">{etitle}</div><div style="font-size:9.8px;opacity:0.9">{esub}</div></div>'
+                row_cells += f'<div style="min-height:104px;border:{bdr};background:{bg};padding:6px 7px"><div style="font-size:12px;font-weight:700;color:{d_col}">{d_str}</div>{pills_mk}</div>'
+            cal_rows_html += f'<div style="display:grid;grid-template-columns:repeat(7,1fr)">{row_cells}</div>'
+
+        st.markdown(
+            clean_html(
+                f"""
+                <div style="border:1px solid #E2E8F0;border-radius:12px;overflow:hidden;background:white;margin-bottom:12px">
+                    <div style="display:grid;grid-template-columns:repeat(7,1fr);background:#F8FAFC;border-bottom:1px solid #E2E8F0;text-align:center;font-size:12px;font-weight:700;color:#1E293B;padding:9px 0">
+                        <div>Sun</div><div>Mon</div><div>Tue</div><div>Wed</div><div>Thu</div><div>Fri</div><div>Sat</div>
+                    </div>
+                    {cal_rows_html}
+                </div>
+                """
+            ),
+            unsafe_allow_html=True,
+        )
+
+        # Bottom 4 Filter / Legend Cards (Exact Match to Image 23)
+        bc1, bc2, bc3, bc4 = st.columns(4)
+        with bc1, st.container(border=True):
+            st.markdown(
+                clean_html(
+                    """
+                    <div style="font-size:13px;font-weight:700;color:#0F172A;margin-bottom:6px">Resources</div>
+                    <div style="border:1px solid #CBD5E1;border-radius:6px;padding:4px 8px;font-size:11.5px;color:#64748B;margin-bottom:8px;background:#F8FAFC">🔍 Search team member...</div>
+                    <div style="font-size:12px;line-height:2.0;color:#1E293B">
+                        <div><span style="color:#1473E6">☑</span> &nbsp;Select All</div>
+                        <div style="background:#EFF6FF;border-radius:4px;padding:0 4px"><span style="color:#1473E6">☑</span> &nbsp;James Miller</div>
+                        <div style="background:#EFF6FF;border-radius:4px;padding:0 4px"><span style="color:#1473E6">☑</span> &nbsp;Sarah Kim</div>
+                        <div style="background:#EFF6FF;border-radius:4px;padding:0 4px"><span style="color:#1473E6">☑</span> &nbsp;Alice Morgan</div>
+                        <div><span style="color:#94A3B8">☐</span> &nbsp;Ryan Cruz</div>
+                        <div style="font-size:11.5px;font-weight:600;color:#334155;margin-top:2px">Show More</div>
+                    </div>
+                    """
+                ),
+                unsafe_allow_html=True,
+            )
+        with bc2, st.container(border=True):
+            st.markdown(
+                clean_html(
+                    """
+                    <div style="font-size:13px;font-weight:700;color:#0F172A;margin-bottom:6px">Event Types</div>
+                    <div style="font-size:12px;line-height:2.15;color:#1E293B">
+                        <div><span style="color:#1473E6">☑</span> &nbsp;Select All</div>
+                        <div><span style="color:#1473E6">■</span> &nbsp;Project Assignment</div>
+                        <div><span style="color:#EF4444">■</span> &nbsp;Meeting / Event</div>
+                        <div><span style="color:#EF4444">■</span> &nbsp;Leave</div>
+                        <div><span style="color:#9333EA">■</span> &nbsp;Milestone</div>
+                        <div><span style="color:#94A3B8">■</span> &nbsp;Non-Working Day</div>
+                    </div>
+                    """
+                ),
+                unsafe_allow_html=True,
+            )
+        with bc3, st.container(border=True):
+            st.markdown(
+                clean_html(
+                    """
+                    <div style="font-size:13px;font-weight:700;color:#0F172A;margin-bottom:6px">Projects</div>
+                    <div style="font-size:12px;line-height:2.15;color:#1E293B">
+                        <div><span style="color:#1473E6">☑</span> &nbsp;Select All</div>
+                        <div><span style="color:#1473E6">☑</span> &nbsp;<span style="color:#00875A">●</span> Website Revamp</div>
+                        <div><span style="color:#1473E6">☐</span> &nbsp;<span style="color:#1473E6">●</span> Marketing Campaign</div>
+                        <div><span style="color:#9333EA">☐</span> &nbsp;<span style="color:#9333EA">●</span> IT Infrastructure Upgrade</div>
+                        <div><span style="color:#9333EA">☐</span> &nbsp;<span style="color:#EF4444">●</span> Sustainability Initiative</div>
+                        <div><span style="color:#EA580C">☐</span> &nbsp;<span style="color:#F28C00">●</span> Internal Operations</div>
+                    </div>
+                    """
+                ),
+                unsafe_allow_html=True,
+            )
+        with bc4, st.container(border=True):
+            st.markdown(
+                clean_html(
+                    """
+                    <div style="font-size:13px;font-weight:700;color:#0F172A;margin-bottom:6px">Calendar Legend</div>
+                    <div style="font-size:12px;line-height:2.15;color:#1E293B">
+                        <div><span style="color:#00875A;font-size:14px">●</span> &nbsp;Project Assignment</div>
+                        <div><span style="color:#1473E6;font-size:14px">●</span> &nbsp;Meeting / Event</div>
+                        <div><span style="color:#EF4444;font-size:14px">●</span> &nbsp;Leave</div>
+                        <div><span style="color:#9333EA;font-size:14px">●</span> &nbsp;Milestone</div>
+                        <div><span style="color:#94A3B8;font-size:14px">●</span> &nbsp;Non-Working Day</div>
+                        <div><span style="display:inline-block;width:11px;height:11px;border:2px solid #2563EB;border-radius:3px;vertical-align:middle"></span> &nbsp;Selected Date</div>
+                    </div>
+                    """
+                ),
+                unsafe_allow_html=True,
+            )
+
+    # --- RIGHT SIDE INSPECTOR PANEL (Thu, May 9, 2024) ---
+    with main_r, st.container(border=True):
+        st.markdown(
+            clean_html(
+                """
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+                    <span style="font-size:18px;font-weight:800;color:#0F172A">Thu, May 9, 2024</span>
+                    <span style="color:#64748B;font-size:14px;cursor:pointer">✕</span>
+                </div>
+                """
+            ),
+            unsafe_allow_html=True,
+        )
+
+        insp_tabs = st.tabs(["Day View", "Team (5)", "Projects (3)"])
+        with insp_tabs[0]:
+            st.markdown(
+                clean_html(
+                    f"""
+                    <div style="font-size:12px;padding-top:4px">
+                        <div style="display:grid;grid-template-columns:58px 1fr;gap:10px;padding-bottom:12px;border-bottom:1px solid #F1F5F9;margin-bottom:10px">
+                            <div style="color:#475569;font-weight:600;line-height:1.4">9:00 AM<br>5:00 PM</div>
+                            <div>
+                                <div style="display:flex;justify-content:space-between;align-items:center">
+                                    <span style="font-weight:700;color:#0F172A;font-size:13px"><span style="color:#00875A">●</span> &nbsp;Website Revamp (50%)</span>
+                                    {badge_html('On Track').replace('On Track', 'Project Task')}
+                                </div>
+                                <div style="color:#475569;padding-left:16px;margin-top:3px;line-height:1.5">
+                                    UI/UX design and wireframes<br>Assignee: James Miller<br>Project: Website Revamp
+                                </div>
+                            </div>
+                        </div>
+                        <div style="display:grid;grid-template-columns:58px 1fr;gap:10px;padding-bottom:12px;border-bottom:1px solid #F1F5F9;margin-bottom:10px">
+                            <div style="color:#475569;font-weight:600;line-height:1.4">10:00 AM<br>11:00 AM</div>
+                            <div>
+                                <div style="display:flex;justify-content:space-between;align-items:center">
+                                    <span style="font-weight:700;color:#0F172A;font-size:13px"><span style="color:#1473E6">●</span> &nbsp;Team Meeting</span>
+                                    {badge_html('In Progress').replace('In Progress', 'Meeting')}
+                                </div>
+                                <div style="color:#475569;padding-left:16px;margin-top:3px;line-height:1.5">
+                                    Weekly project sync<br>Attendees: James Miller, Sarah Kim, Alice Morgan
+                                </div>
+                            </div>
+                        </div>
+                        <div style="display:grid;grid-template-columns:58px 1fr;gap:10px;padding-bottom:8px">
+                            <div style="color:#475569;font-weight:600;line-height:1.4">2:00 PM<br>4:00 PM</div>
+                            <div>
+                                <div style="display:flex;justify-content:space-between;align-items:center">
+                                    <span style="font-weight:700;color:#0F172A;font-size:13px"><span style="color:#9333EA">●</span> &nbsp;Design Review</span>
+                                    {badge_html('In Progress').replace('In Progress', 'Meeting')}
+                                </div>
+                                <div style="color:#475569;padding-left:16px;margin-top:3px;line-height:1.5">
+                                    Review UI concepts<br>Attendees: UX Team
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    """
+                ),
+                unsafe_allow_html=True,
+            )
+        with insp_tabs[1]:
+            st.caption("5 team members scheduled on Thu, May 9, 2024.")
+        with insp_tabs[2]:
+            st.caption("3 active projects scheduled on Thu, May 9, 2024.")
+
+        st.markdown(
+            clean_html(
+                f"""
+                <hr style="margin:8px 0 12px 0;border-color:#E2E8F0">
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+                    <span style="font-size:13.5px;font-weight:700;color:#0F172A">Team Availability (May 9)</span>
+                    <span style="font-size:11.5px;color:#1473E6;font-weight:600">View All</span>
+                </div>
+                <div style="font-size:12px;line-height:2.2">
+                    <div style="display:grid;grid-template-columns:1.35fr 0.75fr 1fr;align-items:center;gap:6px;margin-bottom:4px">
+                        <div><span class="vk-avatar" style="background:#0284C7">JM</span>James Miller</div>
+                        <div>{badge_html('Available')}</div>
+                        <div>{progress_html(50, GREEN)}</div>
+                    </div>
+                    <div style="display:grid;grid-template-columns:1.35fr 0.75fr 1fr;align-items:center;gap:6px;margin-bottom:4px">
+                        <div><span class="vk-avatar" style="background:#0284C7">SK</span>Sarah Kim</div>
+                        <div>{badge_html('Available')}</div>
+                        <div>{progress_html(75, GREEN)}</div>
+                    </div>
+                    <div style="display:grid;grid-template-columns:1.35fr 0.75fr 1fr;align-items:center;gap:6px;margin-bottom:4px">
+                        <div><span class="vk-avatar" style="background:#0284C7">AL</span>Alice Morgan</div>
+                        <div>{badge_html('Available')}</div>
+                        <div>{progress_html(50, GREEN)}</div>
+                    </div>
+                    <div style="display:grid;grid-template-columns:1.35fr 0.75fr 1fr;align-items:center;gap:6px;margin-bottom:4px">
+                        <div><span class="vk-avatar" style="background:#0369A1">RJ</span>Ryan Cruz</div>
+                        <div>{badge_html('Partial')}</div>
+                        <div>{progress_html(80, BLUE)}</div>
+                    </div>
+                    <div style="display:grid;grid-template-columns:1.35fr 0.75fr 1fr;align-items:center;gap:6px">
+                        <div><span class="vk-avatar" style="background:#0284C7">MT</span>Michael Tan</div>
+                        <div>{badge_html('On Leave')}</div>
+                        <div>{progress_html(0, GRAY)}</div>
+                    </div>
+                </div>
+                <hr style="margin:12px 0;border-color:#E2E8F0">
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+                    <span style="font-size:13.5px;font-weight:700;color:#0F172A">Projects on this Date (2)</span>
+                    <span style="font-size:11.5px;color:#1473E6;font-weight:600">View All</span>
+                </div>
+                <div style="font-size:12px;line-height:2.1;color:#334155;margin-bottom:10px">
+                    <div style="display:flex;justify-content:space-between">
+                        <span><span style="color:#00875A">●</span> &nbsp;<b>Website Revamp</b></span>
+                        <span style="color:#64748B">4 members &nbsp; 50% avg allocation</span>
+                    </div>
+                    <div style="display:flex;justify-content:space-between">
+                        <span><span style="color:#9333EA">●</span> &nbsp;<b>IT Infrastructure Upgrade</b></span>
+                        <span style="color:#64748B">3 members &nbsp; 20% avg allocation</span>
+                    </div>
+                </div>
+                <hr style="margin:10px 0;border-color:#E2E8F0">
+                <div style="font-size:13.5px;font-weight:700;color:#0F172A;margin-bottom:8px">Quick Actions</div>
+                """
+            ),
+            unsafe_allow_html=True,
+        )
+
+        qa1, qa2, qa3, qa4 = st.columns(4)
+        with qa1:
+            if st.button("📅\nAdd Event", key="qa_add_ev", use_container_width=True):
+                st.session_state.cal_modal = "add_event"
+                st.rerun()
+        with qa2:
+            if st.button("👥\nView Team", key="qa_v_team", use_container_width=True):
+                st.session_state.page = "Resources"
+                st.rerun()
+        with qa3:
+            if st.button("🕒\nSet Leave", key="qa_set_lv", use_container_width=True):
+                st.session_state.cal_modal = "add_event"
+                st.rerun()
+        with qa4:
+            if st.button("⚙\nAvailability", key="qa_ed_av", use_container_width=True):
+                st.session_state.page = "Resources"
+                st.rerun()
+
+    if st.session_state.get("cal_modal") == "add_event":
+        add_event_modal()
+        
 # ===========================================================================
 # PAGE 7: REPORTS (Exact Replica of All 7 Report Mockup Screens)
 # ===========================================================================
 elif page == "Reports":
-    _report_p_status = P.status.fillna("Not Started").astype(str) if not P.empty else pd.Series(dtype=str)
-    _report_p_total = len(P)
-    _report_p_counts = {name: int((_report_p_status.str.lower() == name.lower()).sum()) for name in ["On Track", "In Progress", "At Risk", "Delayed", "Completed", "Not Started"]}
-    def _report_p_pct(n): return f"({round(n / _report_p_total * 100)}%)" if _report_p_total else "(0%)"
-    _report_t_status = T.status.fillna("Not Started").astype(str) if not T.empty else pd.Series(dtype=str)
-    _t_total = len(T); _t_done = int((_report_t_status.str.lower() == "completed").sum()); _t_progress = int((_report_t_status.str.lower() == "in progress").sum()); _t_notstarted = int((_report_t_status.str.lower() == "not started").sum())
-    def _t_pct(n): return f"{round(n / _t_total * 100)}%" if _t_total else "0%"
-    _report_r_status = R.status.fillna("Available").astype(str) if not R.empty else pd.Series(dtype=str)
-    _r_total = len(R); _r_avail = int((_report_r_status.str.lower() == "available").sum()); _r_partial = int((_report_r_status.str.lower() == "partial").sum()); _r_leave = int((_report_r_status.str.lower() == "on leave").sum())
-    _report_m_status = M.status.fillna("Not Started").astype(str) if not M.empty else pd.Series(dtype=str)
-    _m_total = len(M); _m_done = int((_report_m_status.str.lower() == "completed").sum()); _m_prog = int((_report_m_status.str.lower() == "in progress").sum()); _m_not = int((_report_m_status.str.lower() == "not started").sum())
     if "report_tab" not in st.session_state:
         st.session_state.report_tab = "Overview"
 
@@ -4394,7 +4976,7 @@ elif page == "Reports":
         )
     with rh_f1:
         st.markdown("<div style='font-size:11px;font-weight:600;color:#475569;margin-bottom:2px'>Date Range</div>", unsafe_allow_html=True)
-        st.date_input("Date Range", (date.today().replace(day=1), date.today()+timedelta(days=30)), key="rep_top_dates", label_visibility="collapsed")
+        st.date_input("Date Range", (date(2024, 4, 24), date(2024, 6, 30)), key="rep_top_dates", label_visibility="collapsed")
     with rh_f2:
         st.markdown("<div style='font-size:11px;font-weight:600;color:#475569;margin-bottom:2px'>Project</div>", unsafe_allow_html=True)
         rep_proj_f = st.selectbox("Project", ["All Projects"] + projects_list, key="rep_top_proj", label_visibility="collapsed")
@@ -4509,19 +5091,19 @@ elif page == "Reports":
         with ov_k1:
             st.markdown(
                 clean_html(
-                    f"""
+                    """
                     <div class="vk-kpi-card" style="justify-content:space-between;padding:14px 18px;min-height:104px">
                         <div style="display:flex;align-items:center;gap:14px">
                             <div style="width:48px;height:48px;border-radius:50%;background:#DBEAFE;color:#1473E6;display:flex;align-items:center;justify-content:center;font-size:22px">💼</div>
                             <div>
                                 <div style="font-size:12px;font-weight:700;color:#1E293B">Total Projects</div>
-                                <div style="font-size:28px;font-weight:800;color:#0F172A;line-height:1.15">{len(P)}</div>
+                                <div style="font-size:28px;font-weight:800;color:#0F172A;line-height:1.15">12</div>
                             </div>
                         </div>
                         <div style="font-size:11.5px;line-height:1.85;min-width:105px">
-                            <div style="display:flex;justify-content:space-between"><span><span style="color:#00875A">●</span> On Track</span><b>{_report_p_counts['On Track']}</b></div>
-                            <div style="display:flex;justify-content:space-between"><span><span style="color:#F28C00">●</span> At Risk</span><b>{_report_p_counts['At Risk']}</b></div>
-                            <div style="display:flex;justify-content:space-between"><span><span style="color:#EF4444">●</span> Delayed</span><b>{_report_p_counts['Delayed']}</b></div>
+                            <div style="display:flex;justify-content:space-between"><span><span style="color:#00875A">●</span> On Track</span><b>8</b></div>
+                            <div style="display:flex;justify-content:space-between"><span><span style="color:#F28C00">●</span> At Risk</span><b>3</b></div>
+                            <div style="display:flex;justify-content:space-between"><span><span style="color:#EF4444">●</span> Delayed</span><b>1</b></div>
                         </div>
                     </div>
                     """
@@ -4531,19 +5113,19 @@ elif page == "Reports":
         with ov_k2:
             st.markdown(
                 clean_html(
-                    f"""
+                    """
                     <div class="vk-kpi-card" style="justify-content:space-between;padding:14px 18px;min-height:104px">
                         <div style="display:flex;align-items:center;gap:14px">
                             <div style="width:48px;height:48px;border-radius:50%;background:#D1FAE5;color:#00875A;display:flex;align-items:center;justify-content:center;font-size:22px">📋</div>
                             <div>
                                 <div style="font-size:12px;font-weight:700;color:#1E293B">Total Tasks</div>
-                                <div style="font-size:28px;font-weight:800;color:#0F172A;line-height:1.15">{_t_total}</div>
+                                <div style="font-size:28px;font-weight:800;color:#0F172A;line-height:1.15">180</div>
                             </div>
                         </div>
                         <div style="font-size:11.5px;line-height:1.85;min-width:115px">
-                            <div style="display:flex;justify-content:space-between"><span><span style="color:#00875A">●</span> Completed</span><b>{_t_done}</b></div>
-                            <div style="display:flex;justify-content:space-between"><span><span style="color:#1473E6">●</span> In Progress</span><b>{_t_progress}</b></div>
-                            <div style="display:flex;justify-content:space-between"><span><span style="color:#64748B">●</span> Not Started</span><b>{_t_notstarted}</b></div>
+                            <div style="display:flex;justify-content:space-between"><span><span style="color:#00875A">●</span> Completed</span><b>120</b></div>
+                            <div style="display:flex;justify-content:space-between"><span><span style="color:#1473E6">●</span> In Progress</span><b>40</b></div>
+                            <div style="display:flex;justify-content:space-between"><span><span style="color:#64748B">●</span> Not Started</span><b>20</b></div>
                         </div>
                     </div>
                     """
@@ -4553,19 +5135,19 @@ elif page == "Reports":
         with ov_k3:
             st.markdown(
                 clean_html(
-                    f"""
+                    """
                     <div class="vk-kpi-card" style="justify-content:space-between;padding:14px 18px;min-height:104px">
                         <div style="display:flex;align-items:center;gap:14px">
                             <div style="width:48px;height:48px;border-radius:50%;background:#EDE9FE;color:#7C3AED;display:flex;align-items:center;justify-content:center;font-size:22px">👥</div>
                             <div>
                                 <div style="font-size:12px;font-weight:700;color:#1E293B">Team Members</div>
-                                <div style="font-size:28px;font-weight:800;color:#0F172A;line-height:1.15">{_r_total}</div>
+                                <div style="font-size:28px;font-weight:800;color:#0F172A;line-height:1.15">24</div>
                             </div>
                         </div>
                         <div style="font-size:11.5px;line-height:1.85;min-width:105px">
-                            <div style="display:flex;justify-content:space-between"><span><span style="color:#00875A">●</span> Available</span><b>{_r_avail}</b></div>
-                            <div style="display:flex;justify-content:space-between"><span><span style="color:#F28C00">●</span> Partial</span><b>{_r_partial}</b></div>
-                            <div style="display:flex;justify-content:space-between"><span><span style="color:#EF4444">●</span> On Leave</span><b>{_r_leave}</b></div>
+                            <div style="display:flex;justify-content:space-between"><span><span style="color:#00875A">●</span> Available</span><b>18</b></div>
+                            <div style="display:flex;justify-content:space-between"><span><span style="color:#F28C00">●</span> Partial</span><b>4</b></div>
+                            <div style="display:flex;justify-content:space-between"><span><span style="color:#EF4444">●</span> On Leave</span><b>2</b></div>
                         </div>
                     </div>
                     """
@@ -4575,16 +5157,16 @@ elif page == "Reports":
         with ov_k4:
             st.markdown(
                 clean_html(
-                    f"""
+                    """
                     <div class="vk-kpi-card" style="justify-content:space-between;padding:14px 18px;min-height:104px">
                         <div style="display:flex;align-items:center;gap:14px">
-                            <div style="width:58px;height:58px;border-radius:50%;border:6px solid #00875A;border-left-color:#3B82F6;display:flex;align-items:center;justify-content:center;font-size:15px;font-weight:800;color:#0F172A">{round(_t_done / _t_total * 100) if _t_total else 0}%</div>
+                            <div style="width:58px;height:58px;border-radius:50%;border:6px solid #00875A;border-left-color:#3B82F6;display:flex;align-items:center;justify-content:center;font-size:15px;font-weight:800;color:#0F172A">68%</div>
                             <div>
                                 <div style="font-size:12px;font-weight:700;color:#1E293B;margin-bottom:4px">Overall Progress</div>
                                 <div style="font-size:11.5px;line-height:1.7">
-                                    <div><span style="color:#00875A">●</span> <b>{progress}</b> Completed</div>
-                                    <div><span style="color:#1473E6">●</span> <b>{round(_t_progress / _t_total * 100) if _t_total else 0}%</b> In Progress</div>
-                                    <div><span style="color:#64748B">●</span> <b>{round(_t_notstarted / _t_total * 100) if _t_total else 0}%</b> Not Started</div>
+                                    <div><span style="color:#00875A">●</span> <b>68%</b> Completed</div>
+                                    <div><span style="color:#1473E6">●</span> <b>22%</b> In Progress</div>
+                                    <div><span style="color:#64748B">●</span> <b>10%</b> Not Started</div>
                                 </div>
                             </div>
                         </div>
@@ -4600,23 +5182,30 @@ elif page == "Reports":
         with r1_c1, st.container(border=True):
             section_title("Project Status")
             render_report_donut_card(
-                str(_report_p_total), "Projects",
-                ["On Track", "At Risk", "Delayed"], [_report_p_counts["On Track"], _report_p_counts["At Risk"], _report_p_counts["Delayed"]], [GREEN, ORANGE, RED],
-                [(GREEN, "On Track", f"{_report_p_counts['On Track']} {_report_p_pct(_report_p_counts['On Track'])}"), (ORANGE, "At Risk", f"{_report_p_counts['At Risk']} {_report_p_pct(_report_p_counts['At Risk'])}"), (RED, "Delayed", f"{_report_p_counts['Delayed']} {_report_p_pct(_report_p_counts['Delayed'])}")],
+                "12", "Projects",
+                ["On Track", "At Risk", "Delayed"], [8, 3, 1], [GREEN, ORANGE, RED],
+                [(GREEN, "On Track", "8 (67%)"), (ORANGE, "At Risk", "3 (25%)"), (RED, "Delayed", "1 (8%)")],
             )
         with r1_c2, st.container(border=True):
             section_title("Task Status")
             render_report_donut_card(
-                str(_t_total), "Tasks",
-                ["Completed", "In Progress", "Not Started"], [_t_done, _t_progress, _t_notstarted], [GREEN, BLUE, "#94A3B8"],
-                [(GREEN, "Completed", f"{_t_done} ({_t_pct(_t_done)})"), (BLUE, "In Progress", f"{_t_progress} ({_t_pct(_t_progress)})"), ("#94A3B8", "Not Started", f"{_t_notstarted} ({_t_pct(_t_notstarted)})")],
+                "180", "Tasks",
+                ["Completed", "In Progress", "Not Started"], [120, 40, 20], [GREEN, BLUE, "#94A3B8"],
+                [(GREEN, "Completed", "120 (67%)"), (BLUE, "In Progress", "40 (22%)"), ("#94A3B8", "Not Started", "20 (11%)")],
             )
         with r1_c3, st.container(border=True):
             section_title("Team Availability")
-            ta_df = pd.DataFrame({"Current Status": ["Current"], "Available": [_r_avail], "Partial": [_r_partial], "On Leave": [_r_leave]})
+            ta_df = pd.DataFrame(
+                {
+                    "Month": ["Apr", "May", "Jun", "Jul", "Aug", "Sep"],
+                    "Available": [18, 15, 18, 17, 16, 15],
+                    "Partial": [4, 4, 4, 4, 5, 5],
+                    "On Leave": [2, 3, 2, 3, 3, 4],
+                }
+            )
             fig_ta = px.bar(
                 ta_df,
-                x="Current Status",
+                x="Month",
                 y=["Available", "Partial", "On Leave"],
                 color_discrete_map={"Available": GREEN, "Partial": ORANGE, "On Leave": RED},
             )
@@ -4637,7 +5226,13 @@ elif page == "Reports":
         r2_c1, r2_c2, r2_c3 = st.columns(3)
         with r2_c1, st.container(border=True):
             section_title("Project Progress")
-            pp_items = [(str(r0.name), int(r0.progress or 0)) for _, r0 in P.sort_values("progress", ascending=False).head(8).iterrows()]
+            pp_items = [
+                ("Website Revamp", 90),
+                ("Marketing Campaign", 60),
+                ("IT Infrastructure Upgrade", 40),
+                ("Sustainability Initiative", 25),
+                ("Internal Operations", 75),
+            ]
             pp_html = "".join(
                 f"<div style='display:grid;grid-template-columns:145px 1fr 38px;align-items:center;gap:10px;margin-bottom:13px;font-size:12.5px'>"
                 f"<span style='color:#1E293B;font-weight:500;text-align:right'>{p_nm}</span>"
@@ -4649,17 +5244,15 @@ elif page == "Reports":
             st.markdown(clean_html(f"<div style='padding-top:8px'>{pp_html}</div>"), unsafe_allow_html=True)
 
         with r2_c2, st.container(border=True):
-            section_title("Task Status by Due Month")
-            _trend = T.copy()
-            _trend["_due_month"] = pd.to_datetime(_trend.due_date, errors="coerce").dt.strftime("%b %Y") if not _trend.empty else pd.Series(dtype=str)
-            _trend = _trend[_trend["_due_month"].notna()] if not _trend.empty else _trend
-            if not _trend.empty:
-                tct_df = _trend.assign(_status=_trend.status.fillna("Not Started").astype(str)).pivot_table(index="_due_month", columns="_status", values="id", aggfunc="count", fill_value=0).reset_index().rename(columns={"_due_month":"Month"})
-                for _status_col in ["Completed", "In Progress", "Not Started"]:
-                    if _status_col not in tct_df: tct_df[_status_col] = 0
-                tct_df = tct_df[["Month", "Completed", "In Progress", "Not Started"]].tail(6)
-            else:
-                tct_df = pd.DataFrame({"Month": ["No dates"], "Completed": [0], "In Progress": [0], "Not Started": [0]})
+            section_title("Task Completion Trend")
+            tct_df = pd.DataFrame(
+                {
+                    "Month": ["Apr", "May", "Jun", "Jul", "Aug", "Sep"],
+                    "Completed": [25, 55, 100, 125, 155, 180],
+                    "In Progress": [12, 30, 55, 72, 88, 102],
+                    "Not Started": [8, 18, 28, 35, 42, 48],
+                }
+            )
             fig_tct = px.line(
                 tct_df,
                 x="Month",
@@ -4681,13 +5274,13 @@ elif page == "Reports":
 
         with r2_c3, st.container(border=True):
             section_title("Team Workload")
-            tw_bars = []
-            for _, _person in R.head(5).iterrows():
-                _person_name = str(_person.get("name") or "")
-                _assigned_count = int((T.assignee.fillna("").astype(str) == _person_name).sum()) if not T.empty else 0
-                _work_pct = min(100, _assigned_count * 10)
-                _work_color = RED if _work_pct >= 80 else (ORANGE if _work_pct >= 60 else (BLUE if _work_pct >= 35 else GREEN))
-                tw_bars.append(("".join(part[0] for part in _person_name.split()[:2]).upper(), "#0284C7", _person_name, _work_pct, _work_color))
+            tw_bars = [
+                ("JM", "#0284C7", "James Miller", 90, RED),
+                ("SK", "#0284C7", "Sarah Kim", 75, ORANGE),
+                ("AL", "#0F172A", "Alice Morgan", 60, BLUE),
+                ("RJ", "#0F172A", "Ryan Cruz", 50, BLUE),
+                ("MT", "#0284C7", "Michael Tan", 30, GREEN),
+            ]
             tw_mk = "".join(
                 f"<div style='display:grid;grid-template-columns:135px 1fr 38px;align-items:center;gap:10px;margin-bottom:11px;font-size:12.5px'>"
                 f"<div style='display:flex;align-items:center'><span class='vk-avatar' style='background:{abg}'>{ini}</span><span style='font-weight:500'>{nm}</span></div>"
@@ -4701,10 +5294,13 @@ elif page == "Reports":
         r3_c1, r3_c2, r3_c3 = st.columns([1.2, 1, 1])
         with r3_c1, st.container(border=True):
             section_title("Upcoming Milestones", "View All")
-            _um = M.copy()
-            _um["_due"] = pd.to_datetime(_um.due_date, errors="coerce") if not _um.empty else pd.Series(dtype="datetime64[ns]")
-            _um = _um[_um["_due"].notna()].sort_values("_due").head(5) if not _um.empty else _um
-            um_rows = [(str(r0.name), str(r0.project or ""), fmt_date(r0.due_date), str(r0.status or "Not Started")) for _, r0 in _um.iterrows()]
+            um_rows = [
+                ("UI/UX Design Complete", "Website Revamp", "May 10, 2024", "On Track"),
+                ("Campaign Launch", "Marketing Campaign", "May 25, 2024", "At Risk"),
+                ("Infrastructure Setup", "IT Infrastructure Upgrade", "Jun 15, 2024", "On Track"),
+                ("Sustainability Plan", "Sustainability Initiative", "Jun 30, 2024", "Delayed"),
+                ("Operations Review", "Internal Operations", "Jul 10, 2024", "On Track"),
+            ]
             um_html = "".join(
                 f"<tr><td><b>{m_n}</b></td><td>{p_n}</td><td>{d_s}</td><td>{badge_html(st_s)}</td></tr>"
                 for m_n, p_n, d_s, st_s in um_rows
@@ -4718,7 +5314,13 @@ elif page == "Reports":
 
         with r3_c2, st.container(border=True):
             section_title("Top Projects by Progress", "View All")
-            tp_rows = [(str(r0.name), int(r0.progress or 0)) for _, r0 in P.sort_values("progress", ascending=False).head(5).iterrows()]
+            tp_rows = [
+                ("Website Revamp", 90),
+                ("Marketing Campaign", 60),
+                ("IT Infrastructure Upgrade", 40),
+                ("Sustainability Initiative", 25),
+                ("Internal Operations", 75),
+            ]
             tp_html = "".join(
                 f"<tr><td><b>{p_n}</b></td><td>{progress_html(pct, GREEN)}</td></tr>"
                 for p_n, pct in tp_rows
@@ -4732,7 +5334,13 @@ elif page == "Reports":
 
         with r3_c3, st.container(border=True):
             section_title("Project Health", "View All")
-            ph_rows = [(str(r0.name), int(r0.progress or 0), str(r0.bar_color or GREEN), str(r0.health or r0.status or "Unknown")) for _, r0 in P.head(8).iterrows()]
+            ph_rows = [
+                ("Website Revamp", 90, GREEN, "On Track"),
+                ("Marketing Campaign", 60, BLUE, "At Risk"),
+                ("IT Infrastructure Upgrade", 40, BLUE, "At Risk"),
+                ("Sustainability Initiative", 25, RED, "Delayed"),
+                ("Internal Operations", 75, GREEN, "On Track"),
+            ]
             ph_html = "".join(
                 f"<tr><td><b>{p_n}</b></td><td>{progress_html(pct, bcol)}</td><td>{badge_html(h_s)}</td></tr>"
                 for p_n, pct, bcol, h_s in ph_rows
@@ -4752,19 +5360,19 @@ elif page == "Reports":
         with pk1:
             st.markdown(
                 clean_html(
-                    f"""
+                    """
                     <div class="vk-kpi-card" style="justify-content:space-between;padding:14px 18px;min-height:98px">
                         <div style="display:flex;align-items:center;gap:14px">
                             <div style="width:48px;height:48px;border-radius:50%;background:#DBEAFE;color:#1473E6;display:flex;align-items:center;justify-content:center;font-size:22px">📁</div>
                             <div>
                                 <div style="font-size:12px;font-weight:700;color:#1E293B">Total Projects</div>
-                                <div style="font-size:28px;font-weight:800;color:#0F172A;line-height:1.15">{_report_p_total}</div>
+                                <div style="font-size:28px;font-weight:800;color:#0F172A;line-height:1.15">12</div>
                             </div>
                         </div>
                         <div style="font-size:11.5px;line-height:1.85;min-width:105px">
-                            <div style="display:flex;justify-content:space-between"><span><span style="color:#00875A">●</span> On Track</span><b>{_report_p_counts["On Track"]}</b></div>
-                            <div style="display:flex;justify-content:space-between"><span><span style="color:#F28C00">●</span> At Risk</span><b>{_report_p_counts["At Risk"]}</b></div>
-                            <div style="display:flex;justify-content:space-between"><span><span style="color:#EF4444">●</span> Delayed</span><b>{_report_p_counts["Delayed"]}</b></div>
+                            <div style="display:flex;justify-content:space-between"><span><span style="color:#00875A">●</span> On Track</span><b>8</b></div>
+                            <div style="display:flex;justify-content:space-between"><span><span style="color:#F28C00">●</span> At Risk</span><b>3</b></div>
+                            <div style="display:flex;justify-content:space-between"><span><span style="color:#EF4444">●</span> Delayed</span><b>1</b></div>
                         </div>
                     </div>
                     """
@@ -4772,24 +5380,30 @@ elif page == "Reports":
                 unsafe_allow_html=True,
             )
         with pk2:
-            kpi_card_mockup("Completed Projects", str(_report_p_counts["Completed"]), sub_text=_report_p_pct(_report_p_counts["Completed"]), icon_html="✓", icon_bg="#D1FAE5", icon_fg="#00875A")
+            kpi_card_mockup("Completed Projects", "5", sub_text="42%", icon_html="✓", icon_bg="#D1FAE5", icon_fg="#00875A")
         with pk3:
-            kpi_card_mockup("In Progress Projects", str(_report_p_counts["In Progress"]), sub_text=_report_p_pct(_report_p_counts["In Progress"]), icon_html="▷", icon_bg="#DBEAFE", icon_fg="#1473E6")
+            kpi_card_mockup("In Progress Projects", "5", sub_text="42%", icon_html="▷", icon_bg="#DBEAFE", icon_fg="#1473E6")
         with pk4:
-            kpi_card_mockup("Not Started Projects", str(_report_p_counts["Not Started"]), sub_text=_report_p_pct(_report_p_counts["Not Started"]), icon_html="❚❚", icon_bg="#E2E8F0", icon_fg="#475569")
+            kpi_card_mockup("Not Started Projects", "2", sub_text="17%", icon_html="❚❚", icon_bg="#E2E8F0", icon_fg="#475569")
 
         st.write("")
         pr1_1, pr1_2, pr1_3 = st.columns(3)
         with pr1_1, st.container(border=True):
             section_title("Project Status")
             render_report_donut_card(
-                str(_report_p_total), "Projects",
-                ["On Track", "At Risk", "Delayed"], [_report_p_counts["On Track"], _report_p_counts["At Risk"], _report_p_counts["Delayed"]], [GREEN, ORANGE, RED],
-                [(GREEN, "On Track", f"{_report_p_counts['On Track']} {_report_p_pct(_report_p_counts['On Track'])}"), (ORANGE, "At Risk", f"{_report_p_counts['At Risk']} {_report_p_pct(_report_p_counts['At Risk'])}"), (RED, "Delayed", f"{_report_p_counts['Delayed']} {_report_p_pct(_report_p_counts['Delayed'])}")],
+                "12", "Projects",
+                ["On Track", "At Risk", "Delayed"], [8, 3, 1], [GREEN, ORANGE, RED],
+                [(GREEN, "On Track", "8 (67%)"), (ORANGE, "At Risk", "3 (25%)"), (RED, "Delayed", "1 (8%)")],
             )
         with pr1_2, st.container(border=True):
             section_title("Project Progress")
-            pp_items = [(str(r0.name), int(r0.progress or 0)) for _, r0 in P.sort_values("progress", ascending=False).head(8).iterrows()]
+            pp_items = [
+                ("Website Revamp", 90),
+                ("Marketing Campaign", 60),
+                ("IT Infrastructure Upgrade", 40),
+                ("Sustainability Initiative", 25),
+                ("Internal Operations", 75),
+            ]
             pp_html = "".join(
                 f"<div style='display:grid;grid-template-columns:145px 1fr 38px;align-items:center;gap:10px;margin-bottom:13px;font-size:12.5px'>"
                 f"<span style='color:#1E293B;font-weight:500;text-align:right'>{p_nm}</span>"
@@ -4801,7 +5415,14 @@ elif page == "Reports":
             st.markdown(clean_html(f"<div style='padding-top:8px'>{pp_html}</div>"), unsafe_allow_html=True)
         with pr1_3, st.container(border=True):
             section_title("Projects by Status (Trend)")
-            pst_df = pd.DataFrame({"Month": [date.today().strftime("%b %Y")], "On Track": [_report_p_counts["On Track"]], "At Risk": [_report_p_counts["At Risk"]], "Delayed": [_report_p_counts["Delayed"]]})
+            pst_df = pd.DataFrame(
+                {
+                    "Month": ["Apr", "May", "Jun", "Jul", "Aug", "Sep"],
+                    "On Track": [5, 6, 7, 7.5, 6.5, 5.5],
+                    "At Risk": [2, 2, 2, 2.5, 2.5, 2.5],
+                    "Delayed": [1, 2, 2, 2, 2, 2],
+                }
+            )
             fig_pst = px.bar(
                 pst_df,
                 x="Month",
@@ -4825,20 +5446,26 @@ elif page == "Reports":
         with pr2_1, st.container(border=True):
             section_title("Project Health")
             render_report_donut_card(
-                str(_report_p_total), "Projects",
-                ["Healthy", "At Risk", "Critical"], [int((_report_p_status.str.lower() == "healthy").sum()), int((_report_p_status.str.lower() == "at risk").sum()), int((_report_p_status.str.lower() == "critical").sum())], [GREEN, ORANGE, RED],
-                [(GREEN, "Healthy", str(int((_report_p_status.str.lower() == "healthy").sum()))), (ORANGE, "At Risk", str(int((_report_p_status.str.lower() == "at risk").sum()))), (RED, "Critical", str(int((_report_p_status.str.lower() == "critical").sum())))],
+                "12", "Projects",
+                ["Healthy", "At Risk", "Critical"], [8, 3, 1], [GREEN, ORANGE, RED],
+                [(GREEN, "Healthy", "8 (67%)"), (ORANGE, "At Risk", "3 (25%)"), (RED, "Critical", "1 (8%)")],
             )
         with pr2_2, st.container(border=True):
             section_title("Milestone Status")
             render_report_donut_card(
-                str(_m_total), "Milestones",
-                ["Completed", "In Progress", "Not Started"], [_m_done, _m_prog, _m_not], [GREEN, BLUE, "#94A3B8"],
-                [(GREEN, "Completed", f"{_m_done} ({_m_pct(_m_done)})"), (BLUE, "In Progress", f"{_m_prog} ({_m_pct(_m_prog)})"), ("#94A3B8", "Not Started", f"{_m_not} ({_m_pct(_m_not)})")],
+                "25", "Milestones",
+                ["Completed", "In Progress", "Not Started"], [15, 7, 3], [GREEN, BLUE, "#94A3B8"],
+                [(GREEN, "Completed", "15 (60%)"), (BLUE, "In Progress", "7 (28%)"), ("#94A3B8", "Not Started", "3 (12%)")],
             )
         with pr2_3, st.container(border=True):
             section_title("Top Projects by Progress")
-            tpp_items = [(str(r0.name), int(r0.progress or 0)) for _, r0 in P.sort_values("progress", ascending=False).head(8).iterrows()]
+            tpp_items = [
+                ("Website Revamp", 90),
+                ("Internal Operations", 75),
+                ("Marketing Campaign", 60),
+                ("IT Infrastructure Upgrade", 40),
+                ("Sustainability Initiative", 25),
+            ]
             tpp_html = "".join(
                 f"<div style='display:grid;grid-template-columns:145px 1fr 38px;align-items:center;gap:10px;margin-bottom:13px;font-size:12.5px'>"
                 f"<span style='color:#1E293B;font-weight:500'>{p_nm}</span>"
@@ -4856,11 +5483,13 @@ elif page == "Reports":
                 st.markdown("<div style='font-size:15px;font-weight:700;color:#0F172A;padding-top:4px'>Project List</div>", unsafe_allow_html=True)
             with ph_c2:
                 pr_search = st.text_input("Search", placeholder="🔍 Search projects...", key="rep_proj_list_q", label_visibility="collapsed")
-            plist_rows = []
-            for _, _pr in P.iterrows():
-                _pr_tasks = T[T.project_id == _pr.id] if not T.empty else pd.DataFrame()
-                _pr_ms = M[M.project_id == _pr.id] if not M.empty else pd.DataFrame()
-                plist_rows.append((str(_pr.name), str(_pr.status or "Not Started"), fmt_date(_pr.start_date), fmt_date(_pr.end_date), int(_pr.progress or 0), f"{int((_pr_ms.status.astype(str).str.lower() == 'completed').sum())} / {len(_pr_ms)}", f"{int((_pr_tasks.status.astype(str).str.lower() == 'completed').sum())} / {len(_pr_tasks)}", str(_pr.health or "Healthy")))
+            plist_rows = [
+                ("Website Revamp", "On Track", "Apr 1, 2024", "Sep 30, 2024", 90, "4 / 5", "18 / 20", "Healthy"),
+                ("Marketing Campaign", "At Risk", "Apr 15, 2024", "Aug 31, 2024", 60, "3 / 5", "12 / 20", "At Risk"),
+                ("IT Infrastructure Upgrade", "At Risk", "May 1, 2024", "Oct 31, 2024", 40, "2 / 5", "8 / 20", "At Risk"),
+                ("Sustainability Initiative", "Delayed", "May 15, 2024", "Dec 15, 2024", 25, "1 / 5", "5 / 20", "Critical"),
+                ("Internal Operations", "On Track", "Jun 1, 2024", "Nov 30, 2024", 75, "3 / 5", "15 / 20", "Healthy"),
+            ]
             if pr_search:
                 plist_rows = [r for r in plist_rows if pr_search.lower() in r[0].lower()]
             pl_tr = "".join(
@@ -4877,10 +5506,13 @@ elif page == "Reports":
 
         with pr3_r, st.container(border=True):
             section_title("Upcoming Project Milestones", "View All")
-            _upm = M.copy()
-            _upm["_due"] = pd.to_datetime(_upm.due_date, errors="coerce") if not _upm.empty else pd.Series(dtype="datetime64[ns]")
-            _upm = _upm[_upm["_due"].notna()].sort_values("_due").head(5) if not _upm.empty else _upm
-            upm_rows = [(str(r0.get("name") or ""), str(r0.get("project") or ""), fmt_date(r0.get("due_date")), str(r0.get("status") or "Not Started")) for _, r0 in _upm.iterrows()]
+            upm_rows = [
+                ("UI/UX Design Complete", "Website Revamp", "May 10, 2024", "On Track"),
+                ("Campaign Launch", "Marketing Campaign", "May 25, 2024", "At Risk"),
+                ("Infrastructure Setup", "IT Infrastructure Upgrade", "Jun 15, 2024", "On Track"),
+                ("Sustainability Plan", "Sustainability Initiative", "Jun 30, 2024", "Delayed"),
+                ("Operations Review", "Internal Operations", "Jul 10, 2024", "On Track"),
+            ]
             upm_tr = "".join(
                 f"<tr><td><b>{m_n}</b></td><td>{p_n}</td><td>{dd}</td><td>{badge_html(st_s)}</td></tr>"
                 for m_n, p_n, dd, st_s in upm_rows
@@ -4897,22 +5529,23 @@ elif page == "Reports":
     # =========================================================================
     elif active_rtab == "Resources":
         rk1, rk2, rk3, rk4 = st.columns(4)
-        _r_status=R.status.fillna("Available").astype(str) if not R.empty else pd.Series(dtype=str)
-        _r_total=len(R); _r_avail=int((_r_status.str.lower()=="available").sum()); _r_partial=int((_r_status.str.lower()=="partial").sum()); _r_leave=int((_r_status.str.lower()=="on leave").sum())
-        def _r_pct(n): return f"{round(n/_r_total*100)}%" if _r_total else "0%"
-        with rk1: kpi_card_mockup("Total Resources", str(_r_total), icon_html="👥", icon_bg="#DBEAFE", icon_fg="#1473E6")
-        with rk2: kpi_card_mockup("Available", str(_r_avail), sub_text=_r_pct(_r_avail), icon_html="👤", icon_bg="#D1FAE5", icon_fg="#00875A")
-        with rk3: kpi_card_mockup("Partial Allocation", str(_r_partial), sub_text=_r_pct(_r_partial), icon_html="◔", icon_bg="#FEF3C7", icon_fg="#F28C00")
-        with rk4: kpi_card_mockup("On Leave", str(_r_leave), sub_text=_r_pct(_r_leave), icon_html="👤", icon_bg="#FEE2E2", icon_fg="#EF4444")
+        with rk1:
+            kpi_card_mockup("Total Resources", "24", icon_html="👥", icon_bg="#DBEAFE", icon_fg="#1473E6")
+        with rk2:
+            kpi_card_mockup("Available", "18", sub_text="75%", icon_html="👤", icon_bg="#D1FAE5", icon_fg="#00875A")
+        with rk3:
+            kpi_card_mockup("Partial Allocation", "4", sub_text="17%", icon_html="◔", icon_bg="#FEF3C7", icon_fg="#F28C00")
+        with rk4:
+            kpi_card_mockup("On Leave", "2", sub_text="8%", icon_html="👤", icon_bg="#FEE2E2", icon_fg="#EF4444")
 
         st.write("")
         rr1_1, rr1_2, rr1_3 = st.columns(3)
         with rr1_1, st.container(border=True):
             section_title("Resource Status")
             render_report_donut_card(
-                str(_r_total), "Resources",
-                ["Available", "Partial", "On Leave"], [_r_avail, _r_partial, _r_leave], [GREEN, ORANGE, RED],
-                [(GREEN, "Available", f"{_r_avail} ({_r_pct(_r_avail)})"), (ORANGE, "Partial", f"{_r_partial} ({_r_pct(_r_partial)})"), (RED, "On Leave", f"{_r_leave} ({_r_pct(_r_leave)})")],
+                "24", "Resources",
+                ["Available", "Partial", "On Leave"], [18, 4, 2], [GREEN, ORANGE, RED],
+                [(GREEN, "Available", "18 (75%)"), (ORANGE, "Partial", "4 (17%)"), (RED, "On Leave", "2 (8%)")],
             )
         with rr1_2, st.container(border=True):
             section_title("Team Distribution")
@@ -4944,12 +5577,13 @@ elif page == "Reports":
 
         with rr1_3, st.container(border=True):
             section_title("Assignments by Project")
-            abp_items = []
-            _max_assign = max(1, max((len(T[T.project == str(pr.name)]) for _, pr in P.iterrows()), default=1)) if not T.empty else 1
-            for _, _pr in P.iterrows():
-                _pt = T[T.project == str(_pr.name)] if not T.empty else pd.DataFrame()
-                _n = int(_pt.assignee.dropna().astype(str).nunique()) if not _pt.empty else 0
-                abp_items.append((str(_pr.name), _n, round(_n/_max_assign*100), str(_pr.bar_color or GREEN)))
+            abp_items = [
+                ("Website Revamp", 8, 88, GREEN),
+                ("Internal Operations", 6, 68, "#0EA5E9"),
+                ("Marketing Campaign", 5, 55, "#38BDF8"),
+                ("IT Infrastructure Upgrade", 3, 36, PURPLE),
+                ("Sustainability Initiative", 2, 24, ORANGE),
+            ]
             abp_html = "".join(
                 f"<div style='display:grid;grid-template-columns:145px 1fr 24px;align-items:center;gap:10px;margin-bottom:13px;font-size:12.5px'>"
                 f"<span style='color:#1E293B;font-weight:500;text-align:right'>{p_nm}</span>"
@@ -5028,14 +5662,16 @@ elif page == "Reports":
             with rl_c3:
                 rl_st = st.selectbox("Status", ["All Statuses", "Available", "Partial", "On Leave"], key="rep_res_st", label_visibility="collapsed")
 
-            rlist_rows = []
-            for _, _res in R.iterrows():
-                _rn = str(_res.get("name") or ""); _ri = "".join(x[0] for x in _rn.split()[:2]).upper()
-                _rt = T[T.assignee.fillna("").astype(str) == _rn] if not T.empty else pd.DataFrame()
-                _next_m = M[(M.team == _res.get("team")) & (pd.to_datetime(M.due_date, errors="coerce").dt.date >= date.today())] if not M.empty else pd.DataFrame()
-                _next_due = fmt_date(_next_m.sort_values("due_date").iloc[0].due_date) if not _next_m.empty else "—"
-                _rstat = "On Leave" if str(_res.get("status") or "").lower() == "on leave" else ("Partial" if str(_res.get("status") or "").lower() == "partial" else "Available")
-                rlist_rows.append((_ri, "#0284C7", _rn, str(_res.get("team") or ""), _rstat, len(set(_rt.project.dropna().astype(str))) if not _rt.empty else 0, len(_rt), _next_due, str(_res.get("notes") or "—")))
+            rlist_rows = [
+                ("JM", "#0284C7", "James Miller", "IT", "Available", 2, 8, "May 10, 2024", "—"),
+                ("SK", "#0284C7", "Sarah Kim", "Design", "Available", 2, 6, "May 25, 2024", "—"),
+                ("AL", "#0284C7", "Alice Morgan", "Marketing", "Partial", 1, 5, "Jun 15, 2024", "—"),
+                ("RJ", "#0F172A", "Ryan Cruz", "Operations", "Available", 2, 7, "Jun 30, 2024", "—"),
+                ("MT", "#0284C7", "Michael Tan", "IT", "On Leave", 0, 0, "—", "On leave until May 20"),
+                ("DP", "#1D4ED8", "Daniel Perez", "Operations", "Available", 1, 4, "Jun 10, 2024", "—"),
+                ("ER", "#EF4444", "Ella Ramirez", "Design", "Partial", 1, 3, "May 28, 2024", "—"),
+                ("CP", "#0284C7", "Chris Padilla", "IT", "Available", 2, 6, "Jun 22, 2024", "—"),
+            ]
             if rl_q:
                 rlist_rows = [r for r in rlist_rows if rl_q.lower() in r[2].lower() or rl_q.lower() in r[3].lower()]
             if rl_st != "All Statuses":
@@ -5051,17 +5687,17 @@ elif page == "Reports":
                 ),
                 unsafe_allow_html=True,
             )
-            render_pagination_footer(f"Showing 1 to {min(8, len(R))} of {len(R)} resources", list(range(1, max(2, (len(R)+7)//8+1))), 1)
+            render_pagination_footer("Showing 1 to 8 of 24 resources", [1, 2, 3], 1)
 
         with rr3_r:
             with st.container(border=True):
                 section_title("Upcoming Leave", "View All")
-                _leave_events = df("SELECT * FROM calendar_events WHERE lower(event_type)='leave' ORDER BY start_date")
-                ul_rows = []
-                for _, _leave in _leave_events.iterrows():
-                    _leave_names = [x.strip() for x in str(_leave.get("resources") or "").split(",") if x.strip()]
-                    for _leave_name in _leave_names:
-                        ul_rows.append(("".join(x[0] for x in _leave_name.split()[:2]).upper(), "#0284C7", _leave_name, str(_leave.get("title") or "Leave"), fmt_date(_leave.get("start_date")), fmt_date(_leave.get("end_date"))))
+                ul_rows = [
+                    ("MT", "#0284C7", "Michael Tan", "Vacation", "May 15, 2024", "May 20, 2024"),
+                    ("AR", "#0F172A", "Anna Reyes", "Sick Leave", "May 22, 2024", "May 24, 2024"),
+                    ("KS", "#0369A1", "Kevin Santos", "Vacation", "Jun 10, 2024", "Jun 14, 2024"),
+                    ("LC", "#0284C7", "Lisa Chan", "Personal Leave", "Jun 25, 2024", "Jun 27, 2024"),
+                ]
                 ul_tr = "".join(
                     f"<tr><td><span class='vk-avatar' style='background:{abg}'>{ini}</span><b>{nm}</b></td><td>{lt}</td><td>{sd}</td><td>{ed}</td></tr>"
                     for ini, abg, nm, lt, sd, ed in ul_rows
@@ -5074,10 +5710,12 @@ elif page == "Reports":
                 )
             with st.container(border=True):
                 section_title("Upcoming Assignments", "View All")
-                _ua = T.copy()
-                _ua["_start"] = pd.to_datetime(_ua.start_date, errors="coerce") if not _ua.empty else pd.Series(dtype="datetime64[ns]")
-                _ua = _ua[_ua["_start"].notna()].sort_values("_start").head(5) if not _ua.empty else _ua
-                ua_rows = [("".join(x[0] for x in str(r0.get("assignee") or "Unassigned").split()[:2]).upper(), "#0284C7", str(r0.get("assignee") or "Unassigned"), str(r0.get("project") or ""), fmt_date(r0.get("start_date"))) for _, r0 in _ua.iterrows()]
+                ua_rows = [
+                    ("SK", "#0284C7", "Sarah Kim", "Website Revamp", "May 1, 2024"),
+                    ("RJ", "#1D4ED8", "Ryan Cruz", "IT Infrastructure Upgrade", "May 15, 2024"),
+                    ("AL", "#0F172A", "Alice Morgan", "Marketing Campaign", "Jun 1, 2024"),
+                    ("DP", "#0F172A", "Daniel Perez", "Internal Operations", "Jun 10, 2024"),
+                ]
                 ua_tr = "".join(
                     f"<tr><td><span class='vk-avatar' style='background:{abg}'>{ini}</span><b>{nm}</b></td><td>{pr}</td><td>{sd}</td></tr>"
                     for ini, abg, nm, pr, sd in ua_rows
@@ -5094,22 +5732,23 @@ elif page == "Reports":
     # =========================================================================
     elif active_rtab == "Tasks":
         tk1, tk2, tk3, tk4 = st.columns(4)
-        _t_status=T.status.fillna("Not Started").astype(str) if not T.empty else pd.Series(dtype=str)
-        _t_total=len(T); _t_done=int((_t_status.str.lower()=="completed").sum()); _t_progress=int((_t_status.str.lower()=="in progress").sum()); _t_notstarted=int((_t_status.str.lower()=="not started").sum())
-        def _t_pct(n): return f"{round(n/_t_total*100)}%" if _t_total else "0%"
-        with tk1: kpi_card_mockup("Total Tasks", str(_t_total), icon_html="📋", icon_bg="#D1FAE5", icon_fg="#00875A")
-        with tk2: kpi_card_mockup("Completed Tasks", str(_t_done), sub_text=_t_pct(_t_done), icon_html="✓", icon_bg="#D1FAE5", icon_fg="#00875A")
-        with tk3: kpi_card_mockup("In Progress Tasks", str(_t_progress), sub_text=_t_pct(_t_progress), icon_html="▷", icon_bg="#DBEAFE", icon_fg="#1473E6")
-        with tk4: kpi_card_mockup("Not Started Tasks", str(_t_notstarted), sub_text=_t_pct(_t_notstarted), icon_html="•••", icon_bg="#E2E8F0", icon_fg="#475569")
+        with tk1:
+            kpi_card_mockup("Total Tasks", "180", icon_html="📋", icon_bg="#D1FAE5", icon_fg="#00875A")
+        with tk2:
+            kpi_card_mockup("Completed Tasks", "120", sub_text="67%", icon_html="✓", icon_bg="#D1FAE5", icon_fg="#00875A")
+        with tk3:
+            kpi_card_mockup("In Progress Tasks", "40", sub_text="22%", icon_html="▷", icon_bg="#DBEAFE", icon_fg="#1473E6")
+        with tk4:
+            kpi_card_mockup("Not Started Tasks", "20", sub_text="11%", icon_html="•••", icon_bg="#E2E8F0", icon_fg="#475569")
 
         st.write("")
         tr1_1, tr1_2, tr1_3 = st.columns(3)
         with tr1_1, st.container(border=True):
             section_title("Task Status")
             render_report_donut_card(
-                str(_t_total), "Tasks",
-                ["Completed", "In Progress", "Not Started"], [_t_done, _t_progress, _t_notstarted], [GREEN, BLUE, "#94A3B8"],
-                [(GREEN, "Completed", f"{_t_done} ({_t_pct(_t_done)})"), (BLUE, "In Progress", f"{_t_progress} ({_t_pct(_t_progress)})"), ("#94A3B8", "Not Started", f"{_t_notstarted} ({_t_pct(_t_notstarted)})")],
+                "180", "Tasks",
+                ["Completed", "In Progress", "Not Started"], [120, 40, 20], [GREEN, BLUE, "#94A3B8"],
+                [(GREEN, "Completed", "120 (67%)"), (BLUE, "In Progress", "40 (22%)"), ("#94A3B8", "Not Started", "20 (11%)")],
             )
         with tr1_2, st.container(border=True):
             section_title("Tasks by Project")
@@ -5243,7 +5882,16 @@ elif page == "Reports":
             with tl_c3:
                 tk_st = st.selectbox("Status", ["All Statuses", "Completed", "In Progress", "Not Started"], key="rep_tk_st", label_visibility="collapsed")
 
-            tlist_rows = [(str(r0.get("name") or ""), str(r0.get("project") or ""), str(r0.get("team") or ""), str(r0.get("status") or "Not Started"), str(r0.get("priority") or "Medium"), fmt_date(r0.get("start_date")), fmt_date(r0.get("due_date")), str(r0.get("assignee") or "Unassigned")) for _, r0 in T.iterrows()]
+            tlist_rows = [
+                ("UI/UX Design Complete", "Website Revamp", "Design", "Completed", "High", "Apr 1, 2024", "Apr 30, 2024", "Alice Morgan (AL)"),
+                ("Homepage Development", "Website Revamp", "IT", "In Progress", "High", "Apr 10, 2024", "May 15, 2024", "James Miller (JM)"),
+                ("Content Review", "Marketing Campaign", "Marketing", "In Progress", "Medium", "Apr 15, 2024", "May 20, 2024", "Sarah Kim (SK)"),
+                ("Infrastructure Setup", "IT Infrastructure Upgrade", "IT", "Not Started", "High", "May 1, 2024", "Jun 15, 2024", "Michael Tan (MT)"),
+                ("Sustainability Plan", "Sustainability Initiative", "Operations", "Completed", "Medium", "May 5, 2024", "May 30, 2024", "Ryan Cruz (RJ)"),
+                ("Process Documentation", "Internal Operations", "Operations", "In Progress", "Low", "May 10, 2024", "Jun 20, 2024", "Daniel Perez (DP)"),
+                ("Training Materials", "Marketing Campaign", "Marketing", "Not Started", "Medium", "May 20, 2024", "Jun 30, 2024", "Ella Ramirez (ER)"),
+                ("QA Testing", "Website Revamp", "IT", "In Progress", "High", "May 25, 2024", "Jun 25, 2024", "Chris Padilla (CP)"),
+            ]
             if tk_q:
                 tlist_rows = [r for r in tlist_rows if tk_q.lower() in r[0].lower() or tk_q.lower() in r[1].lower()]
             if tk_st != "All Statuses":
@@ -5259,15 +5907,18 @@ elif page == "Reports":
                 ),
                 unsafe_allow_html=True,
             )
-            render_pagination_footer(f"Showing 1 to {min(8, len(T))} of {len(T)} tasks", list(range(1, max(2, (len(T)+7)//8+1))), 1)
+            render_pagination_footer("Showing 1 to 8 of 180 tasks", [1, 2, 3, 4, 5], 1)
 
         with tr3_r:
             with st.container(border=True):
                 section_title("Upcoming Tasks (Next 14 Days)", "View All")
-                _ut = T.copy()
-                _ut["_due"] = pd.to_datetime(_ut.due_date, errors="coerce") if not _ut.empty else pd.Series(dtype="datetime64[ns]")
-                _ut = _ut[(_ut["_due"].dt.date >= date.today()) & (_ut["_due"].dt.date <= date.today()+timedelta(days=14))].sort_values("_due").head(5) if not _ut.empty else _ut
-                ut_rows = [(str(r0.get("name") or ""), str(r0.get("project") or ""), fmt_date(r0.get("due_date")), str(r0.get("priority") or "Medium")) for _, r0 in _ut.iterrows()]
+                ut_rows = [
+                    ("Content Review", "Marketing Campaign", "May 20, 2024", "Medium"),
+                    ("Infrastructure Setup", "IT Infrastructure Upgrade", "Jun 15, 2024", "High"),
+                    ("Process Documentation", "Internal Operations", "Jun 20, 2024", "Low"),
+                    ("QA Testing", "Website Revamp", "Jun 25, 2024", "High"),
+                    ("Training Materials", "Marketing Campaign", "Jun 30, 2024", "Medium"),
+                ]
                 ut_tr = "".join(
                     f"<tr><td><b>{tn}</b></td><td>{pn}</td><td>{dd}</td><td>{badge_html(pr_s)}</td></tr>"
                     for tn, pn, dd, pr_s in ut_rows
@@ -5280,8 +5931,13 @@ elif page == "Reports":
                 )
             with st.container(border=True):
                 section_title("Recently Completed Tasks", "View All")
-                _rc = T[T.status.fillna("").astype(str).str.lower() == "completed"].copy() if not T.empty else pd.DataFrame()
-                rc_rows = [(str(r0.get("name") or ""), str(r0.get("project") or ""), fmt_date(r0.get("due_date"))) for _, r0 in _rc.sort_values("due_date", ascending=False).head(5).iterrows()]
+                rc_rows = [
+                    ("UI/UX Design Complete", "Website Revamp", "Apr 30, 2024"),
+                    ("Sustainability Plan", "Sustainability Initiative", "May 30, 2024"),
+                    ("Requirements Gathering", "Internal Operations", "Jun 2, 2024"),
+                    ("Design Review", "Marketing Campaign", "Jun 5, 2024"),
+                    ("System Configuration", "IT Infrastructure Upgrade", "Jun 8, 2024"),
+                ]
                 rc_tr = "".join(
                     f"<tr><td><b>{tn}</b></td><td>{pn}</td><td>{cd}</td></tr>"
                     for tn, pn, cd in rc_rows
@@ -5298,35 +5954,35 @@ elif page == "Reports":
     # =========================================================================
     elif active_rtab == "Milestones":
         mk1, mk2, mk3, mk4, mk5 = st.columns(5)
-        _m_status=M.status.fillna("Not Started").astype(str) if not M.empty else pd.Series(dtype=str)
-        _m_total=len(M); _m_done=int((_m_status.str.lower()=="completed").sum()); _m_prog=int((_m_status.str.lower()=="in progress").sum()); _m_not=int((_m_status.str.lower()=="not started").sum())
-        _m_due=pd.to_datetime(M.due_date,errors="coerce") if not M.empty else pd.Series(dtype="datetime64[ns]")
-        _m_over=int(((_m_due.dt.date<date.today())&(_m_status.str.lower()!="completed")).sum()) if not M.empty else 0
-        def _m_pct(n): return f"{round(n/_m_total*100)}%" if _m_total else "0%"
-        with mk1: kpi_card_mockup("Total Milestones", str(_m_total), icon_html="⚑", icon_bg="#D1FAE5", icon_fg="#00875A")
-        with mk2: kpi_card_mockup("Completed", str(_m_done), sub_text=_m_pct(_m_done), icon_html="✓", icon_bg="#D1FAE5", icon_fg="#00875A")
-        with mk3: kpi_card_mockup("In Progress", str(_m_prog), sub_text=_m_pct(_m_prog), icon_html="▷", icon_bg="#DBEAFE", icon_fg="#1473E6")
-        with mk4: kpi_card_mockup("Not Started", str(_m_not), sub_text=_m_pct(_m_not), icon_html="🕒", icon_bg="#E2E8F0", icon_fg="#475569")
-        with mk5: kpi_card_mockup("Overdue", str(_m_over), sub_text=_m_pct(_m_over), icon_html="⚠", icon_bg="#FEE2E2", icon_fg="#EF4444")
+        with mk1:
+            kpi_card_mockup("Total Milestones", "25", icon_html="⚑", icon_bg="#D1FAE5", icon_fg="#00875A")
+        with mk2:
+            kpi_card_mockup("Completed", "15", sub_text="60%", icon_html="✓", icon_bg="#D1FAE5", icon_fg="#00875A")
+        with mk3:
+            kpi_card_mockup("In Progress", "7", sub_text="28%", icon_html="▷", icon_bg="#DBEAFE", icon_fg="#1473E6")
+        with mk4:
+            kpi_card_mockup("Not Started", "3", sub_text="12%", icon_html="🕒", icon_bg="#E2E8F0", icon_fg="#475569")
+        with mk5:
+            kpi_card_mockup("Overdue", "4", sub_text="16%", icon_html="⚠", icon_bg="#FEE2E2", icon_fg="#EF4444")
 
         st.write("")
         mr1_1, mr1_2, mr1_3 = st.columns(3)
         with mr1_1, st.container(border=True):
             section_title("Milestone Status")
             render_report_donut_card(
-                str(_m_total), "Milestones",
-                ["Completed", "In Progress", "Not Started"], [_m_done, _m_prog, _m_not], [GREEN, BLUE, "#94A3B8"],
-                [(GREEN, "Completed", f"{_m_done} ({_m_pct(_m_done)})"), (BLUE, "In Progress", f"{_m_prog} ({_m_pct(_m_prog)})"), ("#94A3B8", "Not Started", f"{_m_not} ({_m_pct(_m_not)})")],
+                "25", "Milestones",
+                ["Completed", "In Progress", "Not Started"], [15, 7, 3], [GREEN, BLUE, "#94A3B8"],
+                [(GREEN, "Completed", "15 (60%)"), (BLUE, "In Progress", "7 (28%)"), ("#94A3B8", "Not Started", "3 (12%)")],
             )
         with mr1_2, st.container(border=True):
             section_title("Milestones by Project")
-            mbp_rows = []
-            for _, _pr in P.iterrows():
-                _pm = M[M.project_id == _pr.id] if not M.empty else pd.DataFrame()
-                _done = int((_pm.status.fillna("").astype(str).str.lower() == "completed").sum()) if not _pm.empty else 0
-                _inprog = int((_pm.status.fillna("").astype(str).str.lower() == "in progress").sum()) if not _pm.empty else 0
-                _notstarted = int((_pm.status.fillna("").astype(str).str.lower() == "not started").sum()) if not _pm.empty else 0
-                mbp_rows.append((str(_pr.name), round(_done/len(_pm)*100) if len(_pm) else 0, round(_inprog/len(_pm)*100) if len(_pm) else 0, round(_notstarted/len(_pm)*100) if len(_pm) else 0, len(_pm)))
+            mbp_rows = [
+                ("Website Revamp", 40, 25, 35, 5),
+                ("Marketing Campaign", 40, 38, 22, 5),
+                ("IT Infrastructure Upgrade", 40, 28, 32, 5),
+                ("Sustainability Initiative", 48, 22, 30, 5),
+                ("Internal Operations", 30, 28, 42, 5),
+            ]
             mbp_html = "".join(
                 f"<div style='display:grid;grid-template-columns:145px 1fr 24px;align-items:center;gap:10px;margin-bottom:11px;font-size:12.5px'>"
                 f"<span style='color:#1E293B;font-weight:500;text-align:right'>{p_nm}</span>"
@@ -5383,14 +6039,13 @@ elif page == "Reports":
         mr2_l, mr2_r = st.columns(2)
         with mr2_l, st.container(border=True):
             section_title("Upcoming Milestones (Next 30 Days)", "View All")
-            _um30 = M.copy()
-            _um30["_due"] = pd.to_datetime(_um30.due_date, errors="coerce") if not _um30.empty else pd.Series(dtype="datetime64[ns]")
-            _um30 = _um30[(_um30["_due"].dt.date >= date.today()) & (_um30["_due"].dt.date <= date.today()+timedelta(days=30))].sort_values("_due").head(5) if not _um30.empty else _um30
-            um30_rows = []
-            for _, _m0 in _um30.iterrows():
-                _left = (_m0["_due"].date() - date.today()).days
-                _tone = ("#FEF3C7", "#D97706") if _left <= 7 else ("#DCFCE7", "#15803D")
-                um30_rows.append((str(_m0.get("name") or ""), str(_m0.get("project") or ""), fmt_date(_m0.get("due_date")), str(_m0.get("status") or "Not Started"), str(_left), _tone[0], _tone[1]))
+            um30_rows = [
+                ("Infrastructure Setup", "IT Infrastructure Upgrade", "May 15, 2024", "In Progress", "3", "#FEF3C7", "#D97706"),
+                ("Campaign Launch", "Marketing Campaign", "May 20, 2024", "In Progress", "8", "#FEF3C7", "#D97706"),
+                ("Sustainability Plan", "Sustainability Initiative", "May 25, 2024", "Not Started", "13", "#DCFCE7", "#15803D"),
+                ("UI/UX Design Complete", "Website Revamp", "May 28, 2024", "In Progress", "16", "#DCFCE7", "#15803D"),
+                ("Process Documentation", "Internal Operations", "May 30, 2024", "Not Started", "18", "#DCFCE7", "#15803D"),
+            ]
             um30_tr = "".join(
                 f"<tr><td><b>{mn}</b></td><td>{pn}</td><td>{dd}</td><td>{badge_html(st_s)}</td>"
                 f"<td style='text-align:center'><span class='vk-badge' style='background:{dbg};color:{dfg};min-width:44px'>{dl}</span></td></tr>"
@@ -5405,10 +6060,12 @@ elif page == "Reports":
 
         with mr2_r, st.container(border=True):
             section_title("Overdue Milestones", "View All")
-            _om = M.copy()
-            _om["_due"] = pd.to_datetime(_om.due_date, errors="coerce") if not _om.empty else pd.Series(dtype="datetime64[ns]")
-            _om = _om[(_om["_due"].dt.date < date.today()) & (_om.status.fillna("").astype(str).str.lower() != "completed")].sort_values("_due").head(5) if not _om.empty else _om
-            om_rows = [(str(r0.get("name") or ""), str(r0.get("project") or ""), fmt_date(r0.get("due_date")), (date.today()-pd.to_datetime(r0.get("due_date")).date()).days if pd.notna(pd.to_datetime(r0.get("due_date"),errors="coerce")) else 0, str(r0.get("status") or "Not Started")) for _, r0 in _om.iterrows()]
+            om_rows = [
+                ("QA Testing", "Website Revamp", "Apr 20, 2024", 34),
+                ("Content Review", "Marketing Campaign", "Apr 25, 2024", 29),
+                ("Training Materials", "Marketing Campaign", "May 5, 2024", 19),
+                ("Requirements Gathering", "Internal Operations", "May 10, 2024", 14),
+            ]
             om_tr = "".join(
                 f"<tr><td><b>{mn}</b></td><td>{pn}</td><td>{dd}</td><td style='text-align:center;color:#DC2626;font-weight:800'>{do}</td><td>{badge_html('Overdue')}</td></tr>"
                 for mn, pn, dd, do in om_rows
@@ -5433,7 +6090,16 @@ elif page == "Reports":
             with ml_c5:
                 st.selectbox("Team", ["All Teams"] + teams_list, key="rep_ms_tm", label_visibility="collapsed")
 
-            mlist_rows = [(str(r0.get("name") or ""), str(r0.get("project") or ""), str(r0.get("team") or ""), str(r0.get("status") or "Not Started"), fmt_date(r0.get("start_date")), fmt_date(r0.get("due_date")), fmt_date(r0.get("completion_date")), str(r0.get("dependency") or "—"), str(r0.get("notes") or "")) for _, r0 in M.iterrows()]
+            mlist_rows = [
+                ("UI/UX Design Complete", "Website Revamp", "Design", "Completed", "Apr 1, 2024", "Apr 30, 2024", "Apr 28, 2024", "—", "Design phase completed."),
+                ("Campaign Launch", "Marketing Campaign", "Marketing", "In Progress", "Apr 15, 2024", "May 20, 2024", "—", "Content Review", "Awaiting final assets."),
+                ("Infrastructure Setup", "IT Infrastructure Upgrade", "IT", "In Progress", "May 1, 2024", "May 15, 2024", "—", "Requirements Gathering", "Environment setup ongoing."),
+                ("Sustainability Plan", "Sustainability Initiative", "Operations", "Not Started", "May 5, 2024", "May 25, 2024", "—", "—", "Pending stakeholder approval."),
+                ("Process Documentation", "Internal Operations", "Operations", "Not Started", "May 10, 2024", "May 30, 2024", "—", "Infrastructure Setup", "Template to be finalized."),
+                ("QA Testing", "Website Revamp", "IT", "Overdue", "Apr 1, 2024", "Apr 20, 2024", "—", "Development Complete", "Testing issues to resolve."),
+                ("Training Materials", "Marketing Campaign", "Marketing", "Overdue", "Apr 20, 2024", "May 5, 2024", "—", "Content Review", "Update with latest product info."),
+                ("System Configuration", "IT Infrastructure Upgrade", "IT", "Completed", "Mar 15, 2024", "Apr 10, 2024", "Apr 9, 2024", "—", "Configuration completed successfully."),
+            ]
             if ml_q:
                 mlist_rows = [r for r in mlist_rows if ml_q.lower() in r[0].lower() or ml_q.lower() in r[1].lower()]
             if ml_st != "All Statuses":
@@ -5449,46 +6115,44 @@ elif page == "Reports":
                 ),
                 unsafe_allow_html=True,
             )
-            render_pagination_footer(f"Showing 1 to {min(8, len(M))} of {len(M)} milestones", list(range(1, max(2, (len(M)+7)//8+1))), 1)
+            render_pagination_footer("Showing 1 to 8 of 25 milestones", [1, 2, 3, 4], 1)
 
     # =========================================================================
     # REPORT TAB 6: WORKLOAD (Exact Match to Image 27)
     # =========================================================================
     elif active_rtab == "Workload":
         wk1, wk2, wk3, wk4, wk5 = st.columns(5)
-        _w_count=len(R); _w_tasks=len(T); _w_assigned=T.assignee.dropna().astype(str).nunique() if not T.empty else 0
-        with wk1: kpi_card_mockup("Total Team Members", str(_w_count), icon_html="👥", icon_bg="#DBEAFE", icon_fg="#1473E6")
-        with wk2: kpi_card_mockup("Total Active Tasks", str(_w_tasks), icon_html="❖", icon_bg="#D1FAE5", icon_fg="#00875A")
-        with wk3: kpi_card_mockup("Assigned Members", str(_w_assigned), sub_text=f"{round(_w_assigned/_w_count*100) if _w_count else 0}%", icon_html="👤", icon_bg="#D1FAE5", icon_fg="#00875A")
-        with wk4: kpi_card_mockup("Unassigned Tasks", str(int(T.assignee.isna().sum()) if not T.empty else 0), sub_text=f"{round((int(T.assignee.isna().sum()) if not T.empty else 0)/_w_tasks*100) if _w_tasks else 0}%", icon_html="△", icon_bg="#FEF3C7", icon_fg="#F28C00")
-        with wk5: kpi_card_mockup("Overdue Tasks", str(int(((pd.to_datetime(T.due_date, errors="coerce").dt.date < date.today()) & (T.status.fillna("").astype(str).str.lower() != "completed")).sum()) if not T.empty else 0), sub_text="", icon_html="⚠", icon_bg="#FEE2E2", icon_fg="#EF4444")
+        with wk1:
+            kpi_card_mockup("Total Team Members", "24", icon_html="👥", icon_bg="#DBEAFE", icon_fg="#1473E6")
+        with wk2:
+            kpi_card_mockup("Total Active Tasks", "180", icon_html="❖", icon_bg="#D1FAE5", icon_fg="#00875A")
+        with wk3:
+            kpi_card_mockup("Balanced Workload", "16", sub_text="67%", icon_html="👤", icon_bg="#D1FAE5", icon_fg="#00875A")
+        with wk4:
+            kpi_card_mockup("High Workload", "5", sub_text="21%", icon_html="△", icon_bg="#FEF3C7", icon_fg="#F28C00")
+        with wk5:
+            kpi_card_mockup("Overloaded", "3", sub_text="12%", icon_html="⚠", icon_bg="#FEE2E2", icon_fg="#EF4444")
 
         st.write("")
         wr1_1, wr1_2, wr1_3 = st.columns(3)
         with wr1_1, st.container(border=True):
             section_title("Workload Distribution")
-            _loads = []
-            for _, _wr in R.iterrows():
-                _wn = str(_wr.get("name") or "")
-                _count = int((T.assignee.fillna("").astype(str) == _wn).sum()) if not T.empty else 0
-                _loads.append("Overloaded" if _count >= 10 else ("High Workload" if _count >= 5 else "Balanced"))
-            _balanced = _loads.count("Balanced"); _high_load = _loads.count("High Workload"); _over_load = _loads.count("Overloaded")
-            def _load_pct(n): return f"{round(n/len(R)*100)}%" if len(R) else "0%"
             render_report_donut_card(
-                str(len(R)), "Team Members",
-                ["Balanced", "High Workload", "Overloaded"], [_balanced, _high_load, _over_load], [GREEN, ORANGE, RED],
-                [(GREEN, "Balanced", f"{_balanced} ({_load_pct(_balanced)})"), (ORANGE, "High Workload", f"{_high_load} ({_load_pct(_high_load)})"), (RED, "Overloaded", f"{_over_load} ({_load_pct(_over_load)})")],
+                "24", "Team Members",
+                ["Balanced", "High Workload", "Overloaded"], [16, 5, 3], [GREEN, ORANGE, RED],
+                [(GREEN, "Balanced", "16 (67%)"), (ORANGE, "High Workload", "5 (21%)"), (RED, "Overloaded", "3 (12%)")],
             )
         with wr1_2, st.container(border=True):
             section_title("Task Distribution by Team")
-            _team_names = sorted(set(T.team.dropna().astype(str).tolist())) if not T.empty else []
-            _td_rows = []
-            for _team_name in _team_names:
-                _team_tasks = T[T.team.astype(str) == _team_name]
-                _team_status = _team_tasks.status.fillna("Not Started").astype(str).str.lower()
-                _team_prio = _team_tasks.priority.fillna("").astype(str).str.lower()
-                _td_rows.append({"Team":_team_name,"Completed":int((_team_status=="completed").sum()),"In Progress":int((_team_status=="in progress").sum()),"Not Started":int((_team_status=="not started").sum()),"High Priority":int((_team_prio=="high").sum())})
-            tdt_df = pd.DataFrame(_td_rows,columns=["Team","Completed","In Progress","Not Started","High Priority"])
+            tdt_df = pd.DataFrame(
+                {
+                    "Team": ["IT", "Design", "Operations", "Marketing", "Others"],
+                    "Completed": [18, 12, 13, 12, 6],
+                    "In Progress": [10, 7, 9, 6, 6],
+                    "Not Started": [8, 6, 8, 5, 3],
+                    "High Priority": [9, 6, 7, 7, 3],
+                }
+            )
             fig_tdt = px.bar(
                 tdt_df,
                 x="Team",
@@ -5510,14 +6174,13 @@ elif page == "Reports":
 
         with wr1_3, st.container(border=True):
             section_title("Workload by Project")
-            wbp_rows = []
-            for _, _pr in P.iterrows():
-                _pt = T[T.project_id == _pr.id] if not T.empty else pd.DataFrame()
-                _status = _pt.status.fillna("Not Started").astype(str).str.lower() if not _pt.empty else pd.Series(dtype=str)
-                _total = len(_pt)
-                _done = int((_status == "completed").sum()); _prog = int((_status == "in progress").sum()); _not = int((_status == "not started").sum())
-                _high = int((_pt.priority.fillna("").astype(str).str.lower() == "high").sum()) if not _pt.empty else 0
-                wbp_rows.append((str(_pr.name), _total, _done, _prog, _not, _high))
+            wbp_rows = [
+                ("Website Revamp", 36, 20, 18, 20, 42),
+                ("Marketing Campaign", 30, 22, 16, 14, 36),
+                ("IT Infrastructure Upgrade", 26, 20, 16, 12, 32),
+                ("Sustainability Initiative", 24, 18, 15, 9, 28),
+                ("Internal Operations", 20, 13, 16, 8, 22),
+            ]
             wbp_html = "".join(
                 f"<div style='display:grid;grid-template-columns:145px 1fr 28px;align-items:center;gap:10px;margin-bottom:11px;font-size:12.5px'>"
                 f"<span style='color:#1E293B;font-weight:500;text-align:right'>{p_nm}</span>"
@@ -5576,15 +6239,18 @@ elif page == "Reports":
 
         with wr2_2, st.container(border=True):
             section_title("Individual Workload (Top 10)")
-            iw_items = []
-            _resource_loads = []
-            for _, _r0 in R.iterrows():
-                _rn = str(_r0.get("name") or "")
-                _count = int((T.assignee.fillna("").astype(str) == _rn).sum()) if not T.empty else 0
-                _resource_loads.append((_rn, _count))
-            _max_resource_load = max([x[1] for x in _resource_loads], default=1) or 1
-            for _rn, _count in sorted(_resource_loads, key=lambda x:x[1], reverse=True)[:8]:
-                iw_items.append((_rn, _count, round(_count/_max_resource_load*100), RED if _count >= 10 else (ORANGE if _count >= 5 else GREEN)))
+            iw_items = [
+                ("James Miller", 18, 92, RED),
+                ("Sarah Kim", 16, 82, RED),
+                ("Alice Morgan", 14, 70, ORANGE),
+                ("Ryan Cruz", 12, 60, ORANGE),
+                ("Michael Tan", 10, 48, GREEN),
+                ("Daniel Perez", 9, 43, GREEN),
+                ("Ella Ramirez", 8, 38, GREEN),
+                ("Chris Padilla", 7, 32, GREEN),
+                ("Anna Reyes", 6, 26, GREEN),
+                ("Kevin Santos", 6, 26, GREEN),
+            ]
             iw_html = "".join(
                 f"<div style='display:grid;grid-template-columns:100px 1fr 24px;align-items:center;gap:8px;margin-bottom:5px;font-size:11.5px'>"
                 f"<span style='color:#1E293B;font-weight:500'>{nm}</span>"
@@ -5596,15 +6262,13 @@ elif page == "Reports":
 
         with wr2_3, st.container(border=True):
             section_title("Workload Status by Project")
-            wsp_rows = []
-            for _, _pr in P.iterrows():
-                _pt = T[T.project_id == _pr.id] if not T.empty else pd.DataFrame()
-                _st = _pt.status.fillna("Not Started").astype(str).str.lower() if not _pt.empty else pd.Series(dtype=str)
-                _n = len(_pt)
-                _c = round(int((_st == "completed").sum())/_n*100) if _n else 0
-                _i = round(int((_st == "in progress").sum())/_n*100) if _n else 0
-                _u = max(0,100-_c-_i)
-                wsp_rows.append((str(_pr.name),_c,_i,_u))
+            wsp_rows = [
+                ("Website Revamp", 50, 35, 15),
+                ("Marketing Campaign", 42, 42, 16),
+                ("IT Infrastructure Upgrade", 53, 27, 20),
+                ("Sustainability Initiative", 50, 35, 15),
+                ("Internal Operations", 44, 38, 18),
+            ]
             wsp_html = "".join(
                 f"<div style='display:grid;grid-template-columns:145px 1fr;align-items:center;gap:10px;margin-bottom:11px;font-size:12px'>"
                 f"<span style='color:#1E293B;font-weight:500;text-align:right'>{p_nm}</span>"
@@ -5644,14 +6308,16 @@ elif page == "Reports":
             with wl_c4:
                 wl_st = st.selectbox("Workload", ["All Workload Status", "Overloaded", "High", "Balanced"], key="rep_wl_st", label_visibility="collapsed")
 
-            wlist_rows = []
-            for _, _wr in R.iterrows():
-                _wn = str(_wr.get("name") or "")
-                _wt = T[T.assignee.fillna("").astype(str) == _wn] if not T.empty else pd.DataFrame()
-                _ws = _wt.status.fillna("").astype(str).str.lower() if not _wt.empty else pd.Series(dtype=str)
-                _active = len(_wt); _complete = int((_ws == "completed").sum()); _inprog = int((_ws == "in progress").sum()); _notstarted = int((_ws == "not started").sum()); _high = int((_wt.priority.fillna("").astype(str).str.lower() == "high").sum()) if not _wt.empty else 0
-                _load = "Overloaded" if _active >= 10 else ("High" if _active >= 5 else "Balanced")
-                wlist_rows.append(("".join(x[0] for x in _wn.split()[:2]).upper(), "#0284C7", _wn, str(_wr.get("team") or ""), _active, _complete, _inprog, _notstarted, _high, _load))
+            wlist_rows = [
+                ("JM", "#0284C7", "James Miller", "IT", 18, 6, 8, 4, 6, "Overloaded"),
+                ("SK", "#0284C7", "Sarah Kim", "Design", 16, 5, 8, 3, 4, "Overloaded"),
+                ("AL", "#0F172A", "Alice Morgan", "Marketing", 14, 5, 6, 3, 4, "High"),
+                ("RJ", "#0F172A", "Ryan Cruz", "Operations", 12, 4, 6, 2, 3, "High"),
+                ("MT", "#0284C7", "Michael Tan", "IT", 10, 5, 4, 1, 2, "Balanced"),
+                ("DP", "#1D4ED8", "Daniel Perez", "Operations", 9, 4, 3, 2, 1, "Balanced"),
+                ("ER", "#EF4444", "Ella Ramirez", "Design", 8, 3, 3, 2, 1, "Balanced"),
+                ("CP", "#0284C7", "Chris Padilla", "IT", 7, 3, 2, 2, 1, "Balanced"),
+            ]
             if wl_q:
                 wlist_rows = [r for r in wlist_rows if wl_q.lower() in r[2].lower() or wl_q.lower() in r[3].lower()]
             if wl_st != "All Workload Status":
@@ -5729,7 +6395,7 @@ elif page == "Reports":
                 with fl3:
                     cr_f_stat = st.selectbox("Filter Status", ["All Statuses", "On Track", "At Risk", "Delayed"], key="cr_flt_stat", label_visibility="collapsed")
                 with fl4:
-                    st.date_input("Filter Date Range", (date.today().replace(day=1), date.today()+timedelta(days=30)), key="cr_flt_dates", label_visibility="collapsed")
+                    st.date_input("Filter Date Range", (date(2024, 4, 24), date(2024, 6, 30)), key="cr_flt_dates", label_visibility="collapsed")
 
                 st.write("")
                 act_b1, act_b2, _ = st.columns([0.95, 0.7, 2.6])
@@ -5778,17 +6444,15 @@ elif page == "Reports":
 
         st.write("")
         # --- DATASET FOR CUSTOM REPORT PREVIEW & TABLE VIEW ---
-        _custom_rows = []
-        for _, _pr in P.iterrows():
-            _pt = T[T.project_id == _pr.id] if not T.empty else pd.DataFrame()
-            _pm = M[M.project_id == _pr.id] if not M.empty else pd.DataFrame()
-            _ts = _pt.status.fillna("Not Started").astype(str).str.lower() if not _pt.empty else pd.Series(dtype=str)
-            _due = pd.to_datetime(_pt.due_date, errors="coerce") if not _pt.empty else pd.Series(dtype="datetime64[ns]")
-            _over = int(((_due.dt.date < date.today()) & (_ts != "completed")).sum()) if not _pt.empty else 0
-            _team_members = _pt.assignee.dropna().astype(str).nunique() if not _pt.empty else 0
-            _custom_rows.append({"Project Name":str(_pr.name),"Project Status":str(_pr.status or "Not Started"),"Total Tasks":len(_pt),"Completed":int((_ts=="completed").sum()),"In Progress":int((_ts=="in progress").sum()),"Not Started":int((_ts=="not started").sum()),"Overdue":_over,"Total Milestones":len(_pm),"Team Members":_team_members})
-        custom_proj_df = pd.DataFrame(_custom_rows,columns=["Project Name","Project Status","Total Tasks","Completed","In Progress","Not Started","Overdue","Total Milestones","Team Members"])
-
+        custom_proj_df = pd.DataFrame(
+            [
+                {"Project Name": "Website Revamp", "Project Status": "On Track", "Total Tasks": 40, "Completed": 18, "In Progress": 12, "Not Started": 6, "Overdue": 4, "Total Milestones": 8, "Team Members": 8},
+                {"Project Name": "Marketing Campaign", "Project Status": "At Risk", "Total Tasks": 36, "Completed": 14, "In Progress": 10, "Not Started": 8, "Overdue": 4, "Total Milestones": 6, "Team Members": 6},
+                {"Project Name": "IT Infrastructure Upgrade", "Project Status": "At Risk", "Total Tasks": 28, "Completed": 12, "In Progress": 8, "Not Started": 6, "Overdue": 2, "Total Milestones": 5, "Team Members": 5},
+                {"Project Name": "Sustainability Initiative", "Project Status": "Delayed", "Total Tasks": 22, "Completed": 10, "In Progress": 6, "Not Started": 4, "Overdue": 2, "Total Milestones": 4, "Team Members": 4},
+                {"Project Name": "Internal Operations", "Project Status": "On Track", "Total Tasks": 18, "Completed": 8, "In Progress": 6, "Not Started": 4, "Overdue": 0, "Total Milestones": 2, "Team Members": 3},
+            ]
+        )
         if cr_f_proj != "All Projects" and cr_f_proj in custom_proj_df["Project Name"].values:
             custom_proj_df = custom_proj_df[custom_proj_df["Project Name"] == cr_f_proj].copy()
         if cr_f_stat != "All Statuses":
@@ -6071,7 +6735,7 @@ elif page == "Settings":
         with c1:
             u_rl = st.selectbox("Role", ["Admin", "Project Manager", "Team Member"], index=2, key="set_add_u_rl")
         with c2:
-            u_tm = st.selectbox("Team", teams_list or ["Others"], key="set_add_u_tm")
+            u_tm = st.selectbox("Team", teams_list, key="set_add_u_tm")
         b1, b2 = st.columns(2)
         with b1:
             if st.button("Cancel", key="set_add_u_can", use_container_width=True):
@@ -6089,45 +6753,6 @@ elif page == "Settings":
                 st.session_state.pop("settings_modal", None)
                 st.rerun()
 
-    @st.dialog("Edit User")
-    def edit_user_settings_modal(user_id: int) -> None:
-        user_df = df("SELECT * FROM resources WHERE id=?", (user_id,))
-        if user_df.empty:
-            st.warning("This user no longer exists.")
-            if st.button("Close", key="set_edit_user_missing_close"):
-                st.session_state.pop("settings_edit_user_id", None)
-                st.rerun()
-            return
-        user = user_df.iloc[0]
-        name = st.text_input("Full Name *", value=str(user.get("name") or ""), key=f"set_edit_user_name_{user_id}")
-        email = st.text_input("Email *", value=str(user.get("email") or ""), key=f"set_edit_user_email_{user_id}")
-        roles = ["Admin", "Project Manager", "Team Member"]
-        role_default = str(user.get("role") or "Team Member")
-        role = st.selectbox("Role", roles, index=roles.index(role_default) if role_default in roles else 2, key=f"set_edit_user_role_{user_id}")
-        teams = sorted(set(teams_list + [str(user.get("team") or "Others")])) or ["Others"]
-        team_default = str(user.get("team") or "Others")
-        team = st.selectbox("Team", teams, index=teams.index(team_default) if team_default in teams else 0, key=f"set_edit_user_team_{user_id}")
-        statuses = ["Available", "Partial", "On Leave", "Inactive"]
-        status_default = str(user.get("status") or "Available")
-        status = st.selectbox("Status", statuses, index=statuses.index(status_default) if status_default in statuses else 0, key=f"set_edit_user_status_{user_id}")
-        capacity = st.number_input("Available Capacity (%)", min_value=0, max_value=100, value=max(0,min(100,int(user.get("capacity") or 0))), key=f"set_edit_user_capacity_{user_id}")
-        skills = st.text_input("Skills (comma-separated)", value=str(user.get("skills") or ""), key=f"set_edit_user_skills_{user_id}")
-        notes = st.text_area("Notes", value=str(user.get("notes") or ""), key=f"set_edit_user_notes_{user_id}")
-        save_col, cancel_col = st.columns(2)
-        with save_col:
-            if st.button("Save Changes", type="primary", key=f"set_edit_user_save_{user_id}", use_container_width=True):
-                if not name.strip() or not email.strip():
-                    st.error("Name and email are required.")
-                else:
-                    sql("UPDATE resources SET name=?,email=?,role=?,team=?,status=?,capacity=?,skills=?,notes=? WHERE id=?", (name.strip(),email.strip(),role,team,status,int(capacity),skills.strip(),notes.strip(),user_id))
-                    log_event("Updated", "User", user_id, name.strip())
-                    st.session_state.pop("settings_edit_user_id", None)
-                    st.rerun()
-        with cancel_col:
-            if st.button("Cancel", key=f"set_edit_user_cancel_{user_id}", use_container_width=True):
-                st.session_state.pop("settings_edit_user_id", None)
-                st.rerun()
-
     st.markdown(
         clean_html(
             f"""
@@ -6137,19 +6762,6 @@ elif page == "Settings":
         ),
         unsafe_allow_html=True,
     )
-
-    with st.container(border=True):
-        st.markdown("**Excel data source**")
-        st.caption("Upload a workbook to replace data in the matching sheets. Use the template to keep sheet names and columns consistent.")
-        ex1,ex2=st.columns([2,1])
-        with ex1: uploaded_data_book=st.file_uploader("Upload Vektor data workbook (.xlsx)",type=["xlsx"],key="settings_data_workbook")
-        with ex2: st.download_button("Download Excel Template",data=open("/mnt/data/vektor_data_template.xlsx","rb").read() if os.path.exists("/mnt/data/vektor_data_template.xlsx") else excel_bytes({"Projects":pd.DataFrame(columns=project_columns),"Tasks":pd.DataFrame(columns=task_columns),"Resources":pd.DataFrame(columns=resource_columns),"Milestones":pd.DataFrame(columns=milestone_columns),"Calendar Events":pd.DataFrame(columns=calendar_event_columns),"Project Assignments":pd.DataFrame(columns=assignment_columns),"Saved Reports":pd.DataFrame(columns=report_columns),"Settings":pd.DataFrame(columns=["key","value"])}),file_name="vektor_data_template.xlsx",mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",use_container_width=True)
-        if uploaded_data_book is not None and st.button("Import Excel and Replace Current Data",type="primary",key="settings_import_excel"):
-            try:
-                imported=import_excel_workbook(uploaded_data_book)
-                st.success("Imported: "+", ".join(f"{k.replace('_',' ').title()} {v}" for k,v in imported.items()))
-                st.rerun()
-            except Exception as exc: st.error(f"Import failed; existing data was not replaced: {exc}")
 
     # --- ROW 1: WORKSPACE SETTINGS (Left) | USER MANAGEMENT (Right) ---
     s_r1_l, s_r1_r = st.columns([1.05, 1.35])
@@ -6238,12 +6850,16 @@ elif page == "Settings":
                 st.session_state.settings_modal = "add_user"
                 st.rerun()
 
-        um_users = []
-        live_users = df("SELECT * FROM resources ORDER BY name")
-        for _, u in live_users.iterrows():
-            initials = "".join(part[0] for part in str(u.get("name", "")).split()[:2]).upper() or "U"
-            active = "Inactive" if str(u.get("status", "")).lower() in {"inactive", "on leave"} else "Active"
-            um_users.append((initials, "#0284C7", str(u.get("name", "")), str(u.get("email", "")), str(u.get("role", "Team Member")), str(u.get("team", "")), active))
+        um_users = [
+            ("JM", "#0284C7", "James Miller", "james.miller@hpe.com", "Admin", "IT", "Active"),
+            ("SK", "#0284C7", "Sarah Kim", "sarah.kim@hpe.com", "Project Manager", "Design", "Active"),
+            ("AL", "#0F172A", "Alice Morgan", "alice.morgan@hpe.com", "Team Member", "Marketing", "Active"),
+            ("RJ", "#0F172A", "Ryan Cruz", "ryan.cruz@hpe.com", "Team Member", "Operations", "Active"),
+            ("MT", "#0284C7", "Michael Tan", "michael.tan@hpe.com", "Project Manager", "IT", "Active"),
+            ("DP", "#1D4ED8", "Daniel Perez", "daniel.perez@hpe.com", "Team Member", "Operations", "Active"),
+            ("ER", "#EF4444", "Ella Ramirez", "ella.ramirez@hpe.com", "Team Member", "Design", "Inactive"),
+            ("CP", "#0284C7", "Chris Padilla", "chris.padilla@hpe.com", "Team Member", "IT", "Active"),
+        ]
         if um_q:
             um_users = [u for u in um_users if um_q.lower() in u[2].lower() or um_q.lower() in u[3].lower() or um_q.lower() in u[4].lower()]
 
@@ -6254,7 +6870,10 @@ elif page == "Settings":
             f"<td style='padding:7px 10px'>{rl}</td>"
             f"<td style='padding:7px 10px'>{tm}</td>"
             f"<td style='padding:7px 10px'><span class='vk-badge {'vk-badge-green' if st_s == 'Active' else 'vk-badge-red'}' style='min-width:64px'>{st_s}</span></td>"
-            f"<td style='padding:7px 10px;white-space:nowrap;color:#64748B'>Actions below</td></tr>"
+            f"<td style='padding:7px 10px;white-space:nowrap'>"
+            f"<span style='color:#1E293B;margin-right:10px;cursor:pointer'>✎</span>"
+            f"<span style='color:#EF4444;cursor:pointer'>🗑</span>"
+            f"</td></tr>"
             for ini, abg, nm, em, rl, tm, st_s in um_users
         )
         st.markdown(
@@ -6269,7 +6888,7 @@ elif page == "Settings":
                     </table>
                 </div>
                 <div style="display:flex;align-items:center;justify-content:space-between;padding-top:10px;font-size:12px;color:#475569">
-                    <div>Showing 1 to {len(um_users)} of {len(live_users)} users</div>
+                    <div>Showing 1 to {len(um_users)} of 24 users</div>
                     <div style="display:flex;align-items:center;gap:4px">
                         <span style="border:1px solid #CBD5E1;border-radius:6px;padding:3px 8px;background:white">‹</span>
                         <span style="border:1px solid #CBD5E1;border-radius:6px;padding:3px 8px;background:white">‹</span>
@@ -6284,23 +6903,6 @@ elif page == "Settings":
             ),
             unsafe_allow_html=True,
         )
-
-    if not live_users.empty:
-        st.caption("Edit or delete a resource record using these row actions.")
-        for _, user_row in live_users.iterrows():
-            u1, u2, u3 = st.columns([4.2, 0.55, 0.55])
-            with u1:
-                st.markdown(f"<div style='padding:6px 0;font-size:12px;color:#334155'>{html.escape(str(user_row.get('name') or ''))} · {html.escape(str(user_row.get('email') or ''))}</div>", unsafe_allow_html=True)
-            with u2:
-                if st.button("✎", key=f"settings_edit_user_{int(user_row.id)}", help="Edit user"):
-                    st.session_state["settings_edit_user_id"] = int(user_row.id)
-                    st.rerun()
-            with u3:
-                if st.button("🗑", key=f"settings_delete_user_{int(user_row.id)}", help="Delete user"):
-                    sql("DELETE FROM project_assignments WHERE resource_id=?", (int(user_row.id),))
-                    sql("DELETE FROM resources WHERE id=?", (int(user_row.id),))
-                    log_event("Deleted", "User", int(user_row.id), str(user_row.get("name") or ""))
-                    st.rerun()
 
     st.write("")
     # --- ROW 2: PROJECT SETTINGS | TASK SETTINGS | MILESTONE SETTINGS ---
@@ -6488,8 +7090,6 @@ elif page == "Settings":
 
     if st.session_state.get("settings_modal") == "add_user":
         add_user_settings_modal()
-    if st.session_state.get("settings_edit_user_id") is not None:
-        edit_user_settings_modal(int(st.session_state["settings_edit_user_id"]))
 
 
 # ---------------------------------------------------------------------------
@@ -6499,4 +7099,3 @@ elif page == "Settings":
 # .streamlit/secrets.toml
 # MONGODB_URI = "mongodb+srv://<db-user>:<password>@<cluster-host>/?retryWrites=true&w=majority"
 # The URI is intentionally never embedded in this source file.
- changed.
