@@ -13,6 +13,8 @@ import json
 import os
 import sqlite3
 import re
+import hashlib
+from typing import Iterable
 from datetime import date, datetime, timedelta
 
 try:
@@ -189,18 +191,31 @@ def sql(q: str, p: tuple = ()) -> None:
     table = match.group(1) if match else ""
     is_entity_mutation = table in {"projects", "tasks", "resources", "milestones", "saved_reports", "settings", "audit_log"}
     is_insert = normalized.startswith("insert into")
+    # First user-created record marks the end of demo-only mode. Keep existing projects
+    # available when the first real task/resource is added so foreign references still work.
+    if is_entity_mutation and is_insert and not st.session_state.get("_vektor_has_real_data"):
+        _clear_mock_records(except_table="projects" if table != "projects" else "")
     with conn() as c:
         c.execute(q, p)
         c.commit()
+    _cached_df.clear()
     if table in {"tasks", "projects", "milestones"}:
         _recalculate_project_rollups()
     if is_entity_mutation:
         _persist_snapshot()
 
 
-def df(q: str, p: tuple = ()) -> pd.DataFrame:
+@st.cache_data(show_spinner=False, ttl=30)
+def _cached_df(q: str, p: tuple, db_mtime: float) -> pd.DataFrame:
     with conn() as c:
         return pd.read_sql_query(q, c, params=p)
+
+def df(q: str, p: tuple = ()) -> pd.DataFrame:
+    try:
+        db_mtime = os.path.getmtime(DB)
+    except OSError:
+        db_mtime = 0.0
+    return _cached_df(q, p, db_mtime).copy()
 
 
 def init_db(force_reset: bool = False) -> None:
@@ -301,144 +316,324 @@ def init_db(force_reset: bool = False) -> None:
             """
         )
 
-        default_settings = [
-            ("workspace_name", "Vektor"),
-            ("workspace_description", "Project management workspace for planning, tracking, and delivery."),
-            ("theme", "HPE Green"),
-            ("language", "English"),
-            ("date_format", "MMM DD, YYYY"),
-            ("default_landing", "Overview"),
-            ("audit_logs", "true"),
-            ("data_export", "true"),
-            ("automatic_backups", "true"),
-            ("maintenance_mode", "false"),
-            ("session_timeout", "8 hours"),
-        ]
-        c.executemany("INSERT OR IGNORE INTO settings(key,value) VALUES(?,?)", default_settings)
+        if False and c.execute("SELECT COUNT(*) FROM projects").fetchone()[0] == 0:
+            # Demo seeding disabled: production data comes from Excel or user entry.
+            ps = [
+                (
+                    1, "Website Revamp", "Alice Morgan", "Marketing", "Web Development",
+                    "On Track", "High", "2024-04-24", "2024-06-30", 70, 45, 14, 20,
+                    "Web,Marketing,Corporate", "#00875A", "Redesign corporate website",
+                    "Redesign and launch the corporate website with improved user experience.", "Healthy"
+                ),
+                (
+                    2, "E-Commerce Platform", "Brian Taylor", "IT", "IT & Development",
+                    "In Progress", "High", "2024-03-15", "2024-06-15", 50, 30, 12, 24,
+                    "IT,Development", "#1473E6", "Build new e-commerce platform",
+                    "Build new e-commerce platform to expand digital presence.", "Healthy"
+                ),
+                (
+                    3, "Mobile App Development", "Emily Rodriguez", "Design", "Mobile Development",
+                    "At Risk", "Medium", "2024-04-01", "2024-08-30", 30, 90, 8, 26,
+                    "Mobile,Customer", "#7C3AED", "Develop customer mobile app",
+                    "Develop customer mobile application for iOS and Android.", "At Risk"
+                ),
+                (
+                    4, "Data Migration", "Carlos Diaz", "IT", "Cloud & Data",
+                    "On Track", "High", "2024-05-01", "2024-07-31", 80, 60, 18, 22,
+                    "Data,Cloud", "#F28C00", "Migrate legacy data to cloud",
+                    "Migrate legacy data to cloud infrastructure with minimal downtime.", "Healthy"
+                ),
+                (
+                    5, "IT Infrastructure Upgrade", "Dana Scott", "IT", "Infrastructure",
+                    "At Risk", "High", "2024-05-20", "2024-09-15", 20, 110, 6, 28,
+                    "Infrastructure,IT", "#00875A", "Upgrade servers and network",
+                    "Upgrade servers and network infrastructure to support business growth.", "At Risk"
+                ),
+                (
+                    6, "Security Enhancement", "Mark Wilson", "IT", "Security & Compliance",
+                    "On Track", "Medium", "2024-04-10", "2024-07-10", 65, 50, 13, 20,
+                    "Security,Compliance", "#00875A", "Implement security measures",
+                    "Implement security measures to strengthen system protection and compliance.", "Healthy"
+                ),
+                (
+                    7, "Customer Portal", "Sarah Kim", "Marketing", "Web Development",
+                    "On Track", "High", "2024-03-01", "2024-06-30", 90, 45, 18, 20,
+                    "Customer,Web", "#7C3AED", "Enhance customer portal",
+                    "Enhance customer portal with new features and improved user experience.", "Healthy"
+                ),
+                (
+                    8, "AI Integration", "Kevin Lee", "IT", "AI & Innovation",
+                    "Not Started", "Medium", "2024-05-05", "2024-10-31", 15, 140, 3, 18,
+                    "AI,Innovation", "#EC4899", "Integrate AI capabilities",
+                    "Integrate AI capabilities to improve business processes and customer support.", "Healthy"
+                ),
+                (
+                    9, "Process Automation", "Jason Tan", "Operations", "Operations",
+                    "In Progress", "Low", "2024-06-01", "2024-09-30", 40, 120, 8, 20,
+                    "Automation,Operations", "#1473E6", "Automate internal processes",
+                    "Automate internal processes to increase efficiency and reduce manual work.", "Healthy"
+                ),
+                (
+                    10, "Training Program", "Nicole Reyes", "Operations", "HR & Training",
+                    "In Progress", "Low", "2024-04-15", "2024-08-15", 55, 75, 11, 20,
+                    "HR,Training", "#DB2777", "Employee training and upskilling",
+                    "Employee training and upskilling program for new systems.", "Healthy"
+                ),
+                (
+                    11, "Vendor Management System", "David Park", "Operations", "Procurement",
+                    "Not Started", "Medium", "2024-05-10", "2024-11-30", 10, 170, 2, 18,
+                    "Procurement,IT", "#0284C7", "Implement vendor management",
+                    "Implement vendor management system to streamline procurement.", "At Risk"
+                ),
+                (
+                    12, "Sustainability Initiative", "Laura Torres", "Operations", "Sustainability",
+                    "Not Started", "Low", "2024-06-15", "2024-12-31", 5, 200, 1, 24,
+                    "Sustainability,ESG", "#00875A", "Implement green IT practices",
+                    "Implement green IT practices and sustainability programs.", "Critical"
+                ),
+            ]
+            c.executemany(
+                """
+                INSERT INTO projects(
+                    id,name,owner,team,category,status,priority,start_date,end_date,
+                    progress,days_left,tasks_done,tasks_total,tags,bar_color,short_desc,description,health
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                """,
+                ps,
+            )
+
+            people = [
+                "Alice Morgan", "Brian Taylor", "Emily Rodriguez", "Carlos Diaz", "Dana Scott",
+                "Mark Wilson", "Sarah Kim", "Kevin Lee", "Jason Tan", "Nicole Reyes",
+                "David Park", "Laura Torres", "James Miller", "Ryan Cruz", "Michael Tan",
+                "Daniel Perez", "Ella Ramirez", "Chris Padilla", "Anna Reyes", "Kevin Santos",
+                "Lisa Chan", "David Lim", "Maria Santos", "John Cruz",
+            ]
+            teams_list_seed = [
+                "Marketing", "IT", "Design", "IT", "IT",
+                "IT", "Marketing", "IT", "Operations", "Operations",
+                "Operations", "Operations", "IT", "Operations", "IT",
+                "Operations", "Design", "IT", "Marketing", "Operations",
+                "Design", "IT", "Marketing", "Others",
+            ]
+            for i, (n, t) in enumerate(zip(people, teams_list_seed)):
+                status = "On Leave" if i in (14, 20) else ("Partial" if i in (2, 6, 11, 17) else "Available")
+                role = "Admin" if i in (0, 12) else ("Project Manager" if i < 12 else "Team Member")
+                cap = 0 if status == "On Leave" else (50 if status == "Partial" else 100)
+                c.execute(
+                    "INSERT INTO resources(name,email,team,role,status,capacity,notes) VALUES(?,?,?,?,?,?,?)",
+                    (n, n.lower().replace(" ", ".") + "@vektor.example", t, role, status, cap, ""),
+                )
+
+            tasks_seed = [
+                ("UI/UX Design Complete", 1, "Design", "Completed", "High", "2024-04-01", "2024-04-30", "Alice Morgan", 100, "", "Design phase completed."),
+                ("Homepage Development", 1, "IT", "In Progress", "High", "2024-04-10", "2024-05-15", "James Miller", 65, "UI/UX Design Complete", "Frontend responsive build."),
+                ("Content Review", 7, "Marketing", "In Progress", "Medium", "2024-04-15", "2024-05-20", "Sarah Kim", 55, "", "Copywriting and creative review."),
+                ("Infrastructure Setup", 5, "IT", "Not Started", "High", "2024-05-01", "2024-05-15", "Dana Scott", 0, "Requirements Gathering", "Provisioning cluster nodes."),
+                ("Sustainability Plan", 12, "Operations", "Completed", "Medium", "2024-05-05", "2024-05-30", "Laura Torres", 100, "", "Charter approved by leadership."),
+                ("Process Documentation", 9, "Operations", "In Progress", "Low", "2024-05-10", "2024-06-20", "Jason Tan", 50, "", "Mapping core operational workflows."),
+                ("Training Materials", 10, "Operations", "Not Started", "Medium", "2024-05-20", "2024-06-30", "Nicole Reyes", 0, "Content Review", "Sales enablement deck."),
+                ("QA Testing", 1, "IT", "In Progress", "High", "2024-05-25", "2024-06-25", "Chris Padilla", 35, "Homepage Development", "Cross-browser regression testing."),
+                ("API Integration", 2, "IT", "In Progress", "High", "2024-04-12", "2024-05-25", "Brian Taylor", 60, "", "Payment gateway & cart API."),
+                ("UI Development", 3, "Design", "In Progress", "Medium", "2024-04-18", "2024-06-10", "Emily Rodriguez", 40, "", "Mobile screens implementation."),
+                ("Data Mapping", 4, "IT", "Completed", "Low", "2024-04-01", "2024-04-25", "Carlos Diaz", 100, "", "Schema validation finished."),
+            ]
+            c.executemany(
+                "INSERT INTO tasks(name,project_id,team,status,priority,start_date,due_date,assignee,progress,dependency,notes) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                tasks_seed,
+            )
+
+            ms_seed = [
+                ("Project Kick-off", 1, "Marketing", "Completed", "2024-04-20", "2024-04-24", "2024-04-24", "", "Initial kick-off complete."),
+                ("Requirements Finalized", 1, "Marketing", "Completed", "2024-04-25", "2024-05-05", "2024-05-05", "Project Kick-off", "Scope signed off."),
+                ("Design Sign-off", 1, "Design", "Completed", "2024-04-10", "2024-04-30", "2024-04-30", "Requirements Finalized", "Design phase completed."),
+                ("Development Complete", 1, "IT", "In Progress", "2024-05-01", "2024-05-31", "", "Design Sign-off", "Core build underway."),
+                ("UAT Completion", 1, "IT", "Not Started", "2024-06-01", "2024-06-15", "", "Development Complete", "Pending staging build."),
+                ("Go-Live", 1, "IT", "Not Started", "2024-06-16", "2024-06-30", "", "UAT Completion", "Production launch."),
+                ("MVP Release", 3, "Design", "At Risk", "2024-04-15", "2024-05-15", "", "UI Development", "Awaiting final assets."),
+                ("Data Migration Cutover", 4, "IT", "On Track", "2024-05-10", "2024-06-15", "", "Data Mapping", "Environment setup ongoing."),
+                ("Infrastructure Go-Live", 5, "IT", "On Track", "2024-06-01", "2024-07-01", "", "Infrastructure Setup", "Scheduled cutover."),
+            ]
+            c.executemany(
+                "INSERT INTO milestones(name,project_id,team,status,start_date,due_date,completion_date,dependency,notes) VALUES(?,?,?,?,?,?,?,?,?)",
+                ms_seed,
+            )
+
+            default_settings = [
+                ("workspace_name", "Vektor"),
+                ("workspace_description", "Project management workspace for planning, tracking, and delivery."),
+                ("theme", "HPE Green"),
+                ("language", "English"),
+                ("date_format", "MMM DD, YYYY"),
+                ("default_landing", "Overview"),
+                ("default_project_status", "On Track"),
+                ("project_template", "Standard Project"),
+                ("auto_project_id", "true"),
+                ("require_project_desc", "true"),
+                ("allow_project_attachments", "true"),
+                ("project_archiving", "false"),
+                ("default_task_status", "Not Started"),
+                ("default_task_priority", "Medium"),
+                ("task_dependencies", "true"),
+                ("allow_subtasks", "true"),
+                ("recurring_tasks", "false"),
+                ("require_assignee", "true"),
+                ("task_attachments", "true"),
+                ("default_milestone_status", "Not Started"),
+                ("milestones_enabled", "true"),
+                ("milestones_require_due", "true"),
+                ("milestone_dependencies", "true"),
+                ("milestone_notifications", "true"),
+                ("notification_frequency", "Daily digest"),
+                ("integration_Microsoft 365", "true"),
+                ("integration_Slack", "true"),
+                ("integration_Microsoft Teams", "false"),
+                ("integration_OneDrive", "false"),
+                ("audit_logs", "true"),
+                ("data_export", "true"),
+                ("automatic_backups", "true"),
+                ("maintenance_mode", "false"),
+                ("session_timeout", "8 hours"),
+            ]
+            c.executemany("INSERT OR IGNORE INTO settings(key,value) VALUES(?,?)", default_settings)
+
+            if c.execute("SELECT COUNT(*) FROM saved_reports").fetchone()[0] == 0:
+                saved_seed = [
+                    ("Monthly Project Summary", "Project Report", json.dumps({"type": "Project Report", "group": "Status", "metrics": ["Project Status", "Progress"], "viz": "Bar Chart"}), "2024-04-20", "Alice Morgan"),
+                    ("Q2 Resource Allocation", "Resource Report", json.dumps({"type": "Resource Report", "group": "Team", "metrics": ["Team Members"], "viz": "Column Chart"}), "2024-04-18", "Sarah Kim"),
+                    ("Overdue Tasks & Milestones", "Task Report", json.dumps({"type": "Task Report", "group": "Priority", "metrics": ["Task Status", "Priority"], "viz": "Pie Chart"}), "2024-04-15", "Dana Scott"),
+                ]
+                c.executemany(
+                    "INSERT INTO saved_reports(name,report_type,config,last_generated,created_by) VALUES(?,?,?,?,?)",
+                    saved_seed,
+                )
+            c.commit()
+
+
+
+DEFAULT_SETTINGS = {
+    "workspace_name": "Vektor", "workspace_description": "Project management workspace for planning, tracking, and delivery.",
+    "theme": "HPE Green", "language": "English", "date_format": "MMM DD, YYYY", "default_landing": "Overview",
+    "audit_logs": "true", "data_export": "true", "automatic_backups": "true", "maintenance_mode": "false",
+    "session_timeout": "8 hours",
+}
+
+def ensure_default_settings() -> None:
+    with conn() as c:
+        c.executemany("INSERT OR IGNORE INTO settings(key,value) VALUES(?,?)", list(DEFAULT_SETTINGS.items()))
         c.commit()
 
-def safe_int(value: object, default: int = 0) -> int:
-    value = pd.to_numeric(value, errors="coerce")
-    return default if pd.isna(value) else int(value)
+def _text(v: object) -> str:
+    if v is None or (isinstance(v, float) and pd.isna(v)):
+        return ""
+    return str(v).strip()
 
+def _iso(v: object) -> str:
+    if v is None or _text(v) == "":
+        return ""
+    try:
+        return pd.to_datetime(v, errors="raise").date().isoformat()
+    except Exception:
+        return ""
 
-def _iso_date(value: object) -> str | None:
-    parsed = pd.to_datetime(value, errors="coerce")
-    return None if pd.isna(parsed) else parsed.date().isoformat()
+def _split_people(value: object) -> list[str]:
+    raw = _text(value)
+    if not raw:
+        return []
+    names = re.split(r"\s*(?:&|/|;|,|\band\b)\s*", raw, flags=re.I)
+    return [n.strip() for n in names if n.strip()]
 
-
-def _normal_status(value: object) -> str:
-    raw = str(value or "").strip().lower()
-    mapping = {
-        "complete": "Completed", "completed": "Completed", "done": "Completed",
-        "in progress": "In Progress", "ongoing": "In Progress", "started": "In Progress",
-        "on hold": "On Hold", "hold": "On Hold", "blocked": "On Hold",
-        "at risk": "At Risk", "delayed": "Delayed", "overdue": "Overdue",
-        "not started": "Not Started", "planned": "Not Started", "": "Not Started",
-    }
-    return mapping.get(raw, str(value).strip() if str(value or "").strip() else "Not Started")
-
-
-def import_portfolio_excel(uploaded_file, replace_existing: bool = True) -> dict:
-    """Import the Portfolio worksheet into projects, tasks, milestones and resources."""
-    raw = pd.read_excel(uploaded_file, sheet_name="Portfolio", header=None, engine="openpyxl")
+def extract_portfolio_workbook(uploaded_file) -> dict[str, list[dict]]:
+    """Read the Portfolio worksheet and normalize it for the app database."""
+    raw = uploaded_file.getvalue() if hasattr(uploaded_file, "getvalue") else uploaded_file.read()
+    book = pd.ExcelFile(io.BytesIO(raw), engine="openpyxl")
+    portfolio_name = next((n for n in book.sheet_names if n.strip().lower() == "portfolio"), None)
+    if not portfolio_name:
+        raise ValueError("The workbook must contain a worksheet named 'Portfolio'.")
+    preview = pd.read_excel(io.BytesIO(raw), sheet_name=portfolio_name, header=None, engine="openpyxl", nrows=25)
     header_row = None
-    for idx, row in raw.iterrows():
-        vals = {str(v).strip().lower() for v in row.tolist() if pd.notna(v)}
+    for idx, row in preview.iterrows():
+        vals = {_text(v).lower() for v in row.tolist()}
         if "id" in vals and "program" in vals and any("initiative" in v for v in vals):
             header_row = idx
             break
     if header_row is None:
-        raise ValueError("The Portfolio worksheet must contain ID, Program, and Initiative / Milestone / Task headers.")
+        raise ValueError("Could not find the Portfolio header row. Required columns include ID, Program, Initiative / Milestone / Task, Owner, and Status.")
+    data = pd.read_excel(io.BytesIO(raw), sheet_name=portfolio_name, header=header_row, engine="openpyxl")
+    data.columns = [_text(c) or f"Column_{i}" for i, c in enumerate(data.columns)]
+    def col(*names):
+        normalized = {re.sub(r"\W+", " ", c.lower()).strip(): c for c in data.columns}
+        for name in names:
+            key = re.sub(r"\W+", " ", name.lower()).strip()
+            if key in normalized: return normalized[key]
+        return None
+    c_id, c_program = col("ID"), col("Program")
+    c_item = col("Initiative / Milestone / Task", "Initiative Milestone Task")
+    c_start, c_end, c_owner, c_status = col("Start Date"), col("End Date"), col("Owner"), col("Status")
+    c_update, c_remarks, c_pc = col("Update"), col("Remarks"), col("PC")
+    required = {"ID": c_id, "Program": c_program, "Initiative / Milestone / Task": c_item}
+    missing = [k for k,v in required.items() if not v]
+    if missing: raise ValueError("Missing required Portfolio columns: " + ", ".join(missing))
+    rows=[]
+    for _,r in data.iterrows():
+        rid=_text(r.get(c_id)); program=_text(r.get(c_program)); item=_text(r.get(c_item))
+        if not rid or not item: continue
+        rows.append({"source_id":rid,"program":program,"item":item,"start":_iso(r.get(c_start)) if c_start else "","end":_iso(r.get(c_end)) if c_end else "","owner":_text(r.get(c_owner)) if c_owner else "","status":_text(r.get(c_status)) or "Not Started","update":_text(r.get(c_update)) if c_update else "","remarks":_text(r.get(c_remarks)) if c_remarks else "","pc":_text(r.get(c_pc)) if c_pc else ""})
+    if not rows: raise ValueError("No extractable rows were found in the Portfolio worksheet.")
+    groups={}
+    for r in rows:
+        root=r["source_id"].split(".")[0]
+        groups.setdefault(root,[]).append(r)
+    projects=[]; tasks=[]; milestones=[]; resources={}
+    for root,items in groups.items():
+        base=next((x for x in items if x["source_id"]==root),items[0])
+        leaf=[x for x in items if x["source_id"]!=root] or items
+        statuses=[x["status"].lower() for x in leaf]
+        complete=sum(1 for x in statuses if x in {"completed","complete","done"})
+        progress=round(100*complete/len(leaf)) if leaf else 0
+        starts=[x["start"] for x in items if x["start"]]; ends=[x["end"] for x in items if x["end"]]
+        owner=base["owner"] or next((x["owner"] for x in items if x["owner"]),"")
+        status=base["status"] or ("Completed" if progress==100 else "In Progress" if progress else "Not Started")
+        project={"source_id":root,"name":base["program"] or base["item"],"owner":owner,"team":base["pc"] or "Portfolio","category":base["program"] or "Portfolio","status":status,"priority":"Medium","start_date":min(starts) if starts else "","end_date":max(ends) if ends else "","progress":progress,"tasks_done":complete,"tasks_total":len(leaf),"tags":base["program"],"short_desc":base["item"],"description":base["remarks"] or base["update"] or base["item"],"health":"Critical" if status.lower() in {"delayed","overdue"} else "At Risk" if "risk" in status.lower() else "Healthy"}
+        projects.append(project)
+        for x in items:
+            if x["source_id"]==root: continue
+            rec={"source_id":x["source_id"],"project_source_id":root,"name":x["item"],"team":x["pc"] or base["pc"] or "Portfolio","status":x["status"],"priority":"Medium","start_date":x["start"],"due_date":x["end"],"assignee":x["owner"],"progress":100 if x["status"].lower() in {"completed","complete","done"} else 50 if "progress" in x["status"].lower() else 0,"dependency":"","notes":"\n".join(v for v in [x["update"],x["remarks"]] if v)}
+            if "milestone" in x["item"].lower(): milestones.append(rec)
+            else: tasks.append(rec)
+        for x in items:
+            for person in _split_people(x["owner"]): resources.setdefault(person,{"name":person,"email":"","team":x["pc"] or "Portfolio","role":"Team Member","status":"Available","capacity":100,"notes":"Imported from Portfolio workbook"})
+    return {"projects":projects,"tasks":tasks,"milestones":milestones,"resources":list(resources.values()),"source_hash":hashlib.sha256(raw).hexdigest(),"rows":len(rows)}
 
-    data = pd.read_excel(uploaded_file, sheet_name="Portfolio", header=header_row, engine="openpyxl")
-    data.columns = [str(c).strip() if not str(c).startswith("Unnamed") else f"unused_{i}" for i, c in enumerate(data.columns)]
-    aliases = {
-        "PC": "pc", "ID": "wbs", "Program": "program",
-        "Initiative / Milestone / Task": "item", "Start Date": "start_date",
-        "End Date": "end_date", "Owner": "owner", "Status": "status",
-        "Past Due Date": "past_due", "Update": "update", "Remarks": "remarks",
-    }
-    data = data.rename(columns={k:v for k,v in aliases.items() if k in data.columns})
-    required = {"wbs", "program", "item"}
-    if not required.issubset(data.columns):
-        raise ValueError("Required Portfolio columns are missing: ID, Program, Initiative / Milestone / Task.")
-    data = data[data["wbs"].notna() & data["program"].notna()].copy()
-    data["wbs"] = data["wbs"].astype(str).str.strip()
-    data["program"] = data["program"].astype(str).str.strip()
-    data["item"] = data["item"].fillna("").astype(str).str.strip()
-    for col in ["pc", "owner", "status", "remarks", "update"]:
-        if col not in data: data[col] = None
-    data["pc"] = data.groupby("program")["pc"].ffill().bfill()
-
-    imported = {"projects": 0, "tasks": 0, "milestones": 0, "resources": 0}
-    today = date.today()
+def import_portfolio(payload: dict, replace_existing: bool = True) -> dict[str,int]:
     with conn() as c:
         if replace_existing:
-            for table in ("tasks", "milestones", "projects", "resources"):
+            for table in ("tasks","milestones","projects","resources"):
                 c.execute(f"DELETE FROM {table}")
-        project_ids = {}
-        for program, grp in data.groupby("program", sort=False):
-            starts = pd.to_datetime(grp.get("start_date"), errors="coerce").dropna()
-            ends = pd.to_datetime(grp.get("end_date"), errors="coerce").dropna()
-            start_dt = starts.min().date() if not starts.empty else None
-            end_dt = ends.max().date() if not ends.empty else None
-            statuses = grp["status"].map(_normal_status)
-            total = int((grp["item"] != "").sum())
-            done = int((statuses == "Completed").sum())
-            progress = round(done * 100 / total) if total else 0
-            status = "Completed" if total and done == total else ("In Progress" if (statuses == "In Progress").any() or done else "Not Started")
-            if (statuses == "At Risk").any(): status = "At Risk"
-            manager = next((str(x).strip() for x in grp["pc"].tolist() if pd.notna(x) and str(x).strip()), "")
-            desc = next((str(x).strip() for x in grp["remarks"].tolist() if pd.notna(x) and str(x).strip()), "")
-            cur = c.execute("""INSERT INTO projects(name,owner,team,category,status,priority,start_date,end_date,progress,days_left,tasks_done,tasks_total,tags,bar_color,short_desc,description,health)
-                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                (program, manager, "Portfolio", "Portfolio", status, "Medium",
-                 start_dt.isoformat() if start_dt else None, end_dt.isoformat() if end_dt else None,
-                 progress, (end_dt-today).days if end_dt else None, done, total, "Portfolio", GREEN,
-                 desc[:80], desc, "At Risk" if status in ("At Risk","Delayed") else "Healthy"))
-            project_ids[program] = cur.lastrowid
-            imported["projects"] += 1
-
-        resource_names = set()
-        for _, row in data.iterrows():
-            program = row["program"]
-            name = row["item"] or program
-            status = _normal_status(row.get("status"))
-            progress = 100 if status == "Completed" else (50 if status == "In Progress" else 0)
-            notes = " | ".join(str(x).strip() for x in [row.get("update"), row.get("remarks")] if pd.notna(x) and str(x).strip())
-            owner = str(row.get("owner") or "").strip()
-            if owner: resource_names.add(owner)
-            depth = row["wbs"].count(".")
-            if depth == 1:
-                c.execute("INSERT INTO milestones(name,project_id,team,status,start_date,due_date,completion_date,dependency,notes) VALUES(?,?,?,?,?,?,?,?,?)",
-                    (name, project_ids[program], "Portfolio", status, _iso_date(row.get("start_date")), _iso_date(row.get("end_date")), _iso_date(row.get("end_date")) if status == "Completed" else None, "", notes))
-                imported["milestones"] += 1
-            c.execute("INSERT INTO tasks(name,project_id,team,status,priority,start_date,due_date,assignee,progress,dependency,notes) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
-                (name, project_ids[program], "Portfolio", status, "Medium", _iso_date(row.get("start_date")), _iso_date(row.get("end_date")), owner, progress, row["wbs"], notes))
-            imported["tasks"] += 1
-        for name in sorted(resource_names):
-            c.execute("INSERT INTO resources(name,email,team,role,status,capacity,notes) VALUES(?,?,?,?,?,?,?)",
-                (name, "", "Portfolio", "Team Member", "Available", 100, "Imported from Portfolio workbook"))
-            imported["resources"] += 1
+        project_ids={}
+        for p in payload["projects"]:
+            cur=c.execute("INSERT INTO projects(name,owner,team,category,status,priority,start_date,end_date,progress,days_left,tasks_done,tasks_total,tags,bar_color,short_desc,description,health) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",(p["name"],p["owner"],p["team"],p["category"],p["status"],p["priority"],p["start_date"],p["end_date"],p["progress"],None,p["tasks_done"],p["tasks_total"],p["tags"],GREEN,p["short_desc"],p["description"],p["health"]))
+            project_ids[p["source_id"]]=cur.lastrowid
+        for t in payload["tasks"]:
+            c.execute("INSERT INTO tasks(name,project_id,team,status,priority,start_date,due_date,assignee,progress,dependency,notes) VALUES(?,?,?,?,?,?,?,?,?,?,?)",(t["name"],project_ids[t["project_source_id"]],t["team"],t["status"],t["priority"],t["start_date"],t["due_date"],t["assignee"],t["progress"],t["dependency"],t["notes"]))
+        for m in payload["milestones"]:
+            c.execute("INSERT INTO milestones(name,project_id,team,status,start_date,due_date,completion_date,dependency,notes) VALUES(?,?,?,?,?,?,?,?,?)",(m["name"],project_ids[m["project_source_id"]],m["team"],m["status"],m["start_date"],m["due_date"],m["due_date"] if m["status"].lower()=="completed" else "",m["dependency"],m["notes"]))
+        for r in payload["resources"]:
+            c.execute("INSERT INTO resources(name,email,team,role,status,capacity,notes) VALUES(?,?,?,?,?,?,?)",(r["name"],r["email"],r["team"],r["role"],r["status"],r["capacity"],r["notes"]))
+        c.execute("INSERT INTO settings(key,value) VALUES('last_import_hash',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",(payload["source_hash"],))
+        c.execute("INSERT INTO audit_log(event,item_type,details) VALUES(?,?,?)",("Imported","Portfolio Workbook",f"{payload['rows']} rows"))
         c.commit()
-    _recalculate_project_rollups()
-    _persist_snapshot()
-    return imported
+    _cached_df.clear(); _recalculate_project_rollups(); _persist_snapshot()
+    return {k:len(payload[k]) for k in ("projects","tasks","milestones","resources")}
 
-
-def clear_selected_data(selections: list[str]) -> None:
-    table_map = {"Projects": "projects", "Tasks": "tasks", "Milestones": "milestones", "Resources / Users": "resources", "Saved Reports": "saved_reports", "Audit Log": "audit_log", "Workspace Settings": "settings"}
-    selected_tables = {table_map[x] for x in selections if x in table_map}
-    if "projects" in selected_tables:
-        selected_tables.update({"tasks", "milestones"})
+def clear_selected_data(selections: Iterable[str]) -> None:
+    mapping={"Projects":"projects","Tasks":"tasks","Resources":"resources","Milestones":"milestones","Saved reports":"saved_reports","Audit log":"audit_log","Settings":"settings"}
+    selected=[mapping[x] for x in selections if x in mapping]
     with conn() as c:
-        for table in ("tasks", "milestones", "projects", "resources", "saved_reports", "audit_log", "settings"):
-            if table in selected_tables:
-                c.execute(f"DELETE FROM {table}")
+        for table in selected: c.execute(f"DELETE FROM {table}")
         c.commit()
-    _persist_snapshot()
-
+    if "settings" in selected: ensure_default_settings()
+    _cached_df.clear(); _persist_snapshot()
 
 def get_setting(k: str, default: str = "") -> str:
     x = df("SELECT value FROM settings WHERE key=?", (k,))
@@ -461,6 +656,7 @@ def log_event(event: str, typ: str = "", item_id: int | None = None, details: st
 
 
 init_db()
+ensure_default_settings()
 try:
     _mongo_restored = _restore_snapshot()
     if not st.session_state.get("_vektor_mongo_connected", False):
@@ -1212,7 +1408,7 @@ with st.sidebar:
 
     nav_items = {
         "⊞  Overview": "Overview",
-        "📁  Portfolio": "Projects",
+        "📁  Projects": "Projects",
         "📊  Gantt Chart": "Gantt Chart",
         "☰  Task List": "Task List",
         "👥  Resources": "Resources",
@@ -1337,17 +1533,12 @@ def view_project_modal(pid: int) -> None:
         return
     r = row_df.iloc[0]
     tags_html = "".join(tag_pill_html(t) for t in str(r.tags or "").split(",") if t.strip())
-    full_desc = str(r.description or r.short_desc or "")
-    pct = safe_int(r.progress)
-    project_tasks = df("SELECT * FROM tasks WHERE project_id=? ORDER BY due_date", (pid,))
-    project_milestones = df("SELECT * FROM milestones WHERE project_id=? ORDER BY due_date", (pid,))
-    status_counts = project_tasks["status"].fillna("Not Started").value_counts().to_dict() if not project_tasks.empty else {}
-    total_task_count = max(1, len(project_tasks))
-    duration_days = 0
-    try:
-        duration_days = (date.fromisoformat(str(r.end_date)[:10]) - date.fromisoformat(str(r.start_date)[:10])).days
-    except Exception:
-        pass
+    full_desc = (
+        "Redesign and launch the corporate website with improved user experience and modern design."
+        if r["name"] == "Website Revamp"
+        else str(r.description or r.short_desc or "")
+    )
+    pct = int(r.progress or 0)
 
     st.markdown(
         clean_html(
@@ -1386,7 +1577,7 @@ def view_project_modal(pid: int) -> None:
                 </div>
                 <div style="border:1px solid #E2E8F0;border-radius:10px;padding:10px 12px;display:flex;align-items:center;gap:10px;background:white">
                     <div style="width:36px;height:36px;border-radius:50%;background:#DCFCE7;color:#00875A;display:flex;align-items:center;justify-content:center;font-size:16px">🕒</div>
-                    <div><div style="font-size:11px;color:#64748B">Days Left</div><div style="font-size:18px;font-weight:800;color:#00875A;line-height:1">{safe_int(r.days_left)}</div><div style="font-size:10px;color:#64748B">Days remaining</div></div>
+                    <div><div style="font-size:11px;color:#64748B">Days Left</div><div style="font-size:18px;font-weight:800;color:#00875A;line-height:1">{int(r.days_left or 45)}</div><div style="font-size:10px;color:#64748B">Days remaining</div></div>
                 </div>
             </div>
             """
@@ -1403,12 +1594,12 @@ def view_project_modal(pid: int) -> None:
         with d2:
             st.markdown(
                 clean_html(
-                    f"""
+                    """
                     <div style="font-size:12px;line-height:2.1;padding-top:14px">
-                        <div style="display:flex;justify-content:space-between"><span><span style="color:#00875A">●</span> Completed</span><b>{status_counts.get('Completed',0)} ({round(status_counts.get('Completed',0)*100/total_task_count)}%)</b></div>
-                        <div style="display:flex;justify-content:space-between"><span><span style="color:#1473E6">●</span> In Progress</span><b>{status_counts.get('In Progress',0)} ({round(status_counts.get('In Progress',0)*100/total_task_count)}%)</b></div>
-                        <div style="display:flex;justify-content:space-between"><span><span style="color:#F28C00">●</span> On Hold</span><b>{status_counts.get('On Hold',0)} ({round(status_counts.get('On Hold',0)*100/total_task_count)}%)</b></div>
-                        <div style="display:flex;justify-content:space-between"><span><span style="color:#64748B">●</span> Not Started</span><b>{status_counts.get('Not Started',0)} ({round(status_counts.get('Not Started',0)*100/total_task_count)}%)</b></div>
+                        <div style="display:flex;justify-content:space-between"><span><span style="color:#00875A">●</span> Completed</span><b>14 (70%)</b></div>
+                        <div style="display:flex;justify-content:space-between"><span><span style="color:#1473E6">●</span> In Progress</span><b>4 (20%)</b></div>
+                        <div style="display:flex;justify-content:space-between"><span><span style="color:#F28C00">●</span> On Hold</span><b>1 (5%)</b></div>
+                        <div style="display:flex;justify-content:space-between"><span><span style="color:#64748B">●</span> Not Started</span><b>1 (5%)</b></div>
                     </div>
                     """
                 ),
@@ -1433,14 +1624,14 @@ def view_project_modal(pid: int) -> None:
                     <div style="display:grid;grid-template-columns:115px 1fr;gap:6px"><span style="color:#64748B">Project Manager</span><span>{html.escape(str(r.owner))}</span></div>
                     <div style="display:grid;grid-template-columns:115px 1fr;gap:6px"><span style="color:#64748B">Start Date</span><span>{fmt_date(r.start_date)}</span></div>
                     <div style="display:grid;grid-template-columns:115px 1fr;gap:6px"><span style="color:#64748B">Target End Date</span><span>{fmt_date(r.end_date)}</span></div>
-                    <div style="display:grid;grid-template-columns:115px 1fr;gap:6px"><span style="color:#64748B">Duration</span><span>{duration_days} days</span></div>
-                    <div style="display:grid;grid-template-columns:115px 1fr;gap:6px"><span style="color:#64748B">Days Left</span><span style="color:#00875A;font-weight:700">{safe_int(r.days_left)} days</span></div>
+                    <div style="display:grid;grid-template-columns:115px 1fr;gap:6px"><span style="color:#64748B">Duration</span><span>67 days</span></div>
+                    <div style="display:grid;grid-template-columns:115px 1fr;gap:6px"><span style="color:#64748B">Days Left</span><span style="color:#00875A;font-weight:700">{int(r.days_left or 45)} days</span></div>
                     <div style="display:grid;grid-template-columns:115px 1fr;gap:6px;margin-top:4px"><span style="color:#64748B">Tags</span><span>{tags_html}</span></div>
                 </div>
                 <hr style="border-color:#EEF2F6;margin:12px 0">
                 <div style="font-size:13.5px;font-weight:700;color:#0F172A;margin-bottom:6px">📄 Project Summary</div>
                 <div style="font-size:11.5px;color:#64748B;line-height:1.55">
-                    {html.escape(full_desc or f"{r['name']} is {pct}% complete based on the imported portfolio tasks.")}
+                    The {html.escape(r['name'])} project aims to deliver a modern, user-friendly corporate website with improved performance, enhanced user experience, and updated content. The project is currently on track with {pct}% completion. Key development activities are in progress and the team is aligned for the upcoming milestones.
                 </div>
                 """
             ),
@@ -1451,8 +1642,12 @@ def view_project_modal(pid: int) -> None:
         with st.container(border=True):
             section_title("🎯 Key Milestones", "View All Milestones →")
             ms_rows = [
-                (idx + 1, "#00875A" if str(m.status) == "Completed" else ("#1473E6" if str(m.status) == "In Progress" else "#64748B"), str(m["name"]), fmt_date(m.due_date), str(m.status or "Not Started"))
-                for idx, (_, m) in enumerate(project_milestones.iterrows())
+                (1, "#00875A", "Project Kick-off", "Apr 24, 2024", "Completed"),
+                (2, "#00875A", "Requirements Finalized", "May 5, 2024", "Completed"),
+                (3, "#00875A", "Design Sign-off", "Apr 30, 2024", "Completed"),
+                (4, "#1473E6", "Development Complete", "May 31, 2024", "In Progress"),
+                (5, "#64748B", "UAT Completion", "Jun 15, 2024", "Not Started"),
+                (6, "#64748B", "Go-Live", "Jun 30, 2024", "Not Started"),
             ]
             tr_html = "".join(
                 f"<tr><td><b>{idx}</b></td><td><span style='color:{dot};margin-right:6px'>●</span>{mname}</td><td>{mdue}</td><td>{badge_html(mstat)}</td></tr>"
@@ -1465,8 +1660,12 @@ def view_project_modal(pid: int) -> None:
 
         with st.container(border=True):
             section_title("🕒 Recent Activity", "View All Activity →")
-            activity_df = df("SELECT created_at,event,details FROM audit_log WHERE item_type='Project' AND (item_id=? OR details=?) ORDER BY created_at DESC LIMIT 8", (pid, r["name"]))
-            act_rows = [(fmt_date(a.created_at), "#1473E6", str(a.event), str(a.details or "")) for _, a in activity_df.iterrows()]
+            act_rows = [
+                ("Apr 24, 2024 10:15 AM", "#00875A", "Project created", "Alice Morgan"),
+                ("Apr 23, 2024 04:20 PM", "#1473E6", "Milestone status changed to In Progress", "Emily Rodriguez"),
+                ("Apr 22, 2024 03:45 PM", "#1473E6", "Project details updated", "Alice Morgan"),
+                ("Apr 20, 2024 11:10 AM", "#64748B", "Team member added", "Sarah Kim"),
+            ]
             act_tr = "".join(
                 f"<tr><td>{dt}</td><td><span style='color:{dot};margin-right:6px'>●</span>{act}</td><td>{by}</td></tr>"
                 for dt, dot, act, by in act_rows
@@ -1749,7 +1948,7 @@ if page == "Overview":
                 f"<td>{fmt_date(pr.end_date)}</td>"
                 f"<td>{progress_html(pr.progress, GREEN)}</td>"
                 f"<td>{badge_html(pr.status)}</td>"
-                f"<td style='text-align:center;font-weight:600'>{safe_int(pr.days_left)}</td>"
+                f"<td style='text-align:center;font-weight:600'>{int(pr.days_left or 0)}</td>"
                 f"</tr>"
             )
         st.markdown(
@@ -1951,21 +2150,6 @@ if page == "Overview":
 # PAGE 2: PROJECTS (Exact Replica of Images 1, 3, 4, 5, 6)
 # ===========================================================================
 elif page == "Projects":
-    with st.expander("Import Portfolio from Excel", expanded=P.empty):
-        up_l, up_m, up_r = st.columns([2.4, 1.0, 0.8])
-        with up_l:
-            portfolio_file = st.file_uploader("Upload the portfolio workbook", type=["xlsx", "xlsm"], key="portfolio_excel_upload", help="The workbook must include a Portfolio worksheet.")
-        with up_m:
-            import_mode = st.selectbox("Import mode", ["Replace portfolio data", "Append portfolio data"], key="portfolio_import_mode")
-        with up_r:
-            st.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
-            if st.button("Import Excel", type="primary", use_container_width=True, key="portfolio_import_btn", disabled=portfolio_file is None):
-                try:
-                    result = import_portfolio_excel(portfolio_file, replace_existing=import_mode.startswith("Replace"))
-                    st.success(f"Imported {result['projects']} projects, {result['tasks']} tasks, {result['milestones']} milestones, and {result['resources']} resources.")
-                    st.rerun()
-                except Exception as exc:
-                    st.error(f"Unable to import the workbook: {exc}")
     # Top Header Row: Title on Left, Search + Date Range + "+ New Project" on Right
     h_l, h_s, h_d, h_b = st.columns([1.9, 1.0, 1.0, 0.65])
     with h_l:
@@ -1990,13 +2174,13 @@ elif page == "Projects":
     with k1:
         kpi_card_mockup("TOTAL PROJECTS", str(total_p), bar_pct=60, icon_html="❖", icon_bg="#DCFCE7", icon_fg="#00875A", bar_color="#00875A")
     with k2:
-        kpi_card_mockup("ON TRACK", str(int((P.status == "On Track").sum())), f"({round((P.status == 'On Track').mean()*100) if len(P) else 0}%)", bar_pct=round((P.status == "On Track").mean()*100) if len(P) else 0, icon_html="✓", icon_bg="#DCFCE7", icon_fg="#00875A", bar_color="#00875A")
+        kpi_card_mockup("ON TRACK", "6", "(50%)", bar_pct=50, icon_html="✓", icon_bg="#DCFCE7", icon_fg="#00875A", bar_color="#00875A")
     with k3:
-        kpi_card_mockup("IN PROGRESS", str(int((P.status == "In Progress").sum())), f"({round((P.status == 'In Progress').mean()*100) if len(P) else 0}%)", bar_pct=round((P.status == "In Progress").mean()*100) if len(P) else 0, icon_html="▶", icon_bg="#DBEAFE", icon_fg="#1473E6", bar_color="#1473E6")
+        kpi_card_mockup("IN PROGRESS", "3", "(25%)", bar_pct=25, icon_html="▶", icon_bg="#DBEAFE", icon_fg="#1473E6", bar_color="#1473E6")
     with k4:
-        kpi_card_mockup("AT RISK", str(int((P.status == "At Risk").sum())), f"({round((P.status == 'At Risk').mean()*100) if len(P) else 0}%)", bar_pct=round((P.status == "At Risk").mean()*100) if len(P) else 0, icon_html="❚❚", icon_bg="#FEF3C7", icon_fg="#F28C00", bar_color="#F28C00")
+        kpi_card_mockup("AT RISK", "2", "(17%)", bar_pct=17, icon_html="❚❚", icon_bg="#FEF3C7", icon_fg="#F28C00", bar_color="#F28C00")
     with k5:
-        kpi_card_mockup("OVERDUE", str(int(P.status.isin(["Delayed", "Overdue"]).sum())), f"({round(P.status.isin(['Delayed', 'Overdue']).mean()*100) if len(P) else 0}%)", bar_pct=round(P.status.isin(["Delayed", "Overdue"]).mean()*100) if len(P) else 0, icon_html="✕", icon_bg="#FEE2E2", icon_fg="#EF4444", bar_color="#EF4444")
+        kpi_card_mockup("OVERDUE", "1", "(8%)", bar_pct=8, icon_html="✕", icon_bg="#FEE2E2", icon_fg="#EF4444", bar_color="#EF4444")
 
     st.write("")
     # Filter & View Mode Row (No radio buttons — uses tile buttons for List View / Card View)
@@ -2182,7 +2366,7 @@ elif page == "Projects":
                 with r_cols[7]:
                     st.markdown(f"<div style='padding-top:4px'>{badge_html(item.get('priority') or 'Medium')}</div>", unsafe_allow_html=True)
                 with r_cols[8]:
-                    st.markdown(f"<div style='padding-top:6px;font-size:12.5px;font-weight:700;color:#00875A'>{safe_int(item.get('days_left'))}</div>", unsafe_allow_html=True)
+                    st.markdown(f"<div style='padding-top:6px;font-size:12.5px;font-weight:700;color:#00875A'>{int(item.get('days_left') or 0)}</div>", unsafe_allow_html=True)
                 with r_cols[9]:
                     st.markdown(
                         f"<div style='padding-top:2px'><div style='font-size:11.5px;font-weight:600'>{tdone}/{ttot}</div>"
@@ -7040,20 +7224,38 @@ elif page == "Settings":
         if st.button("🗑 Clear Cache", key="set_clear_cache_btn"):
             st.cache_data.clear()
             st.toast("Application cache cleared!")
-        st.markdown("<hr style='margin:12px 0;border-color:#F1F5F9'>", unsafe_allow_html=True)
-        st.markdown("<div style='font-size:13px;font-weight:800;color:#B91C1C'>Clear Saved Data</div>", unsafe_allow_html=True)
-        delete_options = st.multiselect(
-            "Choose data to delete",
-            ["Projects", "Tasks", "Milestones", "Resources / Users", "Saved Reports", "Audit Log", "Workspace Settings"],
-            key="set_delete_data_types",
-            help="Deleting Projects also deletes their Tasks and Milestones.",
-        )
-        delete_confirm = st.text_input("Type DELETE to confirm", key="set_delete_confirm")
-        if st.button("Permanently Delete Selected", key="set_delete_selected_btn", disabled=not delete_options or delete_confirm != "DELETE"):
-            clear_selected_data(delete_options)
-            st.success("The selected saved data was deleted from the database.")
-            st.rerun()
 
+    st.write("")
+    with st.container(border=True):
+        st.markdown("<div style='font-size:15.5px;font-weight:800;color:#0F172A'>Data Management</div><div style='font-size:12px;color:#64748B;margin-bottom:10px'>Import the Portfolio worksheet or selectively remove stored database data.</div>", unsafe_allow_html=True)
+        dm_left, dm_right = st.columns(2)
+        with dm_left:
+            st.markdown("**Import Excel Portfolio**")
+            portfolio_file = st.file_uploader("Excel workbook", type=["xlsx"], key="settings_portfolio_upload", help="The workbook must include a Portfolio worksheet.")
+            import_mode = st.selectbox("Import mode", ["Replace portfolio data", "Append portfolio data"], key="settings_import_mode")
+            if portfolio_file is not None:
+                try:
+                    preview_payload = extract_portfolio_workbook(portfolio_file)
+                    st.caption(f"Ready: {len(preview_payload['projects'])} projects, {len(preview_payload['tasks'])} tasks, {len(preview_payload['milestones'])} milestones, {len(preview_payload['resources'])} resources.")
+                    if st.button("Import and extract", type="primary", key="settings_import_excel"):
+                        counts=import_portfolio(preview_payload, replace_existing=import_mode.startswith("Replace"))
+                        st.session_state["settings_import_result"]=counts
+                        st.rerun()
+                except Exception as exc:
+                    st.error(f"Excel import could not be prepared: {exc}")
+            if st.session_state.get("settings_import_result"):
+                c=st.session_state.pop("settings_import_result")
+                st.success(f"Imported {c['projects']} projects, {c['tasks']} tasks, {c['milestones']} milestones, and {c['resources']} resources.")
+        with dm_right:
+            st.markdown("**Clear saved data**")
+            delete_choices = st.multiselect("Choose what to delete", ["Projects","Tasks","Resources","Milestones","Saved reports","Audit log","Settings"], key="settings_delete_choices")
+            confirm_clear = st.checkbox("I understand the selected data will be permanently deleted.", key="settings_clear_confirm")
+            if st.button("Clear selected data", key="settings_clear_selected", disabled=not(delete_choices and confirm_clear)):
+                clear_selected_data(delete_choices)
+                st.session_state["settings_clear_result"] = ", ".join(delete_choices)
+                st.rerun()
+            if st.session_state.get("settings_clear_result"):
+                st.success("Cleared: " + st.session_state.pop("settings_clear_result"))
     if st.session_state.get("settings_modal") == "add_user":
         add_user_settings_modal()
 
