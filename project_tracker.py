@@ -317,6 +317,15 @@ def init_db(force_reset: bool = False) -> None:
             """
         )
 
+        # Add stable Excel hierarchy identifiers without dropping existing user data.
+        for table in ("projects", "tasks", "milestones"):
+            table_cols = [row[1] for row in c.execute(f"PRAGMA table_info({table})").fetchall()]
+            if "source_id" not in table_cols:
+                c.execute(f"ALTER TABLE {table} ADD COLUMN source_id TEXT")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_projects_source_id ON projects(source_id)")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_tasks_source_id ON tasks(source_id)")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_milestones_source_id ON milestones(source_id)")
+        c.commit()
         if False and c.execute("SELECT COUNT(*) FROM projects").fetchone()[0] == 0:
             # Demo seeding disabled: production data comes from Excel or user entry.
             ps = [
@@ -440,7 +449,7 @@ def init_db(force_reset: bool = False) -> None:
                 ("Data Mapping", 4, "IT", "Completed", "Low", "2024-04-01", "2024-04-25", "Carlos Diaz", 100, "", "Schema validation finished."),
             ]
             c.executemany(
-                "INSERT INTO tasks(name,project_id,team,status,priority,start_date,due_date,assignee,progress,dependency,notes) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                "INSERT INTO tasks(source_id,name,project_id,team,status,priority,start_date,due_date,assignee,progress,dependency,notes) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
                 tasks_seed,
             )
 
@@ -456,7 +465,7 @@ def init_db(force_reset: bool = False) -> None:
                 ("Infrastructure Go-Live", 5, "IT", "On Track", "2024-06-01", "2024-07-01", "", "Infrastructure Setup", "Scheduled cutover."),
             ]
             c.executemany(
-                "INSERT INTO milestones(name,project_id,team,status,start_date,due_date,completion_date,dependency,notes) VALUES(?,?,?,?,?,?,?,?,?)",
+                "INSERT INTO milestones(source_id,name,project_id,team,status,start_date,due_date,completion_date,dependency,notes) VALUES(?,?,?,?,?,?,?,?,?,?)",
                 ms_seed,
             )
 
@@ -545,80 +554,61 @@ def _split_people(value: object) -> list[str]:
     return [n.strip() for n in names if n.strip()]
 
 def extract_portfolio_workbook(uploaded_file) -> dict[str, list[dict]]:
-    """Extract the Portfolio sheet while preserving the workbook's bold task hierarchy."""
+    """Extract Portfolio hierarchy strictly from dot-delimited Excel IDs."""
     raw = uploaded_file.getvalue() if hasattr(uploaded_file, "getvalue") else uploaded_file.read()
     wb = load_workbook(io.BytesIO(raw), data_only=False, read_only=False)
-    portfolio_name = next((n for n in wb.sheetnames if n.strip().lower() == "portfolio"), None)
-    if not portfolio_name:
+    sheet_name = next((n for n in wb.sheetnames if n.strip().lower() == "portfolio"), None)
+    if not sheet_name:
         raise ValueError("The workbook must contain a worksheet named 'Portfolio'.")
-    ws = wb[portfolio_name]
-    header_row = None
-    header_map = {}
-    for r in range(1, min(ws.max_row, 30) + 1):
-        vals = {_text(ws.cell(r, c).value).lower(): c for c in range(1, ws.max_column + 1) if _text(ws.cell(r, c).value)}
-        if "id" in vals and "program" in vals and any("initiative" in k for k in vals):
-            header_row, header_map = r, vals
-            break
+    ws = wb[sheet_name]
+    header_row = None; header_map = {}
+    for row_no in range(1, min(ws.max_row, 30) + 1):
+        vals = {_text(ws.cell(row_no, col).value).lower(): col for col in range(1, ws.max_column + 1) if _text(ws.cell(row_no, col).value)}
+        if "id" in vals and "program" in vals and any("initiative" in key for key in vals):
+            header_row, header_map = row_no, vals; break
     if not header_row:
         raise ValueError("Could not find the Portfolio header row.")
     def hcol(*names):
-        norm={re.sub(r"\W+"," ",k.lower()).strip():v for k,v in header_map.items()}
+        normalized = {re.sub(r"\W+", " ", key.lower()).strip(): col for key, col in header_map.items()}
         for name in names:
-            key=re.sub(r"\W+"," ",name.lower()).strip()
-            if key in norm: return norm[key]
+            key = re.sub(r"\W+", " ", name.lower()).strip()
+            if key in normalized: return normalized[key]
         return None
-    cols={
-        "pc":hcol("PC"), "id":hcol("ID"), "program":hcol("Program"),
-        "item":hcol("Initiative / Milestone / Task","Initiative Milestone Task"),
-        "start":hcol("Start Date"), "end":hcol("End Date"), "owner":hcol("Owner"),
-        "status":hcol("Status"), "update":hcol("Update"), "remarks":hcol("Remarks")}
-    missing=[x for x in ("id","program","item") if not cols[x]]
-    if missing: raise ValueError("Missing required Portfolio columns: " + ", ".join(missing))
+    cols={"pc":hcol("PC"),"id":hcol("ID"),"program":hcol("Program"),"item":hcol("Initiative / Milestone / Task","Initiative Milestone Task"),"start":hcol("Start Date"),"end":hcol("End Date"),"owner":hcol("Owner"),"status":hcol("Status"),"update":hcol("Update"),"remarks":hcol("Remarks")}
+    if any(not cols[name] for name in ("id","program","item")):
+        raise ValueError("Required columns are ID, Program, and Initiative / Milestone / Task.")
     rows=[]; current_pc=""; current_program=""
-    for r in range(header_row+1, ws.max_row+1):
-        def val(k): return ws.cell(r, cols[k]).value if cols.get(k) else None
-        pc=_text(val("pc")); program=_text(val("program")); rid=_text(val("id")); item=_text(val("item"))
-        if pc and pc.replace("\xa0","").strip(): current_pc=pc
+    for row_no in range(header_row + 1, ws.max_row + 1):
+        def value(name): return ws.cell(row_no, cols[name]).value if cols.get(name) else None
+        pc=_text(value("pc")); program=_text(value("program")); source_id=_text(value("id")); item=_text(value("item"))
+        if pc and pc.replace("\xa0", "").strip(): current_pc=pc
         if program: current_program=program
-        if not rid or not item: continue
-        cell=ws.cell(r, cols["item"])
-        rows.append({"row":r,"source_id":rid,"program":program or current_program,"item":item,
-          "is_bold":bool(cell.font and cell.font.bold),"start":_iso(val("start")),"end":_iso(val("end")),
-          "owner":_text(val("owner")),"status":_text(val("status")) or "Not Started",
-          "update":_text(val("update")),"remarks":_text(val("remarks")),"pc":pc or current_pc})
+        if not source_id or not item: continue
+        rows.append({"source_id":source_id,"level":hierarchy_level(source_id),"parent_source_id":parent_source_id(source_id),"program":program or current_program,"item":item,"start":_iso(value("start")),"end":_iso(value("end")),"owner":_text(value("owner")),"status":_text(value("status")) or "Not Started","update":_text(value("update")),"remarks":_text(value("remarks")),"pc":pc or current_pc})
     if not rows: raise ValueError("No extractable Portfolio rows were found.")
-    groups={}
-    for row in rows: groups.setdefault(row["program"] or "Unassigned Project",[]).append(row)
     projects=[]; tasks=[]; milestones=[]; resources={}
-    for program,items in groups.items():
-        source_key=re.sub(r"[^A-Za-z0-9]+","-",program).strip("-").lower() or items[0]["source_id"]
-        project_manager=next((x["pc"] for x in items if x["pc"]),"")
+    roots=[row for row in rows if row["level"] == 0]
+    if not roots: raise ValueError("At least one project ID without a dot is required, for example 26-001.")
+    for root in roots:
+        prefix=root["source_id"] + "."
+        items=[row for row in rows if row["source_id"] == root["source_id"] or row["source_id"].startswith(prefix)]
+        program=root["program"] or root["item"]
         starts=[x["start"] for x in items if x["start"]]; ends=[x["end"] for x in items if x["end"]]
-        completed=sum(1 for x in items if x["status"].lower() in {"completed","complete","done"})
-        progress=round(100*completed/len(items)) if items else 0
-        projects.append({"source_id":source_key,"name":program,"owner":project_manager,"team":"Portfolio",
-          "category":"Portfolio","status":"Completed" if progress==100 else "In Progress" if progress else "Not Started",
-          "priority":"Medium","start_date":min(starts) if starts else "","end_date":max(ends) if ends else "",
-          "progress":progress,"tasks_done":completed,"tasks_total":len(items),"tags":"Portfolio",
-          "short_desc":program,"description":next((x["remarks"] for x in items if x["remarks"]),program),"health":"Healthy"})
-        current_main=None
-        for x in items:
-            if x["is_bold"]:
-                current_main=x["source_id"]
-                milestones.append({"source_id":x["source_id"],"project_source_id":source_key,"name":x["item"],
-                  "team":"Portfolio","status":x["status"],"start_date":x["start"],"due_date":x["end"],
-                  "assignee":x["owner"],"dependency":"","notes":x["remarks"] or x["update"]})
+        work_items=[x for x in items if x["level"] > 0]
+        complete=sum(1 for x in work_items if x["status"].lower() in {"completed","complete","done"})
+        progress=round(100*complete/len(work_items)) if work_items else 0
+        projects.append({"source_id":root["source_id"],"name":program,"owner":root["pc"],"team":"Portfolio","category":"Portfolio","status":"Completed" if progress==100 else "In Progress" if progress else "Not Started","priority":"Medium","start_date":min(starts) if starts else "","end_date":max(ends) if ends else "","progress":progress,"tasks_done":complete,"tasks_total":len(work_items),"tags":"Portfolio","short_desc":root["item"],"description":root["remarks"] or root["item"],"health":"Healthy"})
+        for x in work_items:
+            common={"source_id":x["source_id"],"parent_source_id":x["parent_source_id"],"level":x["level"],"project_source_id":root["source_id"],"name":x["item"],"team":"Portfolio","status":x["status"],"start_date":x["start"],"due_date":x["end"],"assignee":x["owner"],"dependency":x["parent_source_id"],"notes":x["remarks"] or x["update"]}
+            if x["level"] == 1:
+                milestones.append(common)
             else:
-                tasks.append({"source_id":x["source_id"],"project_source_id":source_key,"name":x["item"],
-                  "team":"Portfolio","status":x["status"],"priority":"Medium","start_date":x["start"],"due_date":x["end"],
-                  "assignee":x["owner"],"progress":100 if x["status"].lower() in {"completed","complete","done"} else 50 if "progress" in x["status"].lower() else 0,
-                  "dependency":current_main or "","notes":x["remarks"] or x["update"]})
+                tasks.append({**common,"priority":"Medium","progress":100 if x["status"].lower() in {"completed","complete","done"} else 50 if "progress" in x["status"].lower() else 0})
             for person in _split_people(x["owner"]):
                 resources.setdefault(person,{"name":person,"email":"","team":"Portfolio","role":"Assigned Resource","status":"Available","capacity":100,"notes":"Imported from Portfolio workbook"})
-        if project_manager:
-            resources.setdefault(project_manager,{"name":project_manager,"email":"","team":"Portfolio","role":"Project Manager","status":"Available","capacity":100,"notes":"Imported from Portfolio PC column"})
-    return {"projects":projects,"tasks":tasks,"milestones":milestones,"resources":list(resources.values()),
-            "source_hash":hashlib.sha256(raw).hexdigest(),"rows":len(rows)}
+        if root["pc"]:
+            resources.setdefault(root["pc"],{"name":root["pc"],"email":"","team":"Portfolio","role":"Project Manager","status":"Available","capacity":100,"notes":"Imported from Portfolio PC column"})
+    return {"projects":projects,"tasks":tasks,"milestones":milestones,"resources":list(resources.values()),"source_hash":hashlib.sha256(raw).hexdigest(),"rows":len(rows)}
 
 def import_portfolio(payload: dict, replace_existing: bool = True) -> dict[str,int]:
     with conn() as c:
@@ -627,12 +617,12 @@ def import_portfolio(payload: dict, replace_existing: bool = True) -> dict[str,i
                 c.execute(f"DELETE FROM {table}")
         project_ids={}
         for p in payload["projects"]:
-            cur=c.execute("INSERT INTO projects(name,owner,team,category,status,priority,start_date,end_date,progress,days_left,tasks_done,tasks_total,tags,bar_color,short_desc,description,health) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",(p["name"],p["owner"],p["team"],p["category"],p["status"],p["priority"],p["start_date"],p["end_date"],p["progress"],None,p["tasks_done"],p["tasks_total"],p["tags"],GREEN,p["short_desc"],p["description"],p["health"]))
+            cur=c.execute("INSERT INTO projects(source_id,name,owner,team,category,status,priority,start_date,end_date,progress,days_left,tasks_done,tasks_total,tags,bar_color,short_desc,description,health) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",(p["source_id"],p["name"],p["owner"],p["team"],p["category"],p["status"],p["priority"],p["start_date"],p["end_date"],p["progress"],None,p["tasks_done"],p["tasks_total"],p["tags"],GREEN,p["short_desc"],p["description"],p["health"]))
             project_ids[p["source_id"]]=cur.lastrowid
         for t in payload["tasks"]:
-            c.execute("INSERT INTO tasks(name,project_id,team,status,priority,start_date,due_date,assignee,progress,dependency,notes) VALUES(?,?,?,?,?,?,?,?,?,?,?)",(t["name"],project_ids[t["project_source_id"]],t["team"],t["status"],t["priority"],t["start_date"],t["due_date"],t["assignee"],t["progress"],t["dependency"],t["notes"]))
+            c.execute("INSERT INTO tasks(source_id,name,project_id,team,status,priority,start_date,due_date,assignee,progress,dependency,notes) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",(t["source_id"],t["name"],project_ids[t["project_source_id"]],t["team"],t["status"],t["priority"],t["start_date"],t["due_date"],t["assignee"],t["progress"],t["dependency"],t["notes"]))
         for m in payload["milestones"]:
-            c.execute("INSERT INTO milestones(name,project_id,team,status,start_date,due_date,completion_date,dependency,notes) VALUES(?,?,?,?,?,?,?,?,?)",(m["name"],project_ids[m["project_source_id"]],m["team"],m["status"],m["start_date"],m["due_date"],m["due_date"] if m["status"].lower()=="completed" else "",m["dependency"],m["notes"]))
+            c.execute("INSERT INTO milestones(source_id,name,project_id,team,status,start_date,due_date,completion_date,dependency,notes) VALUES(?,?,?,?,?,?,?,?,?,?)",(m["source_id"],m["name"],project_ids[m["project_source_id"]],m["team"],m["status"],m["start_date"],m["due_date"],m["due_date"] if m["status"].lower()=="completed" else "",m["dependency"],m["notes"]))
         for r in payload["resources"]:
             c.execute("INSERT INTO resources(name,email,team,role,status,capacity,notes) VALUES(?,?,?,?,?,?,?)",(r["name"],r["email"],r["team"],r["role"],r["status"],r["capacity"],r["notes"]))
         c.execute("INSERT INTO settings(key,value) VALUES('last_import_hash',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",(payload["source_hash"],))
@@ -1184,6 +1174,43 @@ def avatar_html(name: object) -> str:
     return f'<span class="vk-avatar" style="background:{bg}">{html.escape(initials)}</span>{html.escape(s)}'
 
 
+def safe_int(value: object, default: int = 0) -> int:
+    """Convert SQLite/pandas values safely, including NaN/NaT, without ValueError."""
+    try:
+        if value is None or pd.isna(value) or str(value).strip() == "":
+            return default
+        return int(float(value))
+    except (TypeError, ValueError, OverflowError):
+        return default
+
+def month_bounds(value: date | datetime | str | None = None) -> tuple[date, date]:
+    try:
+        d = pd.to_datetime(value).date() if value is not None else date.today()
+    except Exception:
+        d = date.today()
+    first = d.replace(day=1)
+    last = d.replace(day=calendar.monthrange(d.year, d.month)[1])
+    return first, last
+
+def month_year_picker(label: str, key: str, value: date | None = None) -> tuple[date, date]:
+    """Compact month/year control while retaining the existing input visual footprint."""
+    base = value or date.today().replace(day=1)
+    years = list(range(min(2020, base.year - 3), max(2035, base.year + 4) + 1))
+    c1, c2 = st.columns([1.35, 0.9])
+    with c1:
+        month_name = st.selectbox(label, list(calendar.month_name)[1:], index=base.month - 1, key=f"{key}_month", label_visibility="collapsed")
+    with c2:
+        year = st.selectbox("Year", years, index=years.index(base.year), key=f"{key}_year", label_visibility="collapsed")
+    first = date(int(year), list(calendar.month_name).index(month_name), 1)
+    return month_bounds(first)
+
+def hierarchy_level(source_id: str) -> int:
+    return max(0, len([part for part in str(source_id).split(".") if part]) - 1)
+
+def parent_source_id(source_id: str) -> str:
+    parts = [part for part in str(source_id).split(".") if part]
+    return ".".join(parts[:-1]) if len(parts) > 1 else ""
+
 def fmt_date(d_str: object) -> str:
     if not d_str or pd.isna(d_str) or not str(d_str).strip():
         return "—"
@@ -1604,7 +1631,7 @@ def view_project_modal(pid: int) -> None:
                 </div>
                 <div style="border:1px solid #E2E8F0;border-radius:10px;padding:10px 12px;display:flex;align-items:center;gap:10px;background:white">
                     <div style="width:36px;height:36px;border-radius:50%;background:#DCFCE7;color:#00875A;display:flex;align-items:center;justify-content:center;font-size:16px">🕒</div>
-                    <div><div style="font-size:11px;color:#64748B">Days Left</div><div style="font-size:18px;font-weight:800;color:#00875A;line-height:1">{int(r.days_left or 45)}</div><div style="font-size:10px;color:#64748B">Days remaining</div></div>
+                    <div><div style="font-size:11px;color:#64748B">Days Left</div><div style="font-size:18px;font-weight:800;color:#00875A;line-height:1">{safe_int(r.days_left, 0)}</div><div style="font-size:10px;color:#64748B">Days remaining</div></div>
                 </div>
             </div>
             """
@@ -1652,7 +1679,7 @@ def view_project_modal(pid: int) -> None:
                     <div style="display:grid;grid-template-columns:115px 1fr;gap:6px"><span style="color:#64748B">Start Date</span><span>{fmt_date(r.start_date)}</span></div>
                     <div style="display:grid;grid-template-columns:115px 1fr;gap:6px"><span style="color:#64748B">Target End Date</span><span>{fmt_date(r.end_date)}</span></div>
                     <div style="display:grid;grid-template-columns:115px 1fr;gap:6px"><span style="color:#64748B">Duration</span><span>67 days</span></div>
-                    <div style="display:grid;grid-template-columns:115px 1fr;gap:6px"><span style="color:#64748B">Days Left</span><span style="color:#00875A;font-weight:700">{int(r.days_left or 45)} days</span></div>
+                    <div style="display:grid;grid-template-columns:115px 1fr;gap:6px"><span style="color:#64748B">Days Left</span><span style="color:#00875A;font-weight:700">{safe_int(r.days_left, 0)} days</span></div>
                     <div style="display:grid;grid-template-columns:115px 1fr;gap:6px;margin-top:4px"><span style="color:#64748B">Tags</span><span>{tags_html}</span></div>
                 </div>
                 <hr style="border-color:#EEF2F6;margin:12px 0">
@@ -1934,7 +1961,7 @@ if page == "Overview":
     with h_r1:
         ov_proj_filter = st.selectbox("Project", ["All Projects"] + projects_list, key="ov_proj_sel", label_visibility="collapsed")
     with h_r2:
-        st.date_input("Date Range", (date.today().replace(day=1), date.today().replace(day=calendar.monthrange(date.today().year, date.today().month)[1])), key="ov_date_sel", label_visibility="collapsed")
+        month_year_picker("Month / Year", "ov_date_sel")
 
     st.write("")
     # 6 KPI Cards Row (Exact numbers & progress bars from Project Overview screenshot)
@@ -1980,7 +2007,7 @@ if page == "Overview":
                 f"<td>{fmt_date(pr.end_date)}</td>"
                 f"<td>{progress_html(pr.progress, GREEN)}</td>"
                 f"<td>{badge_html(pr.status)}</td>"
-                f"<td style='text-align:center;font-weight:600'>{int(pr.days_left or 0)}</td>"
+                f"<td style='text-align:center;font-weight:600'>{safe_int(pr.days_left, 0)}</td>"
                 f"</tr>"
             )
         st.markdown(
@@ -2193,7 +2220,7 @@ elif page == "Projects":
     with h_s:
         proj_q = st.text_input("Search", placeholder="🔍 Search projects...", key="p_search_box", label_visibility="collapsed")
     with h_d:
-        st.date_input("Range", (date.today().replace(day=1), date.today().replace(day=calendar.monthrange(date.today().year, date.today().month)[1])), key="p_date_box", label_visibility="collapsed")
+        month_year_picker("Month / Year", "p_date_box")
     with h_b:
         if st.button("＋ New Project", type="primary", use_container_width=True, key="btn_new_proj_top"):
             st.session_state.active_modal = ("edit", None)
@@ -2406,7 +2433,7 @@ elif page == "Projects":
                 with r_cols[7]:
                     st.markdown(f"<div style='padding-top:4px'>{badge_html(item.get('priority') or 'Medium')}</div>", unsafe_allow_html=True)
                 with r_cols[8]:
-                    st.markdown(f"<div style='padding-top:6px;font-size:12.5px;font-weight:700;color:#00875A'>{int(item.get('days_left') or 0)}</div>", unsafe_allow_html=True)
+                    st.markdown(f"<div style='padding-top:6px;font-size:12.5px;font-weight:700;color:#00875A'>{safe_int(item.get('days_left'), 0)}</div>", unsafe_allow_html=True)
                 with r_cols[9]:
                     st.markdown(
                         f"<div style='padding-top:2px'><div style='font-size:11.5px;font-weight:600'>{tdone}/{ttot}</div>"
@@ -2475,7 +2502,7 @@ elif page == "Gantt Chart":
     with gh_s:
         gantt_q = st.text_input("Search", placeholder="🔍 Search projects or tasks...", key="gantt_search_top", label_visibility="collapsed")
     with gh_d:
-        st.date_input("Date Range", (date.today().replace(day=1), date.today().replace(day=calendar.monthrange(date.today().year, date.today().month)[1])), key="gantt_date_top", label_visibility="collapsed")
+        st.session_state["gantt_date_top"] = month_year_picker("Month / Year", "gantt_date_top")
 
     st.write("")
     # Filter Bar Card
@@ -2637,26 +2664,20 @@ elif page == "Gantt Chart":
             try: ps=date.fromisoformat(str(pr.start_date)[:10]); pe=date.fromisoformat(str(pr.end_date)[:10])
             except Exception: continue
             left=max(0,min(100,100*(ps-g_start).days/span)); width=max(1,min(100-left,100*(pe-ps).days/span))
-            active_rows.append((str(pr.id),0,"folder",str(pr.bar_color or GREEN),str(pr["name"]),fmt_date(pr.start_date),fmt_date(pr.end_date),f"{max(1,(pe-ps).days)} days",str(pr.status),f"{int(pr.progress or 0)}%",left,width,str(pr.bar_color or GREEN),100,"",False,"#ECFDF5"))
+            active_rows.append((str(pr.source_id or pr.id),0,"folder",str(pr.bar_color or GREEN),str(pr["name"]),fmt_date(pr.start_date),fmt_date(pr.end_date),f"{max(1,(pe-ps).days)} days",str(pr.status),f"{int(pr.progress or 0)}%",left,width,str(pr.bar_color or GREEN),100,"",False,"#ECFDF5"))
             for _,tr in T[T.project_id==pr.id].iterrows():
                 try: ts=date.fromisoformat(str(tr.start_date)[:10]); te=date.fromisoformat(str(tr.due_date)[:10])
                 except Exception: continue
                 tl=max(0,min(100,100*(ts-g_start).days/span)); tw=max(1,min(100-tl,100*(te-ts).days/span))
-                active_rows.append((str(tr.id),1,"play",BLUE,str(tr["name"]),fmt_date(tr.start_date),fmt_date(tr.due_date),f"{max(1,(te-ts).days)} days",str(tr.status),f"{int(tr.progress or 0)}%",tl,tw,BLUE,100,"",False,"#FFFFFF"))
+                active_rows.append((str(tr.source_id or tr.id),hierarchy_level(str(tr.source_id or "1.1")),"play",BLUE,str(tr["name"]),fmt_date(tr.start_date),fmt_date(tr.due_date),f"{max(1,(te-ts).days)} days",str(tr.status),f"{int(tr.progress or 0)}%",tl,tw,BLUE,100,"",False,"#FFFFFF"))
             for _,mr in M[M.project_id==pr.id].iterrows():
                 try: ms=date.fromisoformat(str(mr.start_date)[:10]); me=date.fromisoformat(str(mr.due_date)[:10])
                 except Exception: continue
                 ml=max(0,min(100,100*(ms-g_start).days/span)); mw=max(1,min(100-ml,100*(me-ms).days/span))
-                active_rows.append((f"M{mr.id}",1,"doc",PURPLE,str(mr["name"]),fmt_date(mr.start_date),fmt_date(mr.due_date),f"{max(1,(me-ms).days)} days",str(mr.status),"100%" if str(mr.status).lower()=="completed" else "0%",ml,mw,PURPLE,100,str(mr["name"]),False,"#FFFFFF"))
+                active_rows.append((str(mr.source_id or f"M{mr.id}"),hierarchy_level(str(mr.source_id or "1")),"doc",PURPLE,str(mr["name"]),fmt_date(mr.start_date),fmt_date(mr.due_date),f"{max(1,(me-ms).days)} days",str(mr.status),"100%" if str(mr.status).lower()=="completed" else "0%",ml,mw,PURPLE,100,str(mr["name"]),False,"#FFFFFF"))
 
         # Apply Top Search & Dropdown Filters
-        proj_prefix_map = {
-            "Website Revamp": "1",
-            "IT Infrastructure Upgrade": "2",
-            "Sustainability Initiative": "3",
-            "Marketing Campaign": "4",
-            "Training Program": "5",
-        }
+        proj_prefix_map = {str(row["name"]): str(row.get("source_id") or row["id"]) for _, row in P.iterrows()}
         if g_proj_sel != "All Projects" and g_proj_sel in proj_prefix_map:
             pfx = proj_prefix_map[g_proj_sel]
             active_rows = [r for r in active_rows if r[0] == pfx or r[0].startswith(pfx + ".")]
@@ -2735,6 +2756,12 @@ elif page == "Gantt Chart":
             """
             today_line_html = '<div style="position:absolute;top:0;bottom:0;left:55%;border-left:1.5px dashed #EF4444;z-index:5;pointer-events:none"></div>'
 
+        if scale == "Month":
+            month_label = g_start.strftime("%B %Y")
+            days_in_month = calendar.monthrange(g_start.year, g_start.month)[1]
+            day_cells = "".join(f'<div style="padding:5px 0;border-right:1px solid #EDF2F7">{d}</div>' for d in range(1, days_in_month + 1))
+            tl_top_hdr = f'<div style="padding:6px 0;border-bottom:1px solid #E2E8F0;background:#F8FAFC;font-size:11.5px;font-weight:700;text-align:center">{month_label}</div><div style="display:grid;grid-template-columns:repeat({days_in_month},1fr);background:#F8FAFC;font-size:9px;color:#475569;text-align:center">{day_cells}</div>'
+            today_line_html = ""
         # Render Rows HTML
         body_rows_html = ""
         for r_tuple in active_rows:
@@ -2955,7 +2982,7 @@ elif page == "Task List":
                 clean_prio = t_prio.split()[-1]
                 clean_stat = " ".join(t_stat.split()[1:])
                 sql(
-                    "INSERT INTO tasks(name,project_id,team,status,priority,start_date,due_date,assignee,progress,dependency,notes) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                    "INSERT INTO tasks(source_id,name,project_id,team,status,priority,start_date,due_date,assignee,progress,dependency,notes) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
                     (
                         t_name.strip() or "New Project Task",
                         pmap.get(proj, 1),
@@ -3314,7 +3341,7 @@ elif page == "Task List":
     with th_s:
         tl_top_q = st.text_input("Search", placeholder="🔍 Search tasks, projects or assignees...", key="tl_q_top", label_visibility="collapsed")
     with th_d:
-        st.date_input("Date Range", (date.today().replace(day=1), date.today().replace(day=calendar.monthrange(date.today().year, date.today().month)[1])), key="tl_d_top", label_visibility="collapsed")
+        month_year_picker("Month / Year", "tl_d_top")
     with th_b:
         if st.button("＋ Add Task", type="primary", use_container_width=True, key="tl_btn_add_top"):
             st.session_state.task_modal = ("add", None)
@@ -3471,7 +3498,7 @@ elif page == "Task List":
                 duration = "—"
             status = str(tr.status or "Not Started")
             pct = int(tr.progress or 0)
-            live_tasks.append({"db_id": int(tr.id), "wbs": f"{int(pr.id)}.{seq}", "ico": "doc", "ic_col": GREEN if status == "Completed" else BLUE if status == "In Progress" else "#475569", "name": str(tr["name"]), "project": str(pr["name"]), "start_date": fmt_date(tr.start_date), "end_date": fmt_date(tr.due_date), "duration": duration, "status": status, "priority": str(tr.priority or "Medium"), "assignee": str(tr.assignee or "Unassigned"), "pct": pct, "bar_col": GREEN if pct == 100 else BLUE if pct else "#CBD5E1", "tag": str(tr.team or "Task"), "tag_bg": "#DBEAFE", "tag_fg": "#1D4ED8"})
+            live_tasks.append({"db_id": int(tr.id), "wbs": str(tr.source_id or f"{int(pr.id)}.{seq}"), "ico": "doc", "ic_col": GREEN if status == "Completed" else BLUE if status == "In Progress" else "#475569", "name": str(tr["name"]), "project": str(pr["name"]), "start_date": fmt_date(tr.start_date), "end_date": fmt_date(tr.due_date), "duration": duration, "status": status, "priority": str(tr.priority or "Medium"), "assignee": str(tr.assignee or "Unassigned"), "pct": pct, "bar_col": GREEN if pct == 100 else BLUE if pct else "#CBD5E1", "tag": str(tr.team or "Task"), "tag_bg": "#DBEAFE", "tag_fg": "#1D4ED8"})
         if live_tasks:
             task_groups.append({"group_title": f"{pr['name']} ({len(live_tasks)})", "project": str(pr["name"]), "icon_bg": str(pr.bar_color or GREEN), "start": fmt_date(pr.start_date), "end": fmt_date(pr.end_date), "dur": "—", "pct": int(pr.progress or 0), "bar_col": str(pr.bar_color or GREEN), "row_bg": "#F0FDF4", "tasks": live_tasks})
     # Avatar initials and colors matching Image 12
@@ -4384,7 +4411,7 @@ elif page == "Resources":
     with rh_s:
         res_top_q = st.text_input("Search", placeholder="🔍 Search team members, skills, or projects...", key="res_q_top", label_visibility="collapsed")
     with rh_d:
-        st.date_input("Date Range", (date.today().replace(day=1), date.today().replace(day=calendar.monthrange(date.today().year, date.today().month)[1])), key="res_d_top", label_visibility="collapsed")
+        month_year_picker("Month / Year", "res_d_top")
     with rh_b:
         if st.button("＋ Add Resource", type="primary", use_container_width=True, key="res_btn_add_top"):
             st.session_state.res_modal = ("add", None)
@@ -5198,7 +5225,7 @@ elif page == "Reports":
         )
     with rh_f1:
         st.markdown("<div style='font-size:11px;font-weight:600;color:#475569;margin-bottom:2px'>Date Range</div>", unsafe_allow_html=True)
-        st.date_input("Date Range", (date.today().replace(day=1), date.today().replace(day=calendar.monthrange(date.today().year, date.today().month)[1])), key="rep_top_dates", label_visibility="collapsed")
+        month_year_picker("Month / Year", "rep_top_dates")
     with rh_f2:
         st.markdown("<div style='font-size:11px;font-weight:600;color:#475569;margin-bottom:2px'>Project</div>", unsafe_allow_html=True)
         rep_proj_f = st.selectbox("Project", ["All Projects"] + projects_list, key="rep_top_proj", label_visibility="collapsed")
@@ -6617,7 +6644,7 @@ elif page == "Reports":
                 with fl3:
                     cr_f_stat = st.selectbox("Filter Status", ["All Statuses", "On Track", "At Risk", "Delayed"], key="cr_flt_stat", label_visibility="collapsed")
                 with fl4:
-                    st.date_input("Filter Date Range", (date(2024, 4, 24), date(2024, 6, 30)), key="cr_flt_dates", label_visibility="collapsed")
+                    month_year_picker("Month / Year", "cr_flt_dates", date(2024, 4, 1))
 
                 st.write("")
                 act_b1, act_b2, _ = st.columns([0.95, 0.7, 2.6])
