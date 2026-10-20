@@ -3413,14 +3413,14 @@ elif page == "Task List":
                     )
                 with rc[11]:
                     b_v, b_e = st.columns(2)
-                    with b_v:
+                with b_v:
                     if st.button("👁",key=f"tl_v_{project_id}_{wbs_id}",help="View Task"):pass
                         st.session_state.task_modal = ("view", t_item)
                         st.rerun()
-                    with b_e:
-                        if st.button("🗑", key=f"tl_e_{wbs_id}", help="Delete Task"):
-                            st.session_state["confirm_delete_task"] = {"task_id": t_item.get("id"), "name": t_item.get("name", ""), "wbs": wbs_id}
-                            st.rerun()
+                with b_e:
+                    if st.button("🗑", key=f"tl_e_{wbs_id}", help="Delete Task"):
+                        st.session_state["confirm_delete_task"] = {"task_id": t_item.get("id"), "name": t_item.get("name", ""), "wbs": wbs_id}
+                        st.rerun()
                 st.markdown("<hr style='margin:4px 0;border-color:#F1F5F9'>", unsafe_allow_html=True)
 
         # Pagination Footer
