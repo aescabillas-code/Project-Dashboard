@@ -1586,12 +1586,15 @@ def view_project_modal(pid: int) -> None:
         st.warning("Project not found.")
         return
     r = row_df.iloc[0]
+    project_tasks = df("SELECT * FROM tasks WHERE project_id=? ORDER BY source_id, due_date, id", (pid,))
+    project_milestones = df("SELECT * FROM milestones WHERE project_id=? ORDER BY source_id, due_date, id", (pid,))
+    all_work = pd.concat([project_tasks.assign(_kind="Task"), project_milestones.assign(_kind="Milestone")], ignore_index=True, sort=False)
+    completed_count = int((all_work.status.fillna("").str.lower() == "completed").sum()) if not all_work.empty else 0
+    in_progress_count = int((all_work.status.fillna("").str.lower() == "in progress").sum()) if not all_work.empty else 0
+    at_risk_count = int(all_work.status.fillna("").str.lower().isin(["at risk", "overdue", "delayed"]).sum()) if not all_work.empty else 0
+    not_started_count = max(0, len(all_work) - completed_count - in_progress_count - at_risk_count)
     tags_html = "".join(tag_pill_html(t) for t in str(r.tags or "").split(",") if t.strip())
-    full_desc = (
-        "Redesign and launch the corporate website with improved user experience and modern design."
-        if r["name"] == "Website Revamp"
-        else str(r.description or r.short_desc or "")
-    )
+    full_desc = str(r.description or r.short_desc or "")
     pct = int(r.progress or 0)
 
     st.markdown(
@@ -1650,10 +1653,10 @@ def view_project_modal(pid: int) -> None:
                 clean_html(
                     """
                     <div style="font-size:12px;line-height:2.1;padding-top:14px">
-                        <div style="display:flex;justify-content:space-between"><span><span style="color:#00875A">●</span> Completed</span><b>14 (70%)</b></div>
-                        <div style="display:flex;justify-content:space-between"><span><span style="color:#1473E6">●</span> In Progress</span><b>4 (20%)</b></div>
-                        <div style="display:flex;justify-content:space-between"><span><span style="color:#F28C00">●</span> On Hold</span><b>1 (5%)</b></div>
-                        <div style="display:flex;justify-content:space-between"><span><span style="color:#64748B">●</span> Not Started</span><b>1 (5%)</b></div>
+                        <div style="display:flex;justify-content:space-between"><span><span style="color:#00875A">●</span> Completed</span><b>{completed_count}</b></div>
+                        <div style="display:flex;justify-content:space-between"><span><span style="color:#1473E6">●</span> In Progress</span><b>{in_progress_count}</b></div>
+                        <div style="display:flex;justify-content:space-between"><span><span style="color:#F28C00">●</span> At Risk</span><b>{at_risk_count}</b></div>
+                        <div style="display:flex;justify-content:space-between"><span><span style="color:#64748B">●</span> Not Started</span><b>{not_started_count}</b></div>
                     </div>
                     """
                 ),
@@ -1661,7 +1664,10 @@ def view_project_modal(pid: int) -> None:
             )
     with c_right, st.container(border=True):
         section_title("⏳ Timeline", "View Full Timeline →")
-        st.markdown(render_timeline_stepper_html(), unsafe_allow_html=True)
+        timeline_items = []
+        for _, mrow in project_milestones.head(6).iterrows():
+            timeline_items.append(f"<div style='min-width:130px;padding:8px;border:1px solid #E2E8F0;border-radius:8px;background:#F8FAFC'><b>{html.escape(str(mrow.source_id or mrow.id))}</b><br><span>{html.escape(str(mrow['name']))}</span><br><small>{fmt_date(mrow.due_date)} · {html.escape(str(mrow.status or 'Not Started'))}</small></div>")
+        st.markdown("<div style='display:flex;gap:8px;overflow-x:auto'>" + "".join(timeline_items) + "</div>" if timeline_items else "<div style='color:#64748B'>No timeline milestones available.</div>", unsafe_allow_html=True)
 
     b_left, b_right = st.columns([1.05, 1.95])
     with b_left, st.container(border=True):
@@ -1678,14 +1684,14 @@ def view_project_modal(pid: int) -> None:
                     <div style="display:grid;grid-template-columns:115px 1fr;gap:6px"><span style="color:#64748B">Project Manager</span><span>{html.escape(str(r.owner))}</span></div>
                     <div style="display:grid;grid-template-columns:115px 1fr;gap:6px"><span style="color:#64748B">Start Date</span><span>{fmt_date(r.start_date)}</span></div>
                     <div style="display:grid;grid-template-columns:115px 1fr;gap:6px"><span style="color:#64748B">Target End Date</span><span>{fmt_date(r.end_date)}</span></div>
-                    <div style="display:grid;grid-template-columns:115px 1fr;gap:6px"><span style="color:#64748B">Duration</span><span>67 days</span></div>
+                    <div style="display:grid;grid-template-columns:115px 1fr;gap:6px"><span style="color:#64748B">Duration</span><span>{max(0, (pd.to_datetime(r.end_date).date()-pd.to_datetime(r.start_date).date()).days + 1) if r.start_date and r.end_date else 0} days</span></div>
                     <div style="display:grid;grid-template-columns:115px 1fr;gap:6px"><span style="color:#64748B">Days Left</span><span style="color:#00875A;font-weight:700">{safe_int(r.days_left, 0)} days</span></div>
                     <div style="display:grid;grid-template-columns:115px 1fr;gap:6px;margin-top:4px"><span style="color:#64748B">Tags</span><span>{tags_html}</span></div>
                 </div>
                 <hr style="border-color:#EEF2F6;margin:12px 0">
                 <div style="font-size:13.5px;font-weight:700;color:#0F172A;margin-bottom:6px">📄 Project Summary</div>
                 <div style="font-size:11.5px;color:#64748B;line-height:1.55">
-                    The {html.escape(r['name'])} project aims to deliver a modern, user-friendly corporate website with improved performance, enhanced user experience, and updated content. The project is currently on track with {pct}% completion. Key development activities are in progress and the team is aligned for the upcoming milestones.
+                    {html.escape(full_desc) if full_desc else html.escape(r['name'])} The current calculated completion is {pct}%.
                 </div>
                 """
             ),
@@ -1695,20 +1701,17 @@ def view_project_modal(pid: int) -> None:
     with b_right:
         with st.container(border=True):
             section_title("🎯 Key Milestones", "View All Milestones →")
-            ms_rows = [
-                (1, "#00875A", "Project Kick-off", "Apr 24, 2024", "Completed"),
-                (2, "#00875A", "Requirements Finalized", "May 5, 2024", "Completed"),
-                (3, "#00875A", "Design Sign-off", "Apr 30, 2024", "Completed"),
-                (4, "#1473E6", "Development Complete", "May 31, 2024", "In Progress"),
-                (5, "#64748B", "UAT Completion", "Jun 15, 2024", "Not Started"),
-                (6, "#64748B", "Go-Live", "Jun 30, 2024", "Not Started"),
-            ]
+            ms_rows = []
+            for idx, (_, milestone) in enumerate(project_milestones.iterrows(), start=1):
+                mstat = str(milestone.status or "Not Started")
+                dot = GREEN if mstat == "Completed" else BLUE if mstat == "In Progress" else ORANGE if mstat in ("At Risk", "Overdue", "Delayed") else "#64748B"
+                ms_rows.append((idx, dot, str(milestone["name"]), fmt_date(milestone.due_date), mstat, str(milestone.source_id or milestone.id)))
             tr_html = "".join(
-                f"<tr><td><b>{idx}</b></td><td><span style='color:{dot};margin-right:6px'>●</span>{mname}</td><td>{mdue}</td><td>{badge_html(mstat)}</td></tr>"
-                for idx, dot, mname, mdue, mstat in ms_rows
-            )
+                f"<tr><td><b>{html.escape(mid)}</b></td><td><span style='color:{dot};margin-right:6px'>●</span>{html.escape(mname)}</td><td>{mdue}</td><td>{badge_html(mstat)}</td></tr>"
+                for idx, dot, mname, mdue, mstat, mid in ms_rows
+            ) or '<tr><td colspan="4" style="text-align:center;color:#64748B">No milestones saved for this project.</td></tr>' 
             st.markdown(
-                f'<div class="vk-table-wrap"><table class="vk-table"><thead><tr><th>#</th><th>Milestone</th><th>Due Date</th><th>Status</th></tr></thead><tbody>{tr_html}</tbody></table></div>',
+                f'<div class="vk-table-wrap"><table class="vk-table"><thead><tr><th>ID</th><th>Milestone</th><th>Due Date</th><th>Status</th></tr></thead><tbody>{tr_html}</tbody></table></div>',
                 unsafe_allow_html=True,
             )
 
@@ -3004,15 +3007,27 @@ elif page == "Task List":
 
     @st.dialog("View Task", width="large")
     def view_task_modal(task_rec: dict) -> None:
-        tname = task_rec.get("name", "Create wireframes")
-        tproj = task_rec.get("project", "Website Revamp")
-        tstart = task_rec.get("start_date", "May 6, 2024")
-        tend = task_rec.get("end_date", "May 12, 2024")
-        tdur = task_rec.get("duration", "7 days")
-        tpct = int(task_rec.get("pct", 100))
-        tstat = task_rec.get("status", "Completed")
-        tprio = task_rec.get("priority", "High")
-        tass = task_rec.get("assignee", "James Miller")
+        task_db_id = safe_int(task_rec.get("db_id"), 0)
+        live = df("SELECT t.*, p.name AS project FROM tasks t LEFT JOIN projects p ON p.id=t.project_id WHERE t.id=?", (task_db_id,)) if task_db_id else pd.DataFrame()
+        if live.empty:
+            st.warning("Task not found. It may have been deleted or replaced by a newer import.")
+            return
+        row = live.iloc[0]
+        tname = str(row["name"] or "")
+        tproj = str(row["project"] or "")
+        tstart = fmt_date(row["start_date"])
+        tend = fmt_date(row["due_date"])
+        try:
+            _sd=date.fromisoformat(str(row["start_date"])[:10]); _ed=date.fromisoformat(str(row["due_date"])[:10]); tdur=f"{max(1, (_ed-_sd).days + 1)} days"
+        except Exception:
+            tdur="—"
+        tpct = safe_int(row["progress"], 0)
+        tstat = str(row["status"] or "Not Started")
+        tprio = str(row["priority"] or "Medium")
+        tass = str(row["assignee"] or "Unassigned")
+        twbs = str(row["source_id"] or row["id"])
+        tdesc = str(row["notes"] or "")
+        parent_id = str(row["dependency"] or parent_source_id(twbs) or "None")
 
         st.markdown(
             clean_html(
@@ -3060,7 +3075,7 @@ elif page == "Task List":
                     <div style="border:1px solid #E2E8F0;border-radius:10px;padding:12px 14px;background:white">
                         <div style="font-size:13px;font-weight:700;color:#0F172A;margin-bottom:8px">📄 &nbsp;Description</div>
                         <div style="background:#F8FAFC;border:1px solid #EDF2F7;border-radius:8px;padding:10px 12px;font-size:12.5px;color:#334155;line-height:1.55">
-                            Create low and high-fidelity wireframes for the new website based on the approved requirements and UX guidelines. Include key user flows, page layouts and navigation structure for review.
+                            {html.escape(tdesc) if tdesc else "No description provided."}
                         </div>
                     </div>
                     <div style="border:1px solid #E2E8F0;border-radius:10px;padding:12px 14px;background:white">
@@ -3081,7 +3096,7 @@ elif page == "Task List":
                     </div>
                     <div style="border:1px solid #E2E8F0;border-radius:10px;padding:10px 12px;background:white">
                         <div style="font-size:11.5px;font-weight:700;color:#0F172A;margin-bottom:6px">Parent Task</div>
-                        <div style="background:#F8FAFC;padding:6px 10px;border-radius:6px;font-size:12px;font-weight:600">☰ &nbsp;1.2 Stakeholder alignment</div>
+                        <div style="background:#F8FAFC;padding:6px 10px;border-radius:6px;font-size:12px;font-weight:600">☰ &nbsp;{html.escape(parent_id)}</div>
                     </div>
                     <div style="border:1px solid #E2E8F0;border-radius:10px;padding:10px 12px;background:white">
                         <div style="font-size:11.5px;font-weight:700;color:#0F172A;margin-bottom:6px">Milestone</div>
@@ -3102,8 +3117,8 @@ elif page == "Task List":
                         <div style="background:#F8FAFC;padding:6px 10px;border-radius:6px;font-size:12px;font-weight:600">💼 &nbsp;Task</div>
                     </div>
                     <div style="border:1px solid #E2E8F0;border-radius:10px;padding:10px 12px;background:white">
-                        <div style="font-size:11.5px;font-weight:700;color:#0F172A;margin-bottom:6px">🏷 &nbsp;Tags</div>
-                        <div>{tag_pill_html('Design')} {tag_pill_html('Web')}</div>
+                        <div style="font-size:11.5px;font-weight:700;color:#0F172A;margin-bottom:6px">Task ID</div>
+                        <div>{html.escape(twbs)}</div>
                     </div>
                 </div>
                 <div style="display:grid;grid-template-columns:1.35fr 1fr;gap:12px;margin-bottom:12px">
@@ -3513,7 +3528,7 @@ elif page == "Task List":
     }
 
     with st.container(border=True):
-        col_weights = [0.55, 1.85, 1.05, 0.85, 0.85, 0.65, 0.85, 0.72, 1.25, 1.15, 0.9, 0.7]
+        col_weights = [1.05, 2.0, 1.05, 0.85, 0.85, 0.65, 0.85, 0.72, 1.25, 1.15, 0.9, 0.7]
         hdr_cols = st.columns(col_weights)
         hdr_titles = ["☐ &nbsp; ID", "Task Name &nbsp;▸", "Project", "Start Date", "End Date", "Duration", "Status", "Priority", "Assignee", "% Complete", "Tags", "Actions"]
         for c, h_t in zip(hdr_cols, hdr_titles):
@@ -3566,9 +3581,11 @@ elif page == "Task List":
             # Individual Task Rows
             for t_item in filtered_tasks:
                 wbs_id = t_item["wbs"]
+                task_db_id = int(t_item.get("db_id") or 0)
+                unique_task_key = f"{task_db_id}_{wbs_id}"
                 rc = st.columns(col_weights)
                 with rc[0]:
-                    st.markdown(f"<div style='font-size:12px;color:#475569;padding-top:5px'><span style='color:#94A3B8'>1</span> &nbsp; <b style='color:#1E293B'>{wbs_id}</b></div>", unsafe_allow_html=True)
+                    st.markdown(f"<div style='font-size:11.5px;color:#475569;padding-top:5px;white-space:nowrap;overflow:visible'><b style='color:#1E293B'>{html.escape(str(wbs_id))}</b></div>", unsafe_allow_html=True)
                 with rc[1]:
                     t_ico = "▤" if t_item["ico"] == "doc" else "▶"
                     st.markdown(
@@ -3629,11 +3646,11 @@ elif page == "Task List":
                 with rc[11]:
                     b_v, b_e = st.columns(2)
                     with b_v:
-                        if st.button("👁", key=f"tl_v_{wbs_id}", help="View Task"):
+                        if st.button("👁", key=f"tl_v_{unique_task_key}", help="View Task"):
                             st.session_state.task_modal = ("view", t_item)
                             st.rerun()
                     with b_e:
-                        if st.button("❐", key=f"tl_e_{wbs_id}", help="Edit Task"):
+                        if st.button("❐", key=f"tl_e_{unique_task_key}", help="Edit Task"):
                             st.session_state.task_modal = ("edit", t_item)
                             st.rerun()
                 st.markdown("<hr style='margin:4px 0;border-color:#F1F5F9'>", unsafe_allow_html=True)
