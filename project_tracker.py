@@ -79,7 +79,7 @@ def _mongo_collection():
 
 
 def _snapshot_tables(c: sqlite3.Connection) -> dict:
-    names = ("projects", "tasks", "resources", "milestones", "settings", "saved_reports", "audit_log", "task_subtasks", "task_attachments", "task_activity", "calendar_events")
+    names = ("projects", "tasks", "resources", "milestones", "settings", "saved_reports", "audit_log")
     snapshot = {}
     for name in names:
         rows = c.execute(f"SELECT * FROM {name}").fetchall()
@@ -113,7 +113,7 @@ def _restore_snapshot() -> bool:
     if not doc:
         st.session_state["_vektor_mongo_connected"] = True
         return False
-    tables = ("projects", "tasks", "resources", "milestones", "settings", "saved_reports", "audit_log", "task_subtasks", "task_attachments", "task_activity", "calendar_events")
+    tables = ("projects", "tasks", "resources", "milestones", "settings", "saved_reports", "audit_log")
     with conn() as c:
         for table in tables:
             rows = doc.get(table, [])
@@ -136,96 +136,70 @@ def _restore_snapshot() -> bool:
 
 
 def _clear_mock_records(except_table: str = "") -> None:
-    """Legacy compatibility shim: no mock records are seeded or auto-deleted."""
-    return
+    """Remove seeded mock records when the first real project/task/resource is created."""
+    if st.session_state.get("_vektor_has_real_data"):
+        return
+    tables = ("projects", "tasks", "resources", "milestones", "saved_reports")
+    with conn() as c:
+        for table in tables:
+            if table != except_table:
+                c.execute(f"DELETE FROM {table}")
+        c.commit()
+    st.session_state["_vektor_has_real_data"] = True
 
 
 def _recalculate_project_rollups() -> None:
-    """Recompute task status, parent rollups, project progress, health and days left from current dates."""
-    today = date.today()
+    """Keep project progress, task counts, health, and status synchronized with task changes."""
     with conn() as c:
         projects = c.execute("SELECT id, start_date, end_date, status FROM projects").fetchall()
+        today = date.today()
         for project in projects:
-            rows = c.execute("SELECT id,parent_task_id,status,progress,due_date,start_date FROM tasks WHERE project_id=?", (project["id"],)).fetchall()
-            row_ids = {int(r["id"]) for r in rows}
-            parents = {int(r["parent_task_id"]) for r in rows if r["parent_task_id"] is not None and int(r["parent_task_id"]) in row_ids}
-            # Due-date driven status applies to non-completed leaf tasks; parent status is rolled up below.
-            progress_by_id = {}
-            status_by_id = {}
-            due_by_id = {}
-            for task in rows:
-                tid = int(task["id"])
-                try: due = date.fromisoformat(str(task["due_date"])[:10]) if task["due_date"] else None
-                except Exception: due = None
-                due_by_id[tid] = due
-                status = str(task["status"] or "Not Started")
-                progress = max(0, min(100, int(task["progress"] or 0)))
-                if status.lower() == "completed": progress = 100
-                elif due and due < today:
-                    status = "Overdue"
-                elif due and (due - today).days <= 7:
-                    status = "At Risk"
-                elif status.lower() in {"overdue", "at risk", "delayed"}:
-                    status = "In Progress" if progress > 0 else "Not Started"
-                progress_by_id[tid] = progress
-                status_by_id[tid] = status
-            # Parent progress/status is derived from its descendant leaf items, not entered separately.
-            for task in reversed(rows):
-                tid = int(task["id"])
-                children = [r for r in rows if r["parent_task_id"] is not None and int(r["parent_task_id"]) == tid]
-                if children:
-                    descendants = []
-                    stack = [int(ch["id"]) for ch in children]
-                    while stack:
-                        cid = stack.pop()
-                        crow = next((x for x in rows if int(x["id"]) == cid), None)
-                        if crow is None: continue
-                        cchildren = [x for x in rows if x["parent_task_id"] is not None and int(x["parent_task_id"]) == cid]
-                        if cchildren: stack.extend(int(x["id"]) for x in cchildren)
-                        else: descendants.append(cid)
-                    if descendants:
-                        progress_by_id[tid] = round(sum(progress_by_id[x] for x in descendants) / len(descendants))
-                        leaf_statuses = [status_by_id[x] for x in descendants]
-                        if all(x == "Completed" for x in leaf_statuses): status_by_id[tid] = "Completed"
-                        elif "Overdue" in leaf_statuses: status_by_id[tid] = "Overdue"
-                        elif "At Risk" in leaf_statuses: status_by_id[tid] = "At Risk"
-                        elif any(x == "In Progress" for x in leaf_statuses): status_by_id[tid] = "In Progress"
-                        else: status_by_id[tid] = "Not Started"
-            for task in rows:
-                tid = int(task["id"])
-                c.execute("UPDATE tasks SET status=?,progress=? WHERE id=?", (status_by_id[tid], progress_by_id[tid], tid))
-            leaf_ids = [int(r["id"]) for r in rows if int(r["id"]) not in parents]
-            total = len(leaf_ids)
-            done = sum(1 for tid in leaf_ids if status_by_id.get(tid, "") == "Completed")
-            progress = round(done / total * 100) if total else 0
-            try: end_date = date.fromisoformat(str(project["end_date"])[:10]) if project["end_date"] else None
-            except Exception: end_date = None
-            if total and done == total: status, health = "Completed", "Healthy"
-            elif end_date and end_date < today: status, health = "Overdue", "Critical"
-            elif end_date and (end_date - today).days <= 7 and progress < 75: status, health = "At Risk", "At Risk"
-            elif progress > 0: status, health = "In Progress", "Healthy"
-            else: status, health = "Not Started", "Healthy"
-            c.execute("UPDATE projects SET tasks_done=?,tasks_total=?,progress=?,days_left=?,status=?,health=? WHERE id=?",
-                      (done, total, progress, (end_date - today).days if end_date else None, status, health, project["id"]))
+            tasks = c.execute(
+                "SELECT status, progress, due_date FROM tasks WHERE project_id=?", (project["id"],)
+            ).fetchall()
+            total = len(tasks)
+            done = sum(1 for task in tasks if str(task["status"] or "").lower() == "completed")
+            progress = round(sum(max(0, min(100, int(task["progress"] or 0))) for task in tasks) / total) if total else 0
+            end_date = None
+            try:
+                end_date = date.fromisoformat(str(project["end_date"])[:10])
+            except Exception:
+                pass
+            if total and done == total:
+                status, health = "Completed", "Healthy"
+            elif end_date and end_date < today and progress < 100:
+                status, health = "Delayed", "Critical"
+            elif end_date and (end_date - today).days <= 7 and progress < 75:
+                status, health = "At Risk", "At Risk"
+            elif total and progress > 0:
+                status, health = "In Progress", "Healthy"
+            else:
+                status, health = (project["status"] or "Not Started"), "Healthy"
+            c.execute(
+                "UPDATE projects SET tasks_done=?, tasks_total=?, progress=?, days_left=?, status=?, health=? WHERE id=?",
+                (done, total, progress, (end_date - today).days if end_date else None, status, health, project["id"]),
+            )
         c.commit()
 
 
-def sql(q: str, p: tuple = ()) -> int | None:
+def sql(q: str, p: tuple = ()) -> None:
     """Execute an app mutation, then persist it and recalculate dependent project metrics."""
     normalized = " ".join(q.strip().lower().split())
     match = re.search(r"\b(?:insert\s+into|update|delete\s+from)\s+([a-z_]+)", normalized)
     table = match.group(1) if match else ""
-    is_entity_mutation = table in {"projects", "tasks", "resources", "milestones", "saved_reports", "settings", "audit_log", "task_subtasks", "task_attachments", "task_activity", "calendar_events"}
+    is_entity_mutation = table in {"projects", "tasks", "resources", "milestones", "saved_reports", "settings", "audit_log"}
     is_insert = normalized.startswith("insert into")
+    # First user-created record marks the end of demo-only mode. Keep existing projects
+    # available when the first real task/resource is added so foreign references still work.
+    if is_entity_mutation and is_insert and not st.session_state.get("_vektor_has_real_data"):
+        _clear_mock_records(except_table="projects" if table != "projects" else "")
     with conn() as c:
-        cursor = c.execute(q, p)
-        lastrowid = cursor.lastrowid if normalized.startswith("insert into") else None
+        c.execute(q, p)
         c.commit()
     if table in {"tasks", "projects", "milestones"}:
         _recalculate_project_rollups()
     if is_entity_mutation:
         _persist_snapshot()
-    return lastrowid
 
 
 def df(q: str, p: tuple = ()) -> pd.DataFrame:
@@ -270,8 +244,7 @@ def init_db(force_reset: bool = False) -> None:
                 bar_color TEXT,
                 short_desc TEXT,
                 description TEXT,
-                health TEXT,
-                budget REAL DEFAULT 0
+                health TEXT
             );
             CREATE TABLE IF NOT EXISTS tasks(
                 id INTEGER PRIMARY KEY,
@@ -322,55 +295,208 @@ def init_db(force_reset: bool = False) -> None:
                 created_by TEXT
             );
             CREATE TABLE IF NOT EXISTS audit_log(
-                id INTEGER PRIMARY KEY, event TEXT, item_type TEXT, item_id INTEGER, details TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP
-            );
-            CREATE TABLE IF NOT EXISTS task_subtasks(
-                id INTEGER PRIMARY KEY, task_id INTEGER NOT NULL, name TEXT NOT NULL, completed INTEGER DEFAULT 0, due_date TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP
-            );
-            CREATE TABLE IF NOT EXISTS task_attachments(
-                id INTEGER PRIMARY KEY, task_id INTEGER NOT NULL, filename TEXT NOT NULL, mime_type TEXT, content BLOB, size_bytes INTEGER, uploaded_at TEXT DEFAULT CURRENT_TIMESTAMP
-            );
-            CREATE TABLE IF NOT EXISTS task_activity(
-                id INTEGER PRIMARY KEY, task_id INTEGER NOT NULL, actor TEXT DEFAULT 'User', action TEXT, details TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP
-            );
-            CREATE TABLE IF NOT EXISTS calendar_events(
-                id INTEGER PRIMARY KEY, title TEXT NOT NULL, project_id INTEGER, task_id INTEGER, team TEXT, event_type TEXT, start_date TEXT, end_date TEXT, start_time TEXT, end_time TEXT, resources TEXT, allocation REAL DEFAULT 0, repeat_rule TEXT, description TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP
+                id INTEGER PRIMARY KEY,
+                event TEXT,
+                item_type TEXT,
+                item_id INTEGER,
+                details TEXT,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP
             );
             """
         )
 
-        # Operational tables are intentionally empty on a new install.
-        # The portfolio workbook is the only supported source for project/task data.
-        default_settings = [
-            ("workspace_name", "Vektor"), ("workspace_description", "Project management workspace for planning, tracking, and delivery."),
-            ("theme", "HPE Green"), ("language", "English"), ("date_format", "MMM DD, YYYY"),
-            ("default_landing", "Overview"), ("default_project_status", "On Track"), ("project_template", "Standard Project"),
-            ("auto_project_id", "true"), ("require_project_desc", "true"), ("allow_project_attachments", "true"),
-            ("project_archiving", "false"), ("default_task_status", "Not Started"), ("default_task_priority", "Medium"),
-            ("task_dependencies", "true"), ("allow_subtasks", "true"), ("recurring_tasks", "false"),
-            ("require_assignee", "true"), ("task_attachments", "true"), ("default_milestone_status", "Not Started"),
-            ("milestones_enabled", "true"), ("milestones_require_due", "true"), ("milestone_dependencies", "true"),
-            ("milestone_notifications", "true"), ("notification_frequency", "Daily digest"),
-            ("integration_Microsoft 365", "true"), ("integration_Slack", "true"),
-            ("integration_Microsoft Teams", "false"), ("integration_OneDrive", "false"),
-            ("audit_logs", "true"), ("data_export", "true"), ("automatic_backups", "true"),
-            ("maintenance_mode", "false"), ("session_timeout", "8 hours"),
-        ]
-        c.executemany("INSERT OR IGNORE INTO settings(key,value) VALUES(?,?)", default_settings)
-        # Add project metadata and hierarchy fields to existing installations without resetting data.
-        project_cols = {r[1] for r in c.execute("PRAGMA table_info(projects)").fetchall()}
-        if "budget" not in project_cols:
-            c.execute("ALTER TABLE projects ADD COLUMN budget REAL DEFAULT 0")
-        _event_cols = {r[1] for r in c.execute("PRAGMA table_info(calendar_events)").fetchall()}
-        if "task_id" not in _event_cols:
-            c.execute("ALTER TABLE calendar_events ADD COLUMN task_id INTEGER")
-        task_cols = {r[1] for r in c.execute("PRAGMA table_info(tasks)").fetchall()}
-        for col_name, definition in (("parent_task_id", "INTEGER"), ("source_id", "TEXT"), ("description", "TEXT"),
-                                     ("task_type", "TEXT DEFAULT 'Task'"), ("tags", "TEXT"), ("completion_date", "TEXT"),
-                                     ("estimated_effort", "REAL"), ("actual_effort", "REAL"), ("duration", "INTEGER")):
-            if col_name not in task_cols:
-                c.execute(f"ALTER TABLE tasks ADD COLUMN {col_name} {definition}")
-        c.commit()
+        if c.execute("SELECT COUNT(*) FROM projects").fetchone()[0] == 0:
+            # Exact 12 projects from the uploaded mockups (List View order #1 to #12)
+            ps = [
+                (
+                    1, "Website Revamp", "Alice Morgan", "Marketing", "Web Development",
+                    "On Track", "High", "2024-04-24", "2024-06-30", 70, 45, 14, 20,
+                    "Web,Marketing,Corporate", "#00875A", "Redesign corporate website",
+                    "Redesign and launch the corporate website with improved user experience.", "Healthy"
+                ),
+                (
+                    2, "E-Commerce Platform", "Brian Taylor", "IT", "IT & Development",
+                    "In Progress", "High", "2024-03-15", "2024-06-15", 50, 30, 12, 24,
+                    "IT,Development", "#1473E6", "Build new e-commerce platform",
+                    "Build new e-commerce platform to expand digital presence.", "Healthy"
+                ),
+                (
+                    3, "Mobile App Development", "Emily Rodriguez", "Design", "Mobile Development",
+                    "At Risk", "Medium", "2024-04-01", "2024-08-30", 30, 90, 8, 26,
+                    "Mobile,Customer", "#7C3AED", "Develop customer mobile app",
+                    "Develop customer mobile application for iOS and Android.", "At Risk"
+                ),
+                (
+                    4, "Data Migration", "Carlos Diaz", "IT", "Cloud & Data",
+                    "On Track", "High", "2024-05-01", "2024-07-31", 80, 60, 18, 22,
+                    "Data,Cloud", "#F28C00", "Migrate legacy data to cloud",
+                    "Migrate legacy data to cloud infrastructure with minimal downtime.", "Healthy"
+                ),
+                (
+                    5, "IT Infrastructure Upgrade", "Dana Scott", "IT", "Infrastructure",
+                    "At Risk", "High", "2024-05-20", "2024-09-15", 20, 110, 6, 28,
+                    "Infrastructure,IT", "#00875A", "Upgrade servers and network",
+                    "Upgrade servers and network infrastructure to support business growth.", "At Risk"
+                ),
+                (
+                    6, "Security Enhancement", "Mark Wilson", "IT", "Security & Compliance",
+                    "On Track", "Medium", "2024-04-10", "2024-07-10", 65, 50, 13, 20,
+                    "Security,Compliance", "#00875A", "Implement security measures",
+                    "Implement security measures to strengthen system protection and compliance.", "Healthy"
+                ),
+                (
+                    7, "Customer Portal", "Sarah Kim", "Marketing", "Web Development",
+                    "On Track", "High", "2024-03-01", "2024-06-30", 90, 45, 18, 20,
+                    "Customer,Web", "#7C3AED", "Enhance customer portal",
+                    "Enhance customer portal with new features and improved user experience.", "Healthy"
+                ),
+                (
+                    8, "AI Integration", "Kevin Lee", "IT", "AI & Innovation",
+                    "Not Started", "Medium", "2024-05-05", "2024-10-31", 15, 140, 3, 18,
+                    "AI,Innovation", "#EC4899", "Integrate AI capabilities",
+                    "Integrate AI capabilities to improve business processes and customer support.", "Healthy"
+                ),
+                (
+                    9, "Process Automation", "Jason Tan", "Operations", "Operations",
+                    "In Progress", "Low", "2024-06-01", "2024-09-30", 40, 120, 8, 20,
+                    "Automation,Operations", "#1473E6", "Automate internal processes",
+                    "Automate internal processes to increase efficiency and reduce manual work.", "Healthy"
+                ),
+                (
+                    10, "Training Program", "Nicole Reyes", "Operations", "HR & Training",
+                    "In Progress", "Low", "2024-04-15", "2024-08-15", 55, 75, 11, 20,
+                    "HR,Training", "#DB2777", "Employee training and upskilling",
+                    "Employee training and upskilling program for new systems.", "Healthy"
+                ),
+                (
+                    11, "Vendor Management System", "David Park", "Operations", "Procurement",
+                    "Not Started", "Medium", "2024-05-10", "2024-11-30", 10, 170, 2, 18,
+                    "Procurement,IT", "#0284C7", "Implement vendor management",
+                    "Implement vendor management system to streamline procurement.", "At Risk"
+                ),
+                (
+                    12, "Sustainability Initiative", "Laura Torres", "Operations", "Sustainability",
+                    "Not Started", "Low", "2024-06-15", "2024-12-31", 5, 200, 1, 24,
+                    "Sustainability,ESG", "#00875A", "Implement green IT practices",
+                    "Implement green IT practices and sustainability programs.", "Critical"
+                ),
+            ]
+            c.executemany(
+                """
+                INSERT INTO projects(
+                    id,name,owner,team,category,status,priority,start_date,end_date,
+                    progress,days_left,tasks_done,tasks_total,tags,bar_color,short_desc,description,health
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                """,
+                ps,
+            )
+
+            people = [
+                "Alice Morgan", "Brian Taylor", "Emily Rodriguez", "Carlos Diaz", "Dana Scott",
+                "Mark Wilson", "Sarah Kim", "Kevin Lee", "Jason Tan", "Nicole Reyes",
+                "David Park", "Laura Torres", "James Miller", "Ryan Cruz", "Michael Tan",
+                "Daniel Perez", "Ella Ramirez", "Chris Padilla", "Anna Reyes", "Kevin Santos",
+                "Lisa Chan", "David Lim", "Maria Santos", "John Cruz",
+            ]
+            teams_list_seed = [
+                "Marketing", "IT", "Design", "IT", "IT",
+                "IT", "Marketing", "IT", "Operations", "Operations",
+                "Operations", "Operations", "IT", "Operations", "IT",
+                "Operations", "Design", "IT", "Marketing", "Operations",
+                "Design", "IT", "Marketing", "Others",
+            ]
+            for i, (n, t) in enumerate(zip(people, teams_list_seed)):
+                status = "On Leave" if i in (14, 20) else ("Partial" if i in (2, 6, 11, 17) else "Available")
+                role = "Admin" if i in (0, 12) else ("Project Manager" if i < 12 else "Team Member")
+                cap = 0 if status == "On Leave" else (50 if status == "Partial" else 100)
+                c.execute(
+                    "INSERT INTO resources(name,email,team,role,status,capacity,notes) VALUES(?,?,?,?,?,?,?)",
+                    (n, n.lower().replace(" ", ".") + "@vektor.example", t, role, status, cap, ""),
+                )
+
+            tasks_seed = [
+                ("UI/UX Design Complete", 1, "Design", "Completed", "High", "2024-04-01", "2024-04-30", "Alice Morgan", 100, "", "Design phase completed."),
+                ("Homepage Development", 1, "IT", "In Progress", "High", "2024-04-10", "2024-05-15", "James Miller", 65, "UI/UX Design Complete", "Frontend responsive build."),
+                ("Content Review", 7, "Marketing", "In Progress", "Medium", "2024-04-15", "2024-05-20", "Sarah Kim", 55, "", "Copywriting and creative review."),
+                ("Infrastructure Setup", 5, "IT", "Not Started", "High", "2024-05-01", "2024-05-15", "Dana Scott", 0, "Requirements Gathering", "Provisioning cluster nodes."),
+                ("Sustainability Plan", 12, "Operations", "Completed", "Medium", "2024-05-05", "2024-05-30", "Laura Torres", 100, "", "Charter approved by leadership."),
+                ("Process Documentation", 9, "Operations", "In Progress", "Low", "2024-05-10", "2024-06-20", "Jason Tan", 50, "", "Mapping core operational workflows."),
+                ("Training Materials", 10, "Operations", "Not Started", "Medium", "2024-05-20", "2024-06-30", "Nicole Reyes", 0, "Content Review", "Sales enablement deck."),
+                ("QA Testing", 1, "IT", "In Progress", "High", "2024-05-25", "2024-06-25", "Chris Padilla", 35, "Homepage Development", "Cross-browser regression testing."),
+                ("API Integration", 2, "IT", "In Progress", "High", "2024-04-12", "2024-05-25", "Brian Taylor", 60, "", "Payment gateway & cart API."),
+                ("UI Development", 3, "Design", "In Progress", "Medium", "2024-04-18", "2024-06-10", "Emily Rodriguez", 40, "", "Mobile screens implementation."),
+                ("Data Mapping", 4, "IT", "Completed", "Low", "2024-04-01", "2024-04-25", "Carlos Diaz", 100, "", "Schema validation finished."),
+            ]
+            c.executemany(
+                "INSERT INTO tasks(name,project_id,team,status,priority,start_date,due_date,assignee,progress,dependency,notes) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                tasks_seed,
+            )
+
+            ms_seed = [
+                ("Project Kick-off", 1, "Marketing", "Completed", "2024-04-20", "2024-04-24", "2024-04-24", "", "Initial kick-off complete."),
+                ("Requirements Finalized", 1, "Marketing", "Completed", "2024-04-25", "2024-05-05", "2024-05-05", "Project Kick-off", "Scope signed off."),
+                ("Design Sign-off", 1, "Design", "Completed", "2024-04-10", "2024-04-30", "2024-04-30", "Requirements Finalized", "Design phase completed."),
+                ("Development Complete", 1, "IT", "In Progress", "2024-05-01", "2024-05-31", "", "Design Sign-off", "Core build underway."),
+                ("UAT Completion", 1, "IT", "Not Started", "2024-06-01", "2024-06-15", "", "Development Complete", "Pending staging build."),
+                ("Go-Live", 1, "IT", "Not Started", "2024-06-16", "2024-06-30", "", "UAT Completion", "Production launch."),
+                ("MVP Release", 3, "Design", "At Risk", "2024-04-15", "2024-05-15", "", "UI Development", "Awaiting final assets."),
+                ("Data Migration Cutover", 4, "IT", "On Track", "2024-05-10", "2024-06-15", "", "Data Mapping", "Environment setup ongoing."),
+                ("Infrastructure Go-Live", 5, "IT", "On Track", "2024-06-01", "2024-07-01", "", "Infrastructure Setup", "Scheduled cutover."),
+            ]
+            c.executemany(
+                "INSERT INTO milestones(name,project_id,team,status,start_date,due_date,completion_date,dependency,notes) VALUES(?,?,?,?,?,?,?,?,?)",
+                ms_seed,
+            )
+
+            default_settings = [
+                ("workspace_name", "Vektor"),
+                ("workspace_description", "Project management workspace for planning, tracking, and delivery."),
+                ("theme", "HPE Green"),
+                ("language", "English"),
+                ("date_format", "MMM DD, YYYY"),
+                ("default_landing", "Overview"),
+                ("default_project_status", "On Track"),
+                ("project_template", "Standard Project"),
+                ("auto_project_id", "true"),
+                ("require_project_desc", "true"),
+                ("allow_project_attachments", "true"),
+                ("project_archiving", "false"),
+                ("default_task_status", "Not Started"),
+                ("default_task_priority", "Medium"),
+                ("task_dependencies", "true"),
+                ("allow_subtasks", "true"),
+                ("recurring_tasks", "false"),
+                ("require_assignee", "true"),
+                ("task_attachments", "true"),
+                ("default_milestone_status", "Not Started"),
+                ("milestones_enabled", "true"),
+                ("milestones_require_due", "true"),
+                ("milestone_dependencies", "true"),
+                ("milestone_notifications", "true"),
+                ("notification_frequency", "Daily digest"),
+                ("integration_Microsoft 365", "true"),
+                ("integration_Slack", "true"),
+                ("integration_Microsoft Teams", "false"),
+                ("integration_OneDrive", "false"),
+                ("audit_logs", "true"),
+                ("data_export", "true"),
+                ("automatic_backups", "true"),
+                ("maintenance_mode", "false"),
+                ("session_timeout", "8 hours"),
+            ]
+            c.executemany("INSERT OR IGNORE INTO settings(key,value) VALUES(?,?)", default_settings)
+
+            if c.execute("SELECT COUNT(*) FROM saved_reports").fetchone()[0] == 0:
+                saved_seed = [
+                    ("Monthly Project Summary", "Project Report", json.dumps({"type": "Project Report", "group": "Status", "metrics": ["Project Status", "Progress"], "viz": "Bar Chart"}), "2024-04-20", "Alice Morgan"),
+                    ("Q2 Resource Allocation", "Resource Report", json.dumps({"type": "Resource Report", "group": "Team", "metrics": ["Team Members"], "viz": "Column Chart"}), "2024-04-18", "Sarah Kim"),
+                    ("Overdue Tasks & Milestones", "Task Report", json.dumps({"type": "Task Report", "group": "Priority", "metrics": ["Task Status", "Priority"], "viz": "Pie Chart"}), "2024-04-15", "Dana Scott"),
+                ]
+                c.executemany(
+                    "INSERT INTO saved_reports(name,report_type,config,last_generated,created_by) VALUES(?,?,?,?,?)",
+                    saved_seed,
+                )
+            c.commit()
 
 
 def get_setting(k: str, default: str = "") -> str:
@@ -393,129 +519,6 @@ def log_event(event: str, typ: str = "", item_id: int | None = None, details: st
         )
 
 
-def _as_iso_date(value):
-    if value is None or (isinstance(value, float) and pd.isna(value)) or str(value).strip() == "":
-        return ""
-    parsed = pd.to_datetime(value, errors="coerce")
-    return parsed.date().isoformat() if pd.notna(parsed) else ""
-
-def import_portfolio_excel(uploaded_file) -> dict:
-    """Import the single-sheet portfolio workbook as the app's operational source of truth."""
-    uploaded_file.seek(0)
-    book = pd.ExcelFile(uploaded_file, engine="openpyxl")
-    if "Portfolio" not in book.sheet_names:
-        raise ValueError("The workbook must contain a Portfolio sheet.")
-    raw = pd.read_excel(book, sheet_name="Portfolio", header=None)
-    header_row = 2 if raw.shape[0] > 2 and "Initiative / Milestone / Task" in [str(x).strip() for x in raw.iloc[2].tolist()] else 0
-    frame = pd.read_excel(book, sheet_name="Portfolio", header=header_row)
-    frame.columns = [str(x).strip() for x in frame.columns]
-    required = {"Program", "Initiative / Milestone / Task"}
-    if not required.issubset(frame.columns):
-        raise ValueError("Portfolio must include Program and Initiative / Milestone / Task columns.")
-    frame = frame[frame["Program"].notna()].copy()
-    frame["Program"] = frame["Program"].astype(str).str.strip()
-    frame = frame[frame["Program"].ne("")]
-    if frame.empty:
-        raise ValueError("No project rows were found in the Portfolio sheet.")
-    valid_tasks = frame[frame["Initiative / Milestone / Task"].notna()].copy()
-    valid_tasks = valid_tasks[valid_tasks["Initiative / Milestone / Task"].astype(str).str.strip().ne("")]
-    if valid_tasks.empty:
-        raise ValueError("No task/subtask rows were found in the Portfolio sheet.")
-    def val(row, *names, default=""):
-        for name in names:
-            if name in row.index and pd.notna(row[name]) and str(row[name]).strip().lower() not in {"nan", "nat", "none"}:
-                return str(row[name]).strip()
-        return default
-    program_names = list(dict.fromkeys(frame["Program"].astype(str).str.strip().tolist()))
-    # Import is a deliberate replacement operation; reset only operational tables, not settings.
-    with conn() as c:
-        c.execute("PRAGMA foreign_keys=OFF")
-        for table in ("task_activity", "task_attachments", "task_subtasks", "milestones", "calendar_events", "tasks", "resources", "projects", "saved_reports", "audit_log"):
-            if c.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)).fetchone():
-                c.execute(f"DELETE FROM {table}")
-        project_ids = {}
-        for name in program_names:
-            rows = frame[frame["Program"].astype(str).str.strip() == name]
-            starts = [_as_iso_date(v) for v in rows.get("Start Date", []) if _as_iso_date(v)]
-            ends = [_as_iso_date(v) for v in rows.get("End Date", []) if _as_iso_date(v)]
-            project_owner = next((val(r, "Project Owner", "PC", "Owner") for _, r in rows.iterrows() if val(r, "Project Owner", "PC", "Owner")), "")
-            project_team = next((val(r, "Project Team", "Team") for _, r in rows.iterrows() if val(r, "Project Team", "Team")), "")
-            project_category = next((val(r, "Project Category") for _, r in rows.iterrows() if val(r, "Project Category")), "Portfolio")
-            project_priority = next((val(r, "Project Priority") for _, r in rows.iterrows() if val(r, "Project Priority")), "Medium")
-            project_tags = next((val(r, "Project Tags") for _, r in rows.iterrows() if val(r, "Project Tags")), "")
-            project_desc = next((val(r, "Project Description") for _, r in rows.iterrows() if val(r, "Project Description")), "")
-            project_budget = pd.to_numeric(pd.Series([next((r.get("Project Budget") for _, r in rows.iterrows() if pd.notna(r.get("Project Budget"))), 0)]), errors="coerce").fillna(0).iloc[0]
-            cur = c.execute("""INSERT INTO projects(name,owner,team,category,status,priority,start_date,end_date,progress,days_left,tasks_done,tasks_total,tags,bar_color,short_desc,description,health,budget)
-                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                (name, project_owner, project_team, project_category, "Not Started", project_priority, min(starts) if starts else "", max(ends) if ends else "", 0, None, 0, 0, project_tags, GREEN, name, project_desc, "Healthy", float(project_budget or 0)))
-            project_ids[name] = cur.lastrowid
-        source_to_db = {}
-        pending = []
-        owners = set()
-        for _, row in valid_tasks.iterrows():
-            program = val(row, "Program")
-            source_id = val(row, "App Key", "ID")
-            parent_source = val(row, "Parent Key", "Parent ID")
-            if not parent_source and source_id and "." in source_id:
-                parent_source = source_id.rsplit(".", 1)[0]
-            owner = val(row, "Owner")
-            if owner: owners.add(owner)
-            status = val(row, "Status", "Task Status", "Automated Status", default="Not Started")
-            status_l = status.lower()
-            status = "Completed" if status_l in {"complete", "completed", "closed", "done"} else ("In Progress" if status_l in {"in progress", "ongoing", "started"} else ("At Risk" if status_l in {"at risk"} else ("Overdue" if status_l in {"overdue", "delayed"} else ("On Hold" if status_l in {"on hold", "paused"} else "Not Started"))))
-            _due_auto = _as_iso_date(row.get("End Date"))
-            if status != "Completed" and _due_auto:
-                try:
-                    _due_date_auto = date.fromisoformat(_due_auto)
-                    if _due_date_auto < date.today(): status = "Overdue"
-                    elif _due_date_auto <= date.today() + timedelta(days=7): status = "At Risk"
-                except Exception: pass
-            pct = pd.to_numeric(pd.Series([row.get("Completion %", row.get("Progress", 100 if status == "Completed" else 0))]), errors="coerce").fillna(100 if status == "Completed" else 0).iloc[0]
-            typ = val(row, "Task Type", default=("Milestone" if "milestone" in val(row, "Initiative / Milestone / Task").lower() else "Task"))
-            cur = c.execute("""INSERT INTO tasks(name,project_id,team,status,priority,start_date,due_date,assignee,progress,dependency,notes,parent_task_id,source_id,description,task_type,tags,completion_date,estimated_effort,actual_effort,duration)
-                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                (val(row, "Initiative / Milestone / Task"), project_ids[program], val(row, "Team", "PC"), status, val(row, "Priority", default="Medium"),
-                 _as_iso_date(row.get("Start Date")), _as_iso_date(row.get("End Date")), owner, max(0, min(100, int(pct))), val(row, "Dependency"),
-                 val(row, "Remarks", "Update"), None, source_id, val(row, "Description", "Remarks", "Update"), typ, val(row, "Tags"),
-                 _as_iso_date(row.get("Completion Date")), pd.to_numeric(pd.Series([row.get("Estimated Effort", 0)]), errors="coerce").fillna(0).iloc[0],
-                 pd.to_numeric(pd.Series([row.get("Actual Effort", 0)]), errors="coerce").fillna(0).iloc[0],
-                 pd.to_numeric(pd.Series([row.get("Duration", 0)]), errors="coerce").fillna(0).iloc[0]))
-            if source_id: source_to_db[source_id] = cur.lastrowid
-            pending.append((cur.lastrowid, parent_source))
-            if typ.strip().lower() == "milestone":
-                c.execute("INSERT INTO milestones(name,project_id,team,status,start_date,due_date,completion_date,dependency,notes) VALUES(?,?,?,?,?,?,?,?,?)",
-                    (val(row, "Initiative / Milestone / Task"), project_ids[program], val(row, "Team", "PC"), status, _as_iso_date(row.get("Start Date")), _as_iso_date(row.get("End Date")), _as_iso_date(row.get("Completion Date")), val(row, "Dependency"), val(row, "Remarks", "Update")))
-        for task_id, parent_source in pending:
-            if parent_source in source_to_db:
-                c.execute("UPDATE tasks SET parent_task_id=? WHERE id=?", (source_to_db[parent_source], task_id))
-        for owner in sorted(owners):
-            c.execute("INSERT INTO resources(name,email,team,role,status,capacity,notes) VALUES(?,?,?,?,?,?,?)",
-                      (owner, "", "", "Team Member", "Available", 100, ""))
-        c.commit()
-    _recalculate_project_rollups()
-    _persist_snapshot()
-    st.session_state["_vektor_has_real_data"] = True
-    return {"projects": len(program_names), "tasks": len(valid_tasks), "owners": len(owners)}
-
-def clear_operational_data(selected_tables: list[str]) -> None:
-    allowed = {"projects", "tasks", "resources", "milestones", "calendar_events", "saved_reports", "audit_log"}
-    chosen = allowed.intersection(selected_tables)
-    # Clear dependent children when parent entities are selected.
-    if "projects" in chosen:
-        chosen.update({"tasks", "milestones", "calendar_events"})
-    if "tasks" in chosen:
-        chosen.update({"task_activity", "task_attachments", "task_subtasks"})
-    with conn() as c:
-        c.execute("PRAGMA foreign_keys=OFF")
-        for table in ("task_activity", "task_attachments", "task_subtasks", "milestones", "calendar_events", "tasks", "resources", "projects", "saved_reports", "audit_log"):
-            if table in chosen and c.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)).fetchone():
-                c.execute(f"DELETE FROM {table}")
-        c.commit()
-    st.session_state["_vektor_has_real_data"] = False
-    _recalculate_project_rollups()
-    _persist_snapshot()
-
-
 init_db()
 try:
     _mongo_restored = _restore_snapshot()
@@ -532,7 +535,6 @@ except Exception as _mongo_startup_error:
     )
 
 # Load Dataframes
-_recalculate_project_rollups()
 P = df("SELECT * FROM projects ORDER BY id")
 T = df("SELECT t.*, p.name AS project FROM tasks t LEFT JOIN projects p ON p.id=t.project_id ORDER BY t.due_date")
 R = df("SELECT * FROM resources ORDER BY id")
@@ -541,18 +543,6 @@ M = df("SELECT m.*, p.name AS project FROM milestones m LEFT JOIN projects p ON 
 projects_list = P.name.tolist()
 pmap = dict(zip(P.name, P.id))
 teams_list = sorted(set(R.team.dropna().tolist() + P.team.dropna().tolist()))
-if P.empty:
-    st.markdown("<div class='project-title'>PROJECT TRACKER</div>", unsafe_allow_html=True)
-    st.info("No portfolio data is loaded. Upload the approved Excel source below to populate the app. No sample projects or tasks are created automatically.")
-    _initial_portfolio = st.file_uploader("Upload portfolio Excel source", type=["xlsx", "xlsm"], key="initial_portfolio_source")
-    if _initial_portfolio is not None and st.button("Import Portfolio", type="primary", key="initial_import_portfolio"):
-        try:
-            _import_counts = import_portfolio_excel(_initial_portfolio)
-            st.success(f"Imported {_import_counts['projects']} projects, {_import_counts['tasks']} task/subtask rows, and {_import_counts['owners']} owners.")
-            st.rerun()
-        except Exception as _import_error:
-            st.error(f"Import failed: {_import_error}")
-    st.stop()
 
 # Theme Configuration
 active_theme = get_setting("theme", "HPE Green")
@@ -904,9 +894,6 @@ div[data-testid="stDialog"] > div > div {{
     border-radius: 14px !important;
     padding: 0 !important;
 }}
-/* Remove duplicate native dialog heading; retain close control and the icon/title inside each modal. */
-div[data-testid="stDialog"] [data-testid="stDialogHeader"] > div:first-child {{ display:none !important; }}
-div[data-testid="stDialog"] [data-testid="stDialogHeader"] {{ min-height: 20px !important; padding-top: 6px !important; padding-bottom: 0 !important; }}
 </style>
 """,
     unsafe_allow_html=True,
@@ -1507,7 +1494,7 @@ def view_project_modal(pid: int) -> None:
                 <hr style="border-color:#EEF2F6;margin:12px 0">
                 <div style="font-size:13.5px;font-weight:700;color:#0F172A;margin-bottom:6px">📄 Project Summary</div>
                 <div style="font-size:11.5px;color:#64748B;line-height:1.55">
-                    {html.escape(str(r.description or r.short_desc or 'No project description provided.'))} Current calculated progress is {pct}% based on completed leaf tasks.
+                    The {html.escape(r['name'])} project aims to deliver a modern, user-friendly corporate website with improved performance, enhanced user experience, and updated content. The project is currently on track with {pct}% completion. Key development activities are in progress and the team is aligned for the upcoming milestones.
                 </div>
                 """
             ),
@@ -1536,8 +1523,12 @@ def view_project_modal(pid: int) -> None:
 
         with st.container(border=True):
             section_title("🕒 Recent Activity", "View All Activity →")
-            _project_activity = df("SELECT created_at,event,details FROM audit_log WHERE item_type='Project' AND item_id=? ORDER BY id DESC LIMIT 5", (int(r["id"]),))
-            act_rows = [(str(a.get("created_at") or ""), GREEN if str(a.get("event")) == "Created" else BLUE, str(a.get("details") or a.get("event") or "Updated"), "User") for _, a in _project_activity.iterrows()]
+            act_rows = [
+                ("Apr 24, 2024 10:15 AM", "#00875A", "Project created", "Alice Morgan"),
+                ("Apr 23, 2024 04:20 PM", "#1473E6", "Milestone status changed to In Progress", "Emily Rodriguez"),
+                ("Apr 22, 2024 03:45 PM", "#1473E6", "Project details updated", "Alice Morgan"),
+                ("Apr 20, 2024 11:10 AM", "#64748B", "Team member added", "Sarah Kim"),
+            ]
             act_tr = "".join(
                 f"<tr><td>{dt}</td><td><span style='color:{dot};margin-right:6px'>●</span>{act}</td><td>{by}</td></tr>"
                 for dt, dot, act, by in act_rows
@@ -1590,11 +1581,11 @@ def edit_project_modal(pid: int | None = None) -> None:
         section_title("📄 Project Details")
         f_a, f_b = st.columns(2)
         with f_a:
-            p_name = st.text_input("Project Name *", value=str(r["name"]) if r is not None else "")
+            p_name = st.text_input("Project Name *", value=str(r["name"]) if r is not None else "Website Revamp")
         with f_b:
             default_desc = (
                 "Redesign and launch the corporate website with improved user experience and modern design."
-                if (r is not None and str(r.get("tags") or "").strip())
+                if (r is not None and r["name"] == "Website Revamp")
                 else (str(r.description or "") if r is not None else "")
             )
             p_desc = st.text_area("Description", value=default_desc, height=85)
@@ -1620,7 +1611,7 @@ def edit_project_modal(pid: int | None = None) -> None:
         with c4:
             p_mgr = st.selectbox("Project Manager *", mgrs, index=mgrs.index(cur_mgr))
         with c5:
-            s_dt = date.fromisoformat(r.start_date) if r is not None and r.start_date else date.today()
+            s_dt = date.fromisoformat(r.start_date) if r is not None and r.start_date else date(2024, 4, 24)
             p_start = st.date_input("Start Date *", s_dt)
         with c6:
             e_dt = date.fromisoformat(r.end_date) if r is not None and r.end_date else date(2024, 6, 30)
@@ -1774,30 +1765,23 @@ if page == "Overview":
     with h_r1:
         ov_proj_filter = st.selectbox("Project", ["All Projects"] + projects_list, key="ov_proj_sel", label_visibility="collapsed")
     with h_r2:
-        ov_date_range = st.date_input("Date Range", (date.today() - timedelta(days=30), date.today() + timedelta(days=60)), key="ov_date_sel", label_visibility="collapsed")
+        st.date_input("Date Range", (date(2024, 4, 24), date(2024, 6, 30)), key="ov_date_sel", label_visibility="collapsed")
 
-    _ov_tasks = T.copy()
-    if isinstance(ov_date_range, (tuple, list)) and len(ov_date_range) == 2:
-        _ov_lo, _ov_hi = sorted(ov_date_range)
-        _ov_task_start = pd.to_datetime(_ov_tasks.get("start_date", pd.Series(index=_ov_tasks.index,dtype=str)), errors="coerce").dt.date
-        _ov_task_end = pd.to_datetime(_ov_tasks.get("due_date", pd.Series(index=_ov_tasks.index,dtype=str)), errors="coerce").dt.date
-        _ov_tasks = _ov_tasks[(_ov_task_start.isna() | (_ov_task_start <= _ov_hi)) & (_ov_task_end.isna() | (_ov_task_end >= _ov_lo))].copy()
-    if ov_proj_filter != "All Projects": _ov_tasks = _ov_tasks[_ov_tasks["project"] == ov_proj_filter].copy()
     st.write("")
-    # 6 KPI Cards Row (live database metrics)
+    # 6 KPI Cards Row (Exact numbers & progress bars from Project Overview screenshot)
     k1, k2, k3, k4, k5, k6 = st.columns(6)
-    _ov_total = len(_ov_tasks); _ov_completed = int((_ov_tasks["status"].astype(str).str.lower()=="completed").sum()) if _ov_total else 0
-    _ov_progress = int((_ov_tasks["status"].astype(str).str.lower()=="in progress").sum()) if _ov_total else 0
-    _ov_hold = int((_ov_tasks["status"].astype(str).str.lower()=="on hold").sum()) if _ov_total else 0
-    _ov_due = pd.to_datetime(_ov_tasks.get("due_date", pd.Series(dtype=str)), errors="coerce") if _ov_total else pd.Series(dtype="datetime64[ns]")
-    _ov_overdue = int(((_ov_due.dt.date < date.today()) & (_ov_tasks["status"].astype(str).str.lower()!="completed")).sum()) if _ov_total else 0
-    _ov_pct = lambda n: f"({n/_ov_total:.0%})" if _ov_total else "(0%)"
-    with k1: kpi_card_mockup("Total Projects", str(len(P)), sub_text="Loaded Projects", icon_html="❖", icon_bg="#DCFCE7", icon_fg="#00875A")
-    with k2: kpi_card_mockup("Total Tasks", str(_ov_total), sub_text="Across All Projects", icon_html="✓", icon_bg="#DCFCE7", icon_fg="#00875A")
-    with k3: kpi_card_mockup("Completed Tasks", str(_ov_completed), _ov_pct(_ov_completed), bar_pct=round(_ov_completed/_ov_total*100) if _ov_total else 0, icon_html="◕", icon_bg="#DCFCE7", icon_fg="#00875A", bar_color="#00875A")
-    with k4: kpi_card_mockup("In Progress", str(_ov_progress), _ov_pct(_ov_progress), bar_pct=round(_ov_progress/_ov_total*100) if _ov_total else 0, icon_html="▶", icon_bg="#DBEAFE", icon_fg="#1473E6", bar_color="#1473E6")
-    with k5: kpi_card_mockup("On Hold", str(_ov_hold), _ov_pct(_ov_hold), bar_pct=round(_ov_hold/_ov_total*100) if _ov_total else 0, icon_html="❚❚", icon_bg="#FEF3C7", icon_fg="#F28C00", bar_color="#F28C00")
-    with k6: kpi_card_mockup("Overdue", str(_ov_overdue), _ov_pct(_ov_overdue), bar_pct=round(_ov_overdue/_ov_total*100) if _ov_total else 0, icon_html="✕", icon_bg="#FEE2E2", icon_fg="#EF4444", bar_color="#EF4444")
+    with k1:
+        kpi_card_mockup("Total Projects", "5", sub_text="Active Projects", icon_html="❖", icon_bg="#DCFCE7", icon_fg="#00875A")
+    with k2:
+        kpi_card_mockup("Total Tasks", "142", sub_text="Across All Projects", icon_html="✓", icon_bg="#DCFCE7", icon_fg="#00875A")
+    with k3:
+        kpi_card_mockup("Completed Tasks", "78", "(55%)", bar_pct=55, icon_html="◕", icon_bg="#DCFCE7", icon_fg="#00875A", bar_color="#00875A")
+    with k4:
+        kpi_card_mockup("In Progress", "46", "(32%)", bar_pct=32, icon_html="▶", icon_bg="#DBEAFE", icon_fg="#1473E6", bar_color="#1473E6")
+    with k5:
+        kpi_card_mockup("On Hold", "12", "(8%)", bar_pct=8, icon_html="❚❚", icon_bg="#FEF3C7", icon_fg="#F28C00", bar_color="#F28C00")
+    with k6:
+        kpi_card_mockup("Overdue", "6", "(4%)", bar_pct=4, icon_html="✕", icon_bg="#FEE2E2", icon_fg="#EF4444", bar_color="#EF4444")
 
     st.write("")
     # Row 2: Project Progress (Left) & Task Status Donut (Right)
@@ -1811,12 +1795,7 @@ if page == "Overview":
                 st.session_state.page = "Projects"
                 st.rerun()
 
-        ov_projs = P.copy()
-        if isinstance(ov_date_range, (tuple, list)) and len(ov_date_range) == 2:
-            _ov_lo, _ov_hi = sorted(ov_date_range)
-            _ov_st = pd.to_datetime(ov_projs["start_date"], errors="coerce").dt.date
-            _ov_en = pd.to_datetime(ov_projs["end_date"], errors="coerce").dt.date
-            ov_projs = ov_projs[(_ov_st.isna() | (_ov_st <= _ov_hi)) & (_ov_en.isna() | (_ov_en >= _ov_lo))].copy()
+        ov_projs = P[P.id.isin([1, 2, 3, 4, 5])].copy()
         if ov_proj_filter != "All Projects":
             ov_projs = P[P.name == ov_proj_filter].copy()
 
@@ -1832,7 +1811,7 @@ if page == "Overview":
                 f"<td>{fmt_date(pr.end_date)}</td>"
                 f"<td>{progress_html(pr.progress, GREEN)}</td>"
                 f"<td>{badge_html(pr.status)}</td>"
-                f"<td style='text-align:center;font-weight:600'>{0 if pd.isna(pr.days_left) else int(pr.days_left)}</td>"
+                f"<td style='text-align:center;font-weight:600'>{int(pr.days_left or 0)}</td>"
                 f"</tr>"
             )
         st.markdown(
@@ -1856,7 +1835,7 @@ if page == "Overview":
             ts_df = pd.DataFrame(
                 {
                     "Status": ["Completed", "In Progress", "On Hold", "Overdue"],
-                    "Count": [_ov_completed, _ov_progress, _ov_hold, _ov_overdue],
+                    "Count": [78, 46, 12, 6],
                 }
             )
             fig_ts = px.pie(
@@ -1875,7 +1854,7 @@ if page == "Overview":
                 paper_bgcolor="rgba(0,0,0,0)",
                 annotations=[
                     dict(
-                        text=f"<b style='font-size:20px;color:#0F172A'>{_ov_total}</b><br><span style='font-size:11px;color:#64748B'>Total Tasks</span>",
+                        text="<b style='font-size:20px;color:#0F172A'>142</b><br><span style='font-size:11px;color:#64748B'>Total Tasks</span>",
                         x=0.5,
                         y=0.5,
                         showarrow=False,
@@ -1900,15 +1879,13 @@ if page == "Overview":
     r3_l, r3_r = st.columns([1.55, 1])
     with r3_l, st.container(border=True):
         section_title("📅  Upcoming Milestones", "View All →")
-        ms_ov = []
-        if not M.empty:
-            _ms_live = M.copy()
-            _ms_live["_due"] = pd.to_datetime(_ms_live["due_date"], errors="coerce")
-            _ms_live = _ms_live.sort_values("_due", na_position="last").head(5)
-            for _, _m in _ms_live.iterrows():
-                _due_s = _as_iso_date(_m.get("due_date"))
-                _days_left = (date.fromisoformat(_due_s) - date.today()).days if _due_s else 0
-                ms_ov.append((GREEN, str(_m.get("name", "")), str(_m.get("project", "")), fmt_date(_due_s), _days_left, str(_m.get("status", "Not Started"))))
+        ms_ov = [
+            ("#00875A", "Design Sign-off", "Website Revamp", "Apr 30, 2024", 5, "On Track"),
+            ("#F28C00", "MVP Release", "Mobile App Development", "May 15, 2024", 20, "At Risk"),
+            ("#1473E6", "UAT Completion", "E-Commerce Platform", "May 30, 2024", 35, "On Track"),
+            ("#7C3AED", "Data Migration Cutover", "Data Migration", "Jun 15, 2024", 50, "On Track"),
+            ("#00875A", "Infrastructure Go-Live", "IT Infrastructure Upgrade", "Jul 1, 2024", 66, "On Track"),
+        ]
         ms_html = "".join(
             f"<tr><td><span style='color:{dot};margin-right:8px'>●</span><span style='font-weight:500'>{mname}</span></td>"
             f"<td>{mproj}</td><td>{mdue}</td><td style='text-align:center'>{mdays}</td><td>{badge_html(mstat)}</td></tr>"
@@ -1935,7 +1912,7 @@ if page == "Overview":
             tp_df = pd.DataFrame(
                 {
                     "Priority": ["High", "Medium", "Low", "None"],
-                    "Count": [int((_ov_tasks["priority"].astype(str).str.lower()=="high").sum()) if not _ov_tasks.empty else 0, int((_ov_tasks["priority"].astype(str).str.lower()=="medium").sum()) if not _ov_tasks.empty else 0, int((_ov_tasks["priority"].astype(str).str.lower()=="low").sum()) if not _ov_tasks.empty else 0, int(_ov_tasks["priority"].isna().sum()) if not _ov_tasks.empty else 0],
+                    "Count": [26, 34, 54, 28],
                 }
             )
             fig_tp = px.pie(
@@ -1954,7 +1931,7 @@ if page == "Overview":
                 paper_bgcolor="rgba(0,0,0,0)",
                 annotations=[
                     dict(
-                        text=f"<b style='font-size:20px;color:#0F172A'>{_ov_total}</b><br><span style='font-size:11px;color:#64748B'>Total Tasks</span>",
+                        text="<b style='font-size:20px;color:#0F172A'>142</b><br><span style='font-size:11px;color:#64748B'>Total Tasks</span>",
                         x=0.5,
                         y=0.5,
                         showarrow=False,
@@ -1966,10 +1943,10 @@ if page == "Overview":
             st.markdown(
                 """
                 <div style="font-size:12.5px;padding-top:34px;line-height:2.35">
-                    <div style="display:flex;justify-content:space-between;border-bottom:1px solid #F1F5F9"><span><span style="color:#EF4444">●</span> &nbsp;High</span><b>{int((_ov_tasks['priority'].astype(str).str.lower()=='high').sum()) if not _ov_tasks.empty else 0}</b></div>
-                    <div style="display:flex;justify-content:space-between;border-bottom:1px solid #F1F5F9"><span><span style="color:#F28C00">●</span> &nbsp;Medium</span><b>{int((_ov_tasks['priority'].astype(str).str.lower()=='medium').sum()) if not _ov_tasks.empty else 0}</b></div>
-                    <div style="display:flex;justify-content:space-between;border-bottom:1px solid #F1F5F9"><span><span style="color:#1473E6">●</span> &nbsp;Low</span><b>{int((_ov_tasks['priority'].astype(str).str.lower()=='low').sum()) if not _ov_tasks.empty else 0}</b></div>
-                    <div style="display:flex;justify-content:space-between"><span><span style="color:#00875A">●</span> &nbsp;None</span><b>{int(_ov_tasks['priority'].isna().sum()) if not _ov_tasks.empty else 0}</b></div>
+                    <div style="display:flex;justify-content:space-between;border-bottom:1px solid #F1F5F9"><span><span style="color:#EF4444">●</span> &nbsp;High</span><b>26</b></div>
+                    <div style="display:flex;justify-content:space-between;border-bottom:1px solid #F1F5F9"><span><span style="color:#F28C00">●</span> &nbsp;Medium</span><b>34</b></div>
+                    <div style="display:flex;justify-content:space-between;border-bottom:1px solid #F1F5F9"><span><span style="color:#1473E6">●</span> &nbsp;Low</span><b>54</b></div>
+                    <div style="display:flex;justify-content:space-between"><span><span style="color:#00875A">●</span> &nbsp;None</span><b>28</b></div>
                 </div>
                 """,
                 unsafe_allow_html=True,
@@ -1986,15 +1963,13 @@ if page == "Overview":
                 st.session_state.page = "Resources"
                 st.rerun()
 
-        tw_rows = []
-        for _, _res in R.head(5).iterrows():
-            _rn = str(_res.get("name") or "")
-            _rt = T[T["assignee"].astype(str) == _rn] if not T.empty else pd.DataFrame()
-            _assigned = len(_rt); _inprog = int((_rt["status"].astype(str).str.lower()=="in progress").sum()) if _assigned else 0
-            _done = int((_rt["status"].astype(str).str.lower()=="completed").sum()) if _assigned else 0
-            _due = pd.to_datetime(_rt.get("due_date", pd.Series(dtype=str)), errors="coerce") if _assigned else pd.Series(dtype="datetime64[ns]")
-            _overdue = int(((_due.dt.date < date.today()) & (_rt["status"].astype(str).str.lower()!="completed")).sum()) if _assigned else 0
-            tw_rows.append((_rn, _assigned, _inprog, _done, _overdue, round(_done/_assigned*100) if _assigned else 0))
+        tw_rows = [
+            ("Alice Morgan", 28, 14, 10, 4, 75),
+            ("Brian Taylor", 24, 10, 12, 2, 60),
+            ("Emily Rodriguez", 22, 12, 8, 2, 65),
+            ("Carlos Diaz", 18, 8, 8, 2, 50),
+            ("Dana Scott", 16, 8, 6, 2, 45),
+        ]
         tw_html = "".join(
             f"<tr><td>{avatar_html(nm)}</td>"
             f"<td style='text-align:center'>{ass}</td>"
@@ -2013,17 +1988,13 @@ if page == "Overview":
 
     with r4_r, st.container(border=True):
         section_title("🕒  Recent Activity", "View All →")
-        ra_rows = []
-        _audit_live = df("SELECT created_at,event,details,item_id FROM audit_log ORDER BY id DESC LIMIT 5")
-        for _, _ar in _audit_live.iterrows():
-            _tid = _ar.get("item_id")
-            _task_name = ""; _project_name = ""
-            if pd.notna(_tid):
-                _tr_live = T[T["id"] == int(_tid)] if not T.empty else pd.DataFrame()
-                if not _tr_live.empty:
-                    _task_name = str(_tr_live.iloc[0].get("name") or "")
-                    _project_name = str(_tr_live.iloc[0].get("project") or "")
-            ra_rows.append((str(_ar.get("created_at") or ""), GREEN, str(_ar.get("event") or "Updated"), _project_name, _task_name or str(_ar.get("details") or "")))
+        ra_rows = [
+            ("Apr 24, 2024 10:15 AM", "#00875A", "Task marked as completed", "Website Revamp", "Homepage Design"),
+            ("Apr 24, 2024 09:42 AM", "#1473E6", "Task updated", "E-Commerce Platform", "API Integration"),
+            ("Apr 24, 2024 08:30 AM", "#1473E6", "New task created", "Mobile App Development", "UI Development"),
+            ("Apr 23, 2024 04:20 PM", "#1473E6", "Status changed to In Progress", "Data Migration", "Data Mapping"),
+            ("Apr 23, 2024 01:10 PM", "#1473E6", "Task assigned", "IT Infrastructure Upgrade", "Server Setup"),
+        ]
         ra_html = "".join(
             f"<tr><td style='white-space:nowrap'>{dt}</td>"
             f"<td><span style='color:{dot};margin-right:6px'>●</span>{act}</td>"
@@ -2053,7 +2024,7 @@ elif page == "Projects":
     with h_s:
         proj_q = st.text_input("Search", placeholder="🔍 Search projects...", key="p_search_box", label_visibility="collapsed")
     with h_d:
-        p_date_range = st.date_input("Range", (date.today() - timedelta(days=30), date.today() + timedelta(days=60)), key="p_date_box", label_visibility="collapsed")
+        st.date_input("Range", (date(2024, 4, 24), date(2024, 6, 30)), key="p_date_box", label_visibility="collapsed")
     with h_b:
         if st.button("＋ New Project", type="primary", use_container_width=True, key="btn_new_proj_top"):
             st.session_state.active_modal = ("edit", None)
@@ -2117,11 +2088,6 @@ elif page == "Projects":
 
     # Apply Filters
     vp = P.copy()
-    if isinstance(p_date_range, (tuple, list)) and len(p_date_range) == 2:
-        _plo, _phi = sorted(p_date_range)
-        _pst = pd.to_datetime(vp["start_date"], errors="coerce").dt.date
-        _pen = pd.to_datetime(vp["end_date"], errors="coerce").dt.date
-        vp = vp[(_pst.isna() | (_pst <= _phi)) & (_pen.isna() | (_pen >= _plo))].copy()
     if proj_q:
         vp = vp[vp.astype(str).apply(lambda s: s.str.contains(proj_q, case=False, na=False)).any(axis=1)]
     if sel_stat != "All Statuses":
@@ -2263,14 +2229,14 @@ elif page == "Projects":
                 with r_cols[7]:
                     st.markdown(f"<div style='padding-top:4px'>{badge_html(item.get('priority') or 'Medium')}</div>", unsafe_allow_html=True)
                 with r_cols[8]:
-                    _days_left = pd.to_numeric(item.get("days_left"), errors="coerce")
-                    st.markdown(f"<div style='padding-top:6px;font-size:12.5px;font-weight:700;color:#00875A'>{0 if pd.isna(_days_left) else int(_days_left)}</div>",unsafe_allow_html=True)
+                    st.markdown(f"<div style='padding-top:6px;font-size:12.5px;font-weight:700;color:#00875A'>{int(item.get('days_left') or 0)}</div>", unsafe_allow_html=True)
                 with r_cols[9]:
                     st.markdown(
                         f"<div style='padding-top:2px'><div style='font-size:11.5px;font-weight:600'>{tdone}/{ttot}</div>"
                         f"<div style='height:5px;background:#E2E8F0;border-radius:99px;overflow:hidden;margin-top:2px'>"
                         f"<div style='width:{task_pct}%;height:100%;background:#00875A'></div></div></div>",
-                        unsafe_allow_html=True, )
+                        unsafe_allow_html=True,
+                    )
                 with r_cols[10]:
                     st.markdown(f"<div style='padding-top:4px'>{tags_markup}</div>", unsafe_allow_html=True)
                 with r_cols[11]:
@@ -2332,13 +2298,13 @@ elif page == "Gantt Chart":
     with gh_s:
         gantt_q = st.text_input("Search", placeholder="🔍 Search projects or tasks...", key="gantt_search_top", label_visibility="collapsed")
     with gh_d:
-        gantt_date_range = st.date_input("Date Range", (date.today() - timedelta(days=30), date.today() + timedelta(days=60)), key="gantt_date_top", label_visibility="collapsed")
+        st.date_input("Date Range", (date(2024, 4, 24), date(2024, 6, 30)), key="gantt_date_top", label_visibility="collapsed")
 
     st.write("")
     # Filter Bar Card
     with st.container(border=True):
         gf1, gf2, gf3, gf4, gf_sp, gf_more = st.columns([1.15, 1.15, 1.15, 1.15, 0.8, 0.7])
-        gantt_projects = ["All Projects"] + projects_list
+        gantt_projects = ["All Projects", "Website Revamp", "IT Infrastructure Upgrade", "Sustainability Initiative", "Marketing Campaign", "Training Program"]
         with gf1:
             st.markdown("<div style='font-size:11.5px;font-weight:600;color:#475569;margin-bottom:3px'>Project</div>", unsafe_allow_html=True)
             g_proj_sel = st.selectbox("Project", gantt_projects, key="g_flt_proj", label_visibility="collapsed")
@@ -2415,53 +2381,89 @@ elif page == "Gantt Chart":
 
         scale = st.session_state.gantt_scale
 
-        # Build the Gantt hierarchy from imported project/task rows rather than embedded demo rows.
-        _all_dates = []
-        for _frame in (P, T):
-            for _col in (["start_date", "end_date"] if _frame is P else ["start_date", "due_date"]):
-                if _col in _frame.columns:
-                    _all_dates.extend([d.date() for d in pd.to_datetime(_frame[_col], errors="coerce").dropna().tolist()])
-        if isinstance(gantt_date_range, (tuple, list)) and len(gantt_date_range) == 2:
-            _min_date, _max_date = sorted(gantt_date_range)
-        else:
-            _min_date = min(_all_dates) if _all_dates else date.today()
-            _max_date = max(_all_dates) if _all_dates else date.today() + timedelta(days=30)
-        _span_days = max(1, (_max_date - _min_date).days + 1)
-        month_day_rows = []
-        _project_prefix_map = {}
-        for _pi, (_, _pr) in enumerate(P.iterrows(), 1):
-            _prefix = str(_pi); _project_prefix_map[str(_pr["name"])] = _prefix
-            _ps = _as_iso_date(_pr.get("start_date")); _pe = _as_iso_date(_pr.get("end_date"))
-            try: _psd = date.fromisoformat(_ps) if _ps else _min_date
-            except Exception: _psd = _min_date
-            try: _ped = date.fromisoformat(_pe) if _pe else _psd
-            except Exception: _ped = _psd
-            _left = max(0.0, min(100.0, (_psd-_min_date).days/_span_days*100))
-            _width = max(0.8, min(100.0-_left, ((_ped-_psd).days+1)/_span_days*100))
-            _status = str(_pr.get("status") or "Not Started"); _pct = int(pd.to_numeric(pd.Series([_pr.get("progress",0)]),errors="coerce").fillna(0).iloc[0])
-            _color = str(_pr.get("bar_color") or GREEN)
-            month_day_rows.append((_prefix,0,"folder",_color,str(_pr["name"]),fmt_date(_ps),fmt_date(_pe),f"{max(1,(_ped-_psd).days+1)} days",_status,f"{_pct}%",_left,_width,_color,_pct,"",False,"#F8FAFC"))
-            _project_tasks = T[T["project_id"] == _pr["id"]].copy() if not T.empty else pd.DataFrame()
-            _source_to_wbs = {}
-            for _ti, (_, _tr) in enumerate(_project_tasks.iterrows(), 1):
-                _tid = int(_tr["id"]); _sid = str(_tr.get("source_id") or _tid)
-                _wbs = f"{_prefix}.{_ti}"; _source_to_wbs[_tid] = _wbs
-                _ts = _as_iso_date(_tr.get("start_date")); _te = _as_iso_date(_tr.get("due_date"))
-                try: _tsd = date.fromisoformat(_ts) if _ts else _psd
-                except Exception: _tsd = _psd
-                try: _ted = date.fromisoformat(_te) if _te else _tsd
-                except Exception: _ted = _tsd
-                _tleft = max(0.0,min(100.0,(_tsd-_min_date).days/_span_days*100)); _twidth=max(0.8,min(100.0-_tleft,((_ted-_tsd).days+1)/_span_days*100))
-                _tstatus=str(_tr.get("status") or "Not Started"); _tpct=int(pd.to_numeric(pd.Series([_tr.get("progress",0)]),errors="coerce").fillna(0).iloc[0]); _ttype=str(_tr.get("task_type") or "Task")
-                _tcolor={"Completed":GREEN,"In Progress":BLUE,"At Risk":ORANGE,"Overdue":RED,"Not Started":GRAY,"On Hold":ORANGE}.get(_tstatus,BLUE)
-                _parent=_tr.get("parent_task_id"); _indent=2 if pd.notna(_parent) else 1
-                month_day_rows.append((_wbs,_indent,"play" if _ttype.lower()!="milestone" else "doc",_tcolor,str(_tr.get("name") or "Task"),fmt_date(_ts),fmt_date(_te),f"{max(1,(_ted-_tsd).days+1)} days",_tstatus,f"{_tpct}%",_tleft,_twidth,_tcolor,_tpct,"Milestone" if _ttype.lower()=="milestone" else "",bool(str(_tr.get("dependency") or "").strip()),"#FFFFFF"))
-        week_rows = list(month_day_rows)
-        day_rows = [tuple(r) + ("",) for r in month_day_rows]
+        # WBS dataset for Month, Week, and Day views matching the 3 Gantt screenshots
+        month_day_rows = [
+            # (id, indent, icon_type, icon_col, name, start, end, dur, status, pct, bar_left, bar_w, bar_col, bar_fill_w, milestone_txt, has_dep_arrow, row_bg)
+            ("1", 0, "folder", "#00875A", "Website Revamp", "Apr 24, 2024", "Jun 30, 2024", "67 days", "On Track", "70%", 7.5, 83.0, "#00875A", 100, " end_diamond", False, "#ECFDF5"),
+            ("1.1", 1, "folder", "#1473E6", "Planning", "Apr 24, 2024", "May 5, 2024", "12 days", "Completed", "100%", 7.5, 14.5, "#00875A", 100, "Project Kick-off", False, "#FFFFFF"),
+            ("1.1.1", 2, "play", "#00875A", "Define project scope", "Apr 24, 2024", "Apr 26, 2024", "3 days", "Completed", "100%", 7.5, 4.5, "#10B981", 100, "", True, "#FFFFFF"),
+            ("1.1.2", 2, "play", "#00875A", "Stakeholder alignment", "Apr 27, 2024", "May 5, 2024", "9 days", "Completed", "100%", 12.0, 12.5, "#10B981", 100, "", False, "#FFFFFF"),
+            ("1.2", 1, "folder", "#00875A", "Design", "May 6, 2024", "May 20, 2024", "15 days", "Completed", "100%", 24.5, 20.0, "#00875A", 100, "Design Sign-off", False, "#FFFFFF"),
+            ("1.2.1", 2, "play", "#00875A", "Create wireframes", "May 6, 2024", "May 12, 2024", "7 days", "Completed", "100%", 24.5, 11.0, "#10B981", 100, "", True, "#FFFFFF"),
+            ("1.2.2", 2, "play", "#00875A", "UI/UX design", "May 13, 2024", "May 20, 2024", "8 days", "Completed", "100%", 35.5, 12.0, "#10B981", 100, "", False, "#FFFFFF"),
+            ("1.3", 1, "folder", "#1473E6", "Development", "May 21, 2024", "May 31, 2024", "11 days", "In Progress", "60%", 41.5, 17.5, "#3B82F6", 60, "", False, "#F0F7FF"),
+            ("1.3.1", 2, "play", "#64748B", "Frontend development", "May 21, 2024", "May 26, 2024", "6 days", "In Progress", "70%", 41.5, 9.5, "#60A5FA", 100, "", True, "#FFFFFF"),
+            ("1.3.2", 2, "play", "#64748B", "Backend development", "May 27, 2024", "May 31, 2024", "5 days", "In Progress", "50%", 51.0, 9.5, "#60A5FA", 100, "", False, "#FFFFFF"),
+            ("1.4", 1, "folder", "#64748B", "Testing", "Jun 1, 2024", "Jun 15, 2024", "15 days", "Not Started", "0%", 57.5, 19.0, "#8495B0", 100, "", True, "#FFFFFF"),
+            ("1.4.1", 2, "play", "#64748B", "UAT testing", "Jun 1, 2024", "Jun 10, 2024", "10 days", "Not Started", "0%", 57.5, 12.0, "#8495B0", 100, "", False, "#FFFFFF"),
+            ("1.4.2", 2, "play", "#64748B", "Bug fixes", "Jun 11, 2024", "Jun 15, 2024", "5 days", "Not Started", "0%", 69.5, 7.5, "#8495B0", 100, "", True, "#FFFFFF"),
+            ("1.5", 1, "folder", "#7C3AED", "Go-Live", "Jun 16, 2024", "Jun 30, 2024", "15 days", "Not Started", "0%", 77.0, 17.0, "#8495B0", 100, "Go-Live", False, "#FFFFFF"),
+            ("2", 0, "folder", "#00875A", "IT Infrastructure Upgrade", "Apr 15, 2024", "Jun 20, 2024", "67 days", "In Progress", "45%", 0.5, 69.0, "#93C5FD", 55, "", False, "#F0F7FF"),
+            ("2.1", 1, "doc", "#00875A", "Requirements", "Apr 15, 2024", "Apr 30, 2024", "16 days", "Completed", "100%", 0.5, 17.5, "#00875A", 100, "", True, "#FFFFFF"),
+            ("2.2", 1, "doc", "#7C3AED", "Implementation", "May 1, 2024", "Jun 10, 2024", "41 days", "In Progress", "40%", 18.5, 40.5, "#2563EB", 100, "", True, "#FFFFFF"),
+            ("2.3", 1, "doc", "#7C3AED", "Testing", "Jun 11, 2024", "Jun 20, 2024", "10 days", "Not Started", "0%", 60.0, 16.0, "#8495B0", 100, "", False, "#FFFFFF"),
+            ("3", 0, "folder", "#00875A", "Sustainability Initiative", "May 1, 2024", "Jun 30, 2024", "61 days", "At Risk", "30%", 0.5, 75.5, "#F59E0B", 100, "", False, "#FFFBEB"),
+            ("3.1", 1, "doc", "#00875A", "Research & Analysis", "May 1, 2024", "May 20, 2024", "20 days", "Completed", "100%", 0.5, 29.0, "#00875A", 100, "", True, "#FFFFFF"),
+            ("3.2", 1, "doc", "#64748B", "Strategy Development", "May 21, 2024", "Jun 10, 2024", "21 days", "In Progress", "40%", 30.8, 29.5, "#2563EB", 100, "", True, "#FFFFFF"),
+            ("3.3", 1, "doc", "#64748B", "Implementation", "Jun 11, 2024", "Jun 30, 2024", "20 days", "Not Started", "0%", 61.0, 27.5, "#8495B0", 100, "Launch", False, "#FFFFFF"),
+        ]
 
+        week_rows = [
+            ("1", 0, "folder", "#00875A", "Website Revamp", "Apr 24, 2024", "Jun 30, 2024", "67 days", "On Track", "70%", 7.5, 84.0, "#00875A", 100, "", False, "#ECFDF5"),
+            ("1.1", 1, "folder", "#1473E6", "Planning", "Apr 24, 2024", "May 5, 2024", "12 days", "Completed", "100%", 7.5, 14.5, "#10B981", 100, "", True, "#FFFFFF"),
+            ("1.2", 1, "folder", "#00875A", "Design", "May 6, 2024", "May 20, 2024", "15 days", "Completed", "100%", 24.0, 17.0, "#10B981", 100, "", True, "#FFFFFF"),
+            ("1.3", 1, "folder", "#1473E6", "Development", "May 21, 2024", "May 31, 2024", "11 days", "In Progress", "60%", 43.0, 16.5, "#2563EB", 100, "", True, "#FFFFFF"),
+            ("1.4", 1, "folder", "#7C3AED", "Testing", "Jun 1, 2024", "Jun 15, 2024", "15 days", "Not Started", "0%", 60.0, 17.5, "#8495B0", 100, "", True, "#FFFFFF"),
+            ("1.5", 1, "folder", "#475569", "Go-Live", "Jun 16, 2024", "Jun 30, 2024", "15 days", "Not Started", "0%", 78.0, 15.0, "#8495B0", 100, "Go-Live", False, "#FFFFFF"),
+            ("2", 0, "folder", "#00875A", "IT Infrastructure Upgrade", "Apr 15, 2024", "Jun 20, 2024", "67 days", "In Progress", "45%", 6.5, 74.5, "#93C5FD", 46, "", False, "#F0F7FF"),
+            ("2.1", 1, "doc", "#00875A", "Requirements", "Apr 15, 2024", "Apr 30, 2024", "16 days", "Completed", "100%", 6.5, 17.5, "#10B981", 100, "", True, "#FFFFFF"),
+            ("2.2", 1, "doc", "#1473E6", "Implementation", "May 1, 2024", "Jun 10, 2024", "41 days", "In Progress", "40%", 24.8, 43.0, "#3B82F6", 100, "", True, "#FFFFFF"),
+            ("2.3", 1, "doc", "#7C3AED", "Testing", "Jun 11, 2024", "Jun 20, 2024", "10 days", "Not Started", "0%", 68.2, 16.5, "#8495B0", 100, "", False, "#FFFFFF"),
+            ("3", 0, "folder", "#00875A", "Sustainability Initiative", "May 1, 2024", "Jun 30, 2024", "61 days", "At Risk", "30%", 6.5, 78.5, "#F59E0B", 100, "", False, "#FFFBEB"),
+            ("3.1", 1, "doc", "#00875A", "Research & Analysis", "May 1, 2024", "May 20, 2024", "20 days", "Completed", "100%", 6.5, 25.0, "#00875A", 100, "", True, "#FFFFFF"),
+            ("3.2", 1, "doc", "#3B82F6", "Strategy Development", "May 21, 2024", "Jun 10, 2024", "21 days", "In Progress", "40%", 33.0, 25.5, "#3B82F6", 100, "", True, "#FFFFFF"),
+            ("3.3", 1, "doc", "#7C3AED", "Implementation", "Jun 11, 2024", "Jun 30, 2024", "20 days", "Not Started", "0%", 59.5, 32.0, "#8495B0", 100, "Launch", False, "#FFFFFF"),
+            ("4", 0, "folder", "#00875A", "Marketing Campaign", "May 6, 2024", "Jun 25, 2024", "50 days", "On Track", "25%", 19.8, 62.0, "#00875A", 100, "", False, "#ECFDF5"),
+            ("4.1", 1, "doc", "#1473E6", "Content Creation", "May 6, 2024", "May 20, 2024", "15 days", "In Progress", "50%", 19.8, 20.0, "#2563EB", 100, "", True, "#FFFFFF"),
+            ("4.2", 1, "doc", "#7C3AED", "Campaign Setup", "May 21, 2024", "Jun 10, 2024", "20 days", "Not Started", "0%", 40.5, 21.0, "#8495B0", 100, "", True, "#FFFFFF"),
+            ("4.3", 1, "doc", "#475569", "Launch Campaign", "Jun 11, 2024", "Jun 25, 2024", "15 days", "Not Started", "0%", 62.0, 22.0, "#8495B0", 100, "Launch", False, "#FFFFFF"),
+            ("5", 0, "folder", "#00875A", "Training Program", "May 13, 2024", "Jun 28, 2024", "47 days", "On Track", "20%", 29.5, 56.0, "#00875A", 100, "", False, "#ECFDF5"),
+            ("5.1", 1, "doc", "#00875A", "Training Materials", "May 13, 2024", "May 31, 2024", "18 days", "In Progress", "40%", 29.5, 23.8, "#2563EB", 100, "", True, "#FFFFFF"),
+            ("5.2", 1, "doc", "#475569", "Pilot Training", "Jun 3, 2024", "Jun 14, 2024", "12 days", "Not Started", "0%", 55.0, 14.0, "#8495B0", 100, "", True, "#FFFFFF"),
+            ("5.3", 1, "doc", "#475569", "Full Rollout", "Jun 17, 2024", "Jun 28, 2024", "11 days", "Not Started", "0%", 70.8, 18.0, "#8495B0", 100, "Complete", False, "#FFFFFF"),
+        ]
 
-        # Apply search, project, status, view-type, assignee and date-range filters.
-        proj_prefix_map = _project_prefix_map
+        day_rows = [
+            ("1", 0, "folder", "#00875A", "Website Revamp", "Apr 24, 2024", "Jun 30, 2024", "67 days", "On Track", "70%", 0.0, 100.0, "#00875A", 100, "", False, "#ECFDF5", ""),
+            ("1.1", 1, "folder", "#00875A", "Planning", "Apr 24, 2024", "May 5, 2024", "12 days", "Completed", "100%", 0.0, 9.5, "#A7F3D0", 100, "Project Kick-off", False, "#FFFFFF", ""),
+            ("1.2", 1, "folder", "#00875A", "Design", "May 6, 2024", "May 20, 2024", "15 days", "Completed", "100%", 0.0, 0.0, "#00875A", 100, "", False, "#FFFFFF", ""),
+            ("1.2.1", 2, "play", "#00875A", "Create wireframes", "May 6, 2024", "May 12, 2024", "7 days", "Completed", "100%", 3.5, 24.5, "#00875A", 100, "", True, "#FFFFFF", "Create wireframes"),
+            ("1.2.2", 2, "play", "#00875A", "UI/UX design", "May 13, 2024", "May 20, 2024", "8 days", "Completed", "100%", 29.5, 17.5, "#10B981", 100, "", False, "#FFFFFF", "UI/UX design"),
+            ("1.3", 1, "folder", "#1473E6", "Development", "May 21, 2024", "May 31, 2024", "11 days", "In Progress", "60%", 25.8, 20.5, "#60A5FA", 45, "", False, "#F0F7FF", "Frontend development"),
+            ("1.3.1", 2, "play", "#0F766E", "Frontend development", "May 21, 2024", "May 26, 2024", "6 days", "In Progress", "70%", 48.5, 15.0, "#60A5FA", 100, "", True, "#FFFFFF", "Backend development"),
+            ("1.3.2", 2, "play", "#0F766E", "Backend development", "May 27, 2024", "May 31, 2024", "5 days", "In Progress", "50%", 66.8, 16.0, "#8495B0", 100, "", False, "#FFFFFF", ""),
+            ("1.4", 1, "folder", "#475569", "Testing", "Jun 1, 2024", "Jun 15, 2024", "15 days", "Not Started", "0%", 58.8, 12.5, "#8495B0", 100, "", True, "#FFFFFF", "UAT testing"),
+            ("1.5", 1, "folder", "#7C3AED", "Go-Live", "Jun 16, 2024", "Jun 30, 2024", "15 days", "Not Started", "0%", 73.0, 14.0, "#8495B0", 100, "Go-Live", False, "#FFFFFF", ""),
+            ("2", 0, "folder", "#00875A", "IT Infrastructure Upgrade", "Apr 15, 2024", "Jun 20, 2024", "67 days", "In Progress", "45%", 0.0, 71.5, "#60A5FA", 49, "", False, "#F0F7FF", ""),
+            ("2.1", 1, "doc", "#00875A", "Requirements", "Apr 15, 2024", "Apr 30, 2024", "16 days", "Completed", "100%", 0.0, 16.0, "#10B981", 100, "", True, "#FFFFFF", "Requirements"),
+            ("2.2", 1, "doc", "#1473E6", "Implementation", "May 1, 2024", "Jun 10, 2024", "41 days", "In Progress", "40%", 18.0, 33.2, "#3B82F6", 100, "", True, "#FFFFFF", "Implementation"),
+            ("2.3", 1, "doc", "#7C3AED", "Testing", "Jun 11, 2024", "Jun 20, 2024", "10 days", "Not Started", "0%", 53.0, 23.5, "#8495B0", 100, "", False, "#FFFFFF", "Testing"),
+            ("3", 0, "folder", "#00875A", "Sustainability Initiative", "May 1, 2024", "Jun 30, 2024", "61 days", "At Risk", "30%", 0.0, 88.5, "#F59E0B", 100, "", False, "#FFFBEB", ""),
+            ("3.1", 1, "doc", "#00875A", "Research & Analysis", "May 1, 2024", "May 20, 2024", "20 days", "Completed", "100%", 0.0, 20.5, "#00875A", 100, "", True, "#FFFFFF", "Research & Analysis"),
+            ("3.2", 1, "doc", "#1473E6", "Strategy Development", "May 21, 2024", "Jun 10, 2024", "21 days", "In Progress", "40%", 22.5, 19.5, "#3B82F6", 100, "", True, "#FFFFFF", "Strategy Development"),
+            ("3.3", 1, "doc", "#7C3AED", "Implementation", "Jun 11, 2024", "Jun 30, 2024", "20 days", "Not Started", "0%", 43.8, 24.5, "#8495B0", 100, "Complete", False, "#FFFFFF", "Implementation"),
+        ]
+
+        active_rows = week_rows if scale == "Week" else (day_rows if scale == "Day" else month_day_rows)
+
+        # Apply Top Search & Dropdown Filters
+        proj_prefix_map = {
+            "Website Revamp": "1",
+            "IT Infrastructure Upgrade": "2",
+            "Sustainability Initiative": "3",
+            "Marketing Campaign": "4",
+            "Training Program": "5",
+        }
         if g_proj_sel != "All Projects" and g_proj_sel in proj_prefix_map:
             pfx = proj_prefix_map[g_proj_sel]
             active_rows = [r for r in active_rows if r[0] == pfx or r[0].startswith(pfx + ".")]
@@ -2469,42 +2471,50 @@ elif page == "Gantt Chart":
             active_rows = [r for r in active_rows if r[8] == g_stat_sel or r[1] == 0]
         if g_view_sel == "Milestones Only":
             active_rows = [r for r in active_rows if r[14] or r[1] == 0]
-        elif g_view_sel == "Tasks Only":
-            active_rows = [r for r in active_rows if r[1] != 0 and not r[14]]
         if gantt_q:
             q_low = gantt_q.lower()
             active_rows = [r for r in active_rows if q_low in r[4].lower() or q_low in r[0].lower()]
-        if isinstance(gantt_date_range, (tuple, list)) and len(gantt_date_range) == 2:
-            _glo, _ghi = sorted(gantt_date_range)
-            _filtered_rows = []
-            active_rows = []
-            for _r in active_rows:
-                _rs = pd.to_datetime(_r[5], errors="coerce")
-                _re = pd.to_datetime(_r[6], errors="coerce")
-                if (pd.isna(_rs) or _rs.date() <= _ghi) and (pd.isna(_re) or _re.date() >= _glo): _filtered_rows.append(_r)
-            active_rows = _filtered_rows
 
         # Build Timeline Header HTML according to scale
         if scale == "Month":
-            _mid_date = _min_date + timedelta(days=_span_days // 2)
-            _month_labels = [(_min_date + timedelta(days=round(i * (_span_days-1) / 11))) for i in range(12)]
-            _month_ticks = "".join(f'<div style="padding:5px 0;border-right:1px solid #EDF2F7;color:{"#1D4ED8" if d.month == date.today().month and d.year == date.today().year else "#475569"}">{d.strftime("%b %d")}</div>' for d in _month_labels)
-            _today_pct = max(0,min(100,((date.today()-_min_date).days/_span_days)*100))
-            tl_top_hdr = f"""
-            <div style="display:grid;grid-template-columns:repeat(3,1fr);border-bottom:1px solid #E2E8F0;background:#F8FAFC;font-size:11.5px;font-weight:700;color:#1E293B;text-align:center">
-                <div style="padding:6px 0;border-right:1px solid #E2E8F0">{_min_date.strftime('%b %Y')}</div>
-                <div style="padding:6px 0;border-right:1px solid #E2E8F0">{_mid_date.strftime('%b %Y')}</div>
-                <div style="padding:6px 0">{_max_date.strftime('%b %Y')}</div>
+            tl_top_hdr = """
+            <div style="display:grid;grid-template-columns:2fr 5fr 5fr;border-bottom:1px solid #E2E8F0;background:#F8FAFC;font-size:11.5px;font-weight:700;color:#1E293B;text-align:center">
+                <div style="padding:6px 0;border-right:1px solid #E2E8F0">Apr 2024</div>
+                <div style="padding:6px 0;border-right:1px solid #E2E8F0;position:relative">
+                    May 2024
+                    <span style="position:absolute;left:10%;top:-10px;background:#065F46;color:white;font-size:10px;font-weight:700;padding:2px 8px;border-radius:4px;z-index:5">Today</span>
+                </div>
+                <div style="padding:6px 0">Jun 2024</div>
             </div>
-            <div style="display:grid;grid-template-columns:repeat(12,1fr);background:#F8FAFC;font-size:10.5px;font-weight:600;color:#475569;text-align:center">{_month_ticks}</div>
+            <div style="display:grid;grid-template-columns:repeat(12,1fr);background:#F8FAFC;font-size:10.5px;font-weight:600;color:#475569;text-align:center">
+                <div style="padding:5px 0;border-right:1px solid #EDF2F7">Apr 21</div>
+                <div style="padding:5px 0;border-right:1px solid #EDF2F7">Apr 28</div>
+                <div style="padding:5px 0;border-right:1px solid #EDF2F7">May 5</div>
+                <div style="padding:5px 0;border-right:1px solid #EDF2F7">May 12</div>
+                <div style="padding:5px 0;border-right:1px solid #EDF2F7;color:#1D4ED8">May 19</div>
+                <div style="padding:5px 0;border-right:1px solid #EDF2F7">May 26</div>
+                <div style="padding:5px 0;border-right:1px solid #EDF2F7">May 26</div>
+                <div style="padding:5px 0;border-right:1px solid #EDF2F7;color:#1D4ED8">Jun 2</div>
+                <div style="padding:5px 0;border-right:1px solid #EDF2F7;color:#1D4ED8">Jun 9</div>
+                <div style="padding:5px 0;border-right:1px solid #EDF2F7;color:#1D4ED8">Jun 16</div>
+                <div style="padding:5px 0;border-right:1px solid #EDF2F7">Jun 23</div>
+                <div style="padding:5px 0">Jun 30</div>
+            </div>
             """
-            today_line_html = f'<div style="position:absolute;top:0;bottom:0;left:{_today_pct:.2f}%;width:1.5px;background:#10B981;z-index:4;pointer-events:none"></div>' if _min_date <= date.today() <= _max_date else ""
+            today_line_html = '<div style="position:absolute;top:0;bottom:0;left:21%;width:1.5px;background:#10B981;z-index:4;pointer-events:none"></div>'
         elif scale == "Week":
-            weeks_meta = []
-            for _wi in range(10):
-                _ws = _min_date + timedelta(days=round(_wi * max(0, _span_days-1) / 10))
-                _we = min(_max_date, _ws + timedelta(days=6))
-                weeks_meta.append((f"{_ws:%b %d} – {_we:%b %d}", f"Week {_ws.isocalendar().week}", _ws <= date.today() <= _we))
+            weeks_meta = [
+                ("Apr 22 – Apr 28", "Week 17", False),
+                ("Apr 29 – May 5", "Week 18", False),
+                ("May 6 – May 12", "Week 19", True),
+                ("May 13 – May 19", "Week 20", False),
+                ("May 20 – May 26", "Week 21", False),
+                ("May 27 – Jun 2", "Week 22", False),
+                ("Jun 3 – Jun 9", "Week 23", False),
+                ("Jun 10 – Jun 16", "Week 24", False),
+                ("Jun 17 – Jun 23", "Week 25", False),
+                ("Jun 24 – Jun 30", "Week 26", False),
+            ]
             w_cells = "".join(
                 f'<div style="padding:4px 2px;border-right:1px solid #E2E8F0;background:{"#D1FAE5" if is_cur else "#F8FAFC"}">'
                 f'<div style="font-size:10px;font-weight:700;color:#0F172A;line-height:1.2">{rng}</div>'
@@ -2519,7 +2529,7 @@ elif page == "Gantt Chart":
             tl_top_hdr = f"""
             <div style="display:flex;align-items:center;justify-content:space-between;padding:5px 12px;border-bottom:1px solid #E2E8F0;background:#F8FAFC">
                 <div></div>
-                <div style="font-size:12px;font-weight:700;color:#0F172A">{date.today().strftime('%a, %b %d, %Y')}</div>
+                <div style="font-size:12px;font-weight:700;color:#0F172A">‹ &nbsp;&nbsp;&nbsp; Mon, May 6, 2024 &nbsp;&nbsp;&nbsp; ›</div>
                 <div style="display:flex;gap:6px;align-items:center">
                     <span style="border:1px solid #CBD5E1;background:white;color:#00875A;font-size:11px;font-weight:600;padding:2px 8px;border-radius:5px">Today ▾</span>
                     <span style="border:1px solid #CBD5E1;background:white;font-size:11px;padding:2px 6px;border-radius:5px">📅</span>
@@ -2647,8 +2657,7 @@ elif page == "Task List":
         with r1_a:
             proj = st.selectbox("Project *", projects_list, index=0, key="add_t_proj")
         with r1_b:
-            _parent_options = ["None (Top Level Task)"] + (T["name"].dropna().astype(str).unique().tolist() if not T.empty else [])
-            parent_t = st.selectbox("Parent Task", _parent_options, key="add_t_parent")
+            parent_t = st.selectbox("Parent Task", ["None (Top Level Task)", "1.1 Define project scope", "1.2 Stakeholder alignment", "1.3 Create wireframes"], key="add_t_parent")
 
         r2_a, r2_b = st.columns(2)
         with r2_a:
@@ -2665,15 +2674,15 @@ elif page == "Task List":
 
         r4_a, r4_b, r4_c = st.columns(3)
         with r4_a:
-            t_start = st.date_input("Start Date *", date.today(), key="add_t_start")
+            t_start = st.date_input("Start Date *", date(2024, 4, 24), key="add_t_start")
         with r4_b:
-            t_end = st.date_input("End Date *", date.today() + timedelta(days=7), key="add_t_end")
+            t_end = st.date_input("End Date *", date(2024, 4, 30), key="add_t_end")
         with r4_c:
             st.number_input("Duration (Days)", min_value=1, max_value=365, value=7, key="add_t_dur")
 
         r5_a, r5_b, r5_c = st.columns([1.1, 1.1, 1])
         with r5_a:
-            assignees_pool = sorted(R["name"].dropna().astype(str).unique().tolist()) if not R.empty else [""]
+            assignees_pool = ["Dana Scott", "Emily Rodriguez", "James Miller", "Sarah Kim", "Alice Morgan", "Ryan Cruz", "Michael Tan"]
             t_ass = st.selectbox("Assignee *", assignees_pool, index=0, key="add_t_ass")
         with r5_b:
             t_pct = st.slider("% Complete *", 0, 100, 0, key="add_t_pct")
@@ -2725,6 +2734,22 @@ elif page == "Task List":
             for _idx, _subtask in enumerate(st.session_state["add_t_sub_items"], 1):
                 st.caption(f"☐  {_subtask}")
 
+        st.markdown(
+            clean_html(
+                """
+                <div style="border:1px solid #EDF2F7;border-radius:8px;padding:8px 12px;margin-top:6px;margin-bottom:12px;font-size:12.5px;color:#1E293B">
+                    <div style="display:flex;justify-content:space-between;padding:5px 0;border-bottom:1px solid #F1F5F9">
+                        <span>☐ &nbsp; Review requirements document</span><span style="color:#64748B">🗑</span>
+                    </div>
+                    <div style="display:flex;justify-content:space-between;padding:5px 0">
+                        <span>☐ &nbsp; Finalize deliverables</span><span style="color:#64748B">🗑</span>
+                    </div>
+                </div>
+                """
+            ),
+            unsafe_allow_html=True,
+        )
+
         f_chk, f_can, f_sav = st.columns([3.2, 0.9, 1.1])
         with f_chk:
             create_another = st.checkbox("Create another task after saving", key="add_t_another")
@@ -2736,62 +2761,38 @@ elif page == "Task List":
             if st.button("Save Task", type="primary", key="add_t_save", use_container_width=True):
                 clean_prio = t_prio.split()[-1]
                 clean_stat = " ".join(t_stat.split()[1:])
-                _parent_id = None
-                if parent_t != "None (Top Level Task)" and not T.empty:
-                    _parent_match = T[T["name"].astype(str) == str(parent_t)]
-                    if not _parent_match.empty: _parent_id = int(_parent_match.iloc[0]["id"])
-                _task_type_clean = str(st.session_state.get("add_t_type", "Task")).replace("💼 ", "").replace("◆ ", "")
-                _new_task_id = sql(
-                    "INSERT INTO tasks(name,project_id,team,status,priority,start_date,due_date,assignee,progress,dependency,notes,parent_task_id,description,task_type,duration) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                    (t_name.strip() or "New Project Task", pmap.get(proj, 1), "", clean_stat, clean_prio, t_start.isoformat(), t_end.isoformat(), t_ass, int(t_pct),
-                     "" if t_dep == "Select dependent tasks" else t_dep, t_notes or t_desc, _parent_id, t_desc, _task_type_clean, max(1,(t_end-t_start).days+1)),
+                sql(
+                    "INSERT INTO tasks(name,project_id,team,status,priority,start_date,due_date,assignee,progress,dependency,notes) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                    (
+                        t_name.strip() or "New Project Task",
+                        pmap.get(proj, 1),
+                        "IT",
+                        clean_stat,
+                        clean_prio,
+                        t_start.isoformat(),
+                        t_end.isoformat(),
+                        t_ass,
+                        int(t_pct),
+                        "" if t_dep == "Select dependent tasks" else t_dep,
+                        t_notes or t_desc,
+                    ),
                 )
-                for _subtask_name in st.session_state.get("add_t_sub_items", []):
-                    sql("INSERT INTO task_subtasks(task_id,name,completed) VALUES(?,?,0)", (int(_new_task_id), str(_subtask_name)))
-                if _new_task_id is not None:
-                    sql("INSERT INTO task_activity(task_id,actor,action,details) VALUES(?,?,?,?)", (int(_new_task_id), "User", "Task created", t_name.strip() or "New Project Task"))
-                log_event("Created", "Task", _new_task_id, t_name.strip() or "New Project Task")
-                st.session_state.pop("add_t_sub_items", None)
+                log_event("Created", "Task", None, t_name.strip() or "New Project Task")
                 if not create_another:
                     st.session_state.pop("task_modal", None)
                 st.rerun()
 
     @st.dialog("View Task", width="large")
     def view_task_modal(task_rec: dict) -> None:
-        tname = task_rec.get("name", "Task")
-        tproj = task_rec.get("project", "Project")
+        tname = task_rec.get("name", "Create wireframes")
+        tproj = task_rec.get("project", "Website Revamp")
         tstart = task_rec.get("start_date", "May 6, 2024")
         tend = task_rec.get("end_date", "May 12, 2024")
         tdur = task_rec.get("duration", "7 days")
         tpct = int(task_rec.get("pct", 100))
         tstat = task_rec.get("status", "Completed")
         tprio = task_rec.get("priority", "High")
-        tass = task_rec.get("assignee", "")
-        _task_id_for_modal = task_rec.get("id")
-        _task_desc = str(task_rec.get("description") or task_rec.get("notes") or "No description provided.")
-        _task_type = str(task_rec.get("task_type") or "Task")
-        _parent_task_name = "None"
-        _task_subtasks = pd.DataFrame()
-        _task_attachments = pd.DataFrame()
-        _task_activity = pd.DataFrame()
-        if _task_id_for_modal is not None:
-            _parent_id = task_rec.get("parent_task_id")
-            if _parent_id is not None and pd.notna(_parent_id):
-                _parent_df = df("SELECT name FROM tasks WHERE id=?", (int(_parent_id),))
-                if not _parent_df.empty: _parent_task_name = str(_parent_df.iloc[0]["name"])
-            _child_tasks = df("SELECT id,name,status,due_date,progress FROM tasks WHERE parent_task_id=? ORDER BY id", (int(_task_id_for_modal),))
-            _child_tasks["completed"] = (_child_tasks["status"].astype(str).str.lower() == "completed").astype(int) if not _child_tasks.empty else pd.Series(dtype=int)
-            if not _child_tasks.empty: _child_tasks["source_table"] = "tasks"
-            _manual_subtasks = df("SELECT id,name,completed,due_date FROM task_subtasks WHERE task_id=? ORDER BY id", (int(_task_id_for_modal),))
-            if not _manual_subtasks.empty: _manual_subtasks["source_table"] = "task_subtasks"
-            _task_subtasks = pd.concat([_child_tasks[["id","name","completed","due_date","source_table"]] if not _child_tasks.empty else pd.DataFrame(columns=["id","name","completed","due_date","source_table"]), _manual_subtasks[["id","name","completed","due_date","source_table"]] if not _manual_subtasks.empty else pd.DataFrame(columns=["id","name","completed","due_date","source_table"])], ignore_index=True)
-            _task_attachments = df("SELECT id,filename,mime_type,size_bytes,uploaded_at FROM task_attachments WHERE task_id=? ORDER BY id DESC", (int(_task_id_for_modal),))
-            _task_activity = df("SELECT actor,action,details,created_at FROM task_activity WHERE task_id=? ORDER BY id DESC LIMIT 5", (int(_task_id_for_modal),))
-        _subtasks_done = int((_task_subtasks["completed"] == 1).sum()) if not _task_subtasks.empty else 0
-        _subtasks_count = len(_task_subtasks)
-        _subtasks_html = "".join(f"<div style='display:flex;justify-content:space-between;border-bottom:1px solid #F1F5F9'><span>{'✅' if int(sr.get('completed',0) or 0) else '☐'} &nbsp;{html.escape(str(sr.get('name','')))}</span><span style='color:#64748B'>{fmt_date(sr.get('due_date')) if sr.get('due_date') else ''}</span></div>" for _, sr in _task_subtasks.iterrows()) or "<div style='color:#64748B'>No subtasks recorded.</div>"
-        _attachments_html = "".join(f"<div style='border:1px solid #EDF2F7;border-radius:8px;padding:8px 10px;display:flex;align-items:center;justify-content:space-between;margin-bottom:6px'><span>📎 &nbsp;{html.escape(str(ar.get('filename','Attachment')))} <span style='color:#64748B;font-size:10.5px'>({int(ar.get('size_bytes') or 0):,} bytes)</span></span><span>Saved</span></div>" for _, ar in _task_attachments.iterrows()) or "<div style='color:#64748B'>No attachments uploaded.</div>"
-        _activity_html = "".join(f"<div style='display:grid;grid-template-columns:110px 145px 1fr;gap:8px;border-bottom:1px solid #F1F5F9;align-items:center;padding:4px 0'><span>{avatar_html(str(ar.get('actor') or 'User'))}</span><span style='color:#64748B;font-size:11.5px'>{html.escape(str(ar.get('created_at') or ''))}</span><span>{html.escape(str(ar.get('details') or ar.get('action') or 'Updated'))}</span></div>" for _, ar in _task_activity.iterrows()) or "<div style='color:#64748B'>No activity recorded yet.</div>"
+        tass = task_rec.get("assignee", "James Miller")
 
         st.markdown(
             clean_html(
@@ -2839,7 +2840,7 @@ elif page == "Task List":
                     <div style="border:1px solid #E2E8F0;border-radius:10px;padding:12px 14px;background:white">
                         <div style="font-size:13px;font-weight:700;color:#0F172A;margin-bottom:8px">📄 &nbsp;Description</div>
                         <div style="background:#F8FAFC;border:1px solid #EDF2F7;border-radius:8px;padding:10px 12px;font-size:12.5px;color:#334155;line-height:1.55">
-                            {html.escape(_task_desc)}
+                            Create low and high-fidelity wireframes for the new website based on the approved requirements and UX guidelines. Include key user flows, page layouts and navigation structure for review.
                         </div>
                     </div>
                     <div style="border:1px solid #E2E8F0;border-radius:10px;padding:12px 14px;background:white">
@@ -2848,7 +2849,7 @@ elif page == "Task List":
                             <div style="width:44px;height:44px;border-radius:50%;background:#0284C7;color:white;display:flex;align-items:center;justify-content:center;font-weight:800;font-size:15px">JM</div>
                             <div>
                                 <div style="font-size:14px;font-weight:800;color:#0F172A">{html.escape(tass)}</div>
-                                <div style="font-size:12px;color:#64748B">{html.escape(str(task_rec.get('role') or 'Assignee'))}</div>
+                                <div style="font-size:12px;color:#64748B">UX Designer</div>
                             </div>
                         </div>
                     </div>
@@ -2860,11 +2861,11 @@ elif page == "Task List":
                     </div>
                     <div style="border:1px solid #E2E8F0;border-radius:10px;padding:10px 12px;background:white">
                         <div style="font-size:11.5px;font-weight:700;color:#0F172A;margin-bottom:6px">Parent Task</div>
-                        <div style="background:#F8FAFC;padding:6px 10px;border-radius:6px;font-size:12px;font-weight:600">☰ &nbsp;{html.escape(_parent_task_name)}</div>
+                        <div style="background:#F8FAFC;padding:6px 10px;border-radius:6px;font-size:12px;font-weight:600">☰ &nbsp;1.2 Stakeholder alignment</div>
                     </div>
                     <div style="border:1px solid #E2E8F0;border-radius:10px;padding:10px 12px;background:white">
                         <div style="font-size:11.5px;font-weight:700;color:#0F172A;margin-bottom:6px">Milestone</div>
-                        <div style="background:#F8FAFC;padding:6px 10px;border-radius:6px;font-size:12px;font-weight:600"><span style="color:#7C3AED">◆</span> &nbsp;{'Milestone' if _task_type.lower() == 'milestone' else 'Not a milestone'}</div>
+                        <div style="background:#F8FAFC;padding:6px 10px;border-radius:6px;font-size:12px;font-weight:600"><span style="color:#7C3AED">◆</span> &nbsp;Not a milestone</div>
                     </div>
                     <div style="border:1px solid #E2E8F0;border-radius:10px;padding:10px 12px;background:white">
                         <div style="font-size:11.5px;font-weight:700;color:#0F172A;margin-bottom:6px">Status</div>
@@ -2878,80 +2879,63 @@ elif page == "Task List":
                     </div>
                     <div style="border:1px solid #E2E8F0;border-radius:10px;padding:10px 12px;background:white">
                         <div style="font-size:11.5px;font-weight:700;color:#0F172A;margin-bottom:6px">Task Type</div>
-                        <div style="background:#F8FAFC;padding:6px 10px;border-radius:6px;font-size:12px;font-weight:600">💼 &nbsp;{html.escape(_task_type)}</div>
+                        <div style="background:#F8FAFC;padding:6px 10px;border-radius:6px;font-size:12px;font-weight:600">💼 &nbsp;Task</div>
                     </div>
                     <div style="border:1px solid #E2E8F0;border-radius:10px;padding:10px 12px;background:white">
                         <div style="font-size:11.5px;font-weight:700;color:#0F172A;margin-bottom:6px">🏷 &nbsp;Tags</div>
-                        <div>{''.join(tag_pill_html(x.strip()) for x in str(task_rec.get('tags') or '').split(',') if x.strip()) or '<span style="color:#64748B">No tags</span>'}</div>
+                        <div>{tag_pill_html('Design')} {tag_pill_html('Web')}</div>
                     </div>
                 </div>
                 <div style="display:grid;grid-template-columns:1.35fr 1fr;gap:12px;margin-bottom:12px">
                     <div style="border:1px solid #E2E8F0;border-radius:10px;padding:12px 14px;background:white">
-                        <div style="font-size:13px;font-weight:700;color:#0F172A;margin-bottom:8px">☑ &nbsp;Checklist / Subtasks ({_subtasks_count})</div>
+                        <div style="font-size:13px;font-weight:700;color:#0F172A;margin-bottom:8px">☑ &nbsp;Checklist / Subtasks (3)</div>
                         <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px">
-                            <div style="flex:1;height:8px;background:#E2E8F0;border-radius:99px;overflow:hidden"><div style="width:{round(_subtasks_done/_subtasks_count*100) if _subtasks_count else 0}%;height:100%;background:#00875A"></div></div>
-                            <span style="font-size:11.5px;color:#475569;font-weight:600">{_subtasks_done} of {_subtasks_count} completed</span>
+                            <div style="flex:1;height:8px;background:#E2E8F0;border-radius:99px;overflow:hidden"><div style="width:100%;height:100%;background:#00875A"></div></div>
+                            <span style="font-size:11.5px;color:#475569;font-weight:600">3 of 3 completed</span>
                         </div>
-                        <div style="font-size:12.5px;line-height:2.1">{_subtasks_html}</div>
+                        <div style="font-size:12.5px;line-height:2.1">
+                            <div style="display:flex;justify-content:space-between;border-bottom:1px solid #F1F5F9"><span>✅ &nbsp;Create homepage wireframe</span><span style="color:#64748B">May 8, 2024</span></div>
+                            <div style="display:flex;justify-content:space-between;border-bottom:1px solid #F1F5F9"><span>✅ &nbsp;Create product pages wireframe</span><span style="color:#64748B">May 10, 2024</span></div>
+                            <div style="display:flex;justify-content:space-between"><span>✅ &nbsp;Review with stakeholders</span><span style="color:#64748B">May 12, 2024</span></div>
+                        </div>
                     </div>
                     <div style="border:1px solid #E2E8F0;border-radius:10px;padding:12px 14px;background:white">
-                        <div style="font-size:13px;font-weight:700;color:#0F172A;margin-bottom:8px">📎 &nbsp;Attachments ({len(_task_attachments)})</div>
-                        {_attachments_html}
+                        <div style="font-size:13px;font-weight:700;color:#0F172A;margin-bottom:8px">📎 &nbsp;Attachments (2)</div>
+                        <div style="border:1px solid #EDF2F7;border-radius:8px;padding:8px 10px;display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+                            <div style="display:flex;align-items:center;gap:10px">
+                                <span style="background:#EF4444;color:white;font-size:10px;font-weight:700;padding:6px 6px;border-radius:6px">PDF</span>
+                                <div><div style="font-size:12.5px;font-weight:700">Wireframe_Overview.pdf</div><div style="font-size:11px;color:#64748B">2.4 MB • Apr 30, 2024</div></div>
+                            </div>
+                            <span style="color:#475569;font-weight:700">⬇ &nbsp;⋮</span>
+                        </div>
+                        <div style="border:1px solid #EDF2F7;border-radius:8px;padding:8px 10px;display:flex;align-items:center;justify-content:space-between">
+                            <div style="display:flex;align-items:center;gap:10px">
+                                <span style="background:#1473E6;color:white;font-size:10px;font-weight:700;padding:6px 6px;border-radius:6px">IMG</span>
+                                <div><div style="font-size:12.5px;font-weight:700">Homepage_Wireframe.png</div><div style="font-size:11px;color:#64748B">1.1 MB • May 1, 2024</div></div>
+                            </div>
+                            <span style="color:#475569;font-weight:700">⬇ &nbsp;⋮</span>
+                        </div>
                     </div>
                 </div>
                 <div style="border:1px solid #E2E8F0;border-radius:10px;padding:12px 14px;background:white;margin-bottom:14px">
                     <div style="font-size:13px;font-weight:700;color:#0F172A;margin-bottom:8px">💬 &nbsp;Recent Activity / Notes</div>
-                    <div style="font-size:12.5px;line-height:2.2">{_activity_html}</div>
+                    <div style="font-size:12.5px;line-height:2.2">
+                        <div style="display:grid;grid-template-columns:150px 155px 1fr;gap:8px;border-bottom:1px solid #F1F5F9;align-items:center">
+                            <span>{avatar_html('James Miller')}</span>
+                            <span style="color:#64748B;font-size:11.5px">May 12, 2024 3:45 PM</span>
+                            <span>Wireframes completed and approved by stakeholders.</span>
+                        </div>
+                        <div style="display:grid;grid-template-columns:150px 155px 1fr;gap:8px;align-items:center;padding-top:4px">
+                            <span>{avatar_html('Emily Rodriguez')}</span>
+                            <span style="color:#64748B;font-size:11.5px">May 10, 2024 10:20 AM</span>
+                            <span>Initial wireframes shared for review. Feedback incorporated.</span>
+                        </div>
                     </div>
                 </div>
                 """
             ),
             unsafe_allow_html=True,
         )
-
-        if _task_id_for_modal is not None:
-            with st.expander("Manage checklist, attachments, and notes", expanded=False):
-                _sub_col, _att_col = st.columns(2)
-                with _sub_col:
-                    _new_subtask = st.text_input("Add subtask", key=f"view_add_sub_{_task_id_for_modal}")
-                    _sub_due = st.date_input("Subtask due date", value=date.today(), key=f"view_sub_due_{_task_id_for_modal}")
-                    if st.button("Save Subtask", key=f"view_save_sub_{_task_id_for_modal}"):
-                        if _new_subtask.strip():
-                            sql("INSERT INTO task_subtasks(task_id,name,completed,due_date) VALUES(?,?,0,?)", (int(_task_id_for_modal), _new_subtask.strip(), _sub_due.isoformat()))
-                            sql("INSERT INTO task_activity(task_id,actor,action,details) VALUES(?,?,?,?)", (int(_task_id_for_modal), "User", "Subtask added", _new_subtask.strip()))
-                            st.rerun()
-                    if not _task_subtasks.empty:
-                        for _, _sr in _task_subtasks.iterrows():
-                            _is_done = st.checkbox(str(_sr["name"]), value=bool(_sr["completed"]), key=f"view_sub_done_{int(_sr['id'])}")
-                            if _is_done != bool(_sr["completed"]):
-                                if str(_sr.get("source_table")) == "tasks":
-                                    sql("UPDATE tasks SET status=?,progress=? WHERE id=?", ("Completed" if _is_done else "Not Started", 100 if _is_done else 0, int(_sr["id"])))
-                                    sql("INSERT INTO task_activity(task_id,actor,action,details) VALUES(?,?,?,?)", (int(_task_id_for_modal), "User", "Subtask status changed", str(_sr["name"])))
-                                else:
-                                    sql("UPDATE task_subtasks SET completed=? WHERE id=?", (1 if _is_done else 0, int(_sr["id"])))
-                                st.rerun()
-                with _att_col:
-                    _att_file = st.file_uploader("Upload attachment", key=f"view_attachment_{_task_id_for_modal}")
-                    if _att_file is not None and st.button("Save Attachment", key=f"view_save_attachment_{_task_id_for_modal}"):
-                        sql("INSERT INTO task_attachments(task_id,filename,mime_type,content,size_bytes) VALUES(?,?,?,?,?)", (int(_task_id_for_modal), _att_file.name, _att_file.type, _att_file.getvalue(), len(_att_file.getvalue())))
-                        sql("INSERT INTO task_activity(task_id,actor,action,details) VALUES(?,?,?,?)", (int(_task_id_for_modal), "User", "Attachment uploaded", _att_file.name))
-                        st.rerun()
-                    _attachment_files = df("SELECT id,filename,mime_type,content FROM task_attachments WHERE task_id=? ORDER BY id DESC", (int(_task_id_for_modal),))
-                    for _, _af in _attachment_files.iterrows():
-                        _dlc, _delc = st.columns([3, 1])
-                        with _dlc:
-                            st.download_button(f"Download {_af['filename']}", data=bytes(_af["content"] or b""), file_name=str(_af["filename"]), mime=str(_af.get("mime_type") or "application/octet-stream"), key=f"view_download_att_{int(_af['id'])}", use_container_width=True)
-                        with _delc:
-                            if st.button("Delete", key=f"view_delete_att_{int(_af['id'])}", use_container_width=True):
-                                sql("DELETE FROM task_attachments WHERE id=?", (int(_af["id"]),))
-                                sql("INSERT INTO task_activity(task_id,actor,action,details) VALUES(?,?,?,?)", (int(_task_id_for_modal), "User", "Attachment deleted", str(_af["filename"])))
-                                st.rerun()
-                    _note_entry = st.text_area("Add note", key=f"view_note_{_task_id_for_modal}")
-                    if st.button("Save Note", key=f"view_save_note_{_task_id_for_modal}"):
-                        if _note_entry.strip():
-                            sql("INSERT INTO task_activity(task_id,actor,action,details) VALUES(?,?,?,?)", (int(_task_id_for_modal), "User", "Note", _note_entry.strip()))
-                            sql("UPDATE tasks SET notes=? WHERE id=?", (_note_entry.strip(), int(_task_id_for_modal)))
-                            st.rerun()
 
         b_sp, b_cl, b_ed = st.columns([3.8, 0.9, 1.1])
         with b_cl:
@@ -2965,8 +2949,8 @@ elif page == "Task List":
 
     @st.dialog("Edit Task", width="large")
     def edit_task_modal(task_rec: dict) -> None:
-        tname = task_rec.get("name", "Task")
-        tproj = task_rec.get("project", "Project")
+        tname = task_rec.get("name", "Create wireframes")
+        tproj = task_rec.get("project", "Website Revamp")
         twbs = task_rec.get("wbs", "1.3")
 
         st.markdown(
@@ -2999,21 +2983,19 @@ elif page == "Task List":
         with e2_l:
             ed_desc = st.text_area(
                 "Description *",
-                value=str(task_rec.get("description") or task_rec.get("notes") or ""),
+                value="Create low and high-fidelity wireframes for the new website based on the approved requirements and UX guidelines. Include key user flows, page layouts and navigation structure for review.",
                 height=92,
                 key="ed_t_desc",
             )
         with e2_r:
-            ass_list = sorted(R["name"].dropna().astype(str).unique().tolist()) if not R.empty else [str(task_rec.get("assignee") or "")]
-            _current_assignee = str(task_rec.get("assignee") or "")
-            if _current_assignee and _current_assignee not in ass_list: ass_list = [_current_assignee] + ass_list
-            ed_ass = st.selectbox("👤 Assignee *", ass_list, index=ass_list.index(_current_assignee) if _current_assignee in ass_list else 0, key="ed_t_ass")
+            ass_list = ["James Miller (UX Designer)", "Dana Scott", "Emily Rodriguez", "Sarah Kim", "Alice Morgan", "Ryan Cruz", "Michael Tan"]
+            ed_ass = st.selectbox("👤 Assignee *", ass_list, index=0, key="ed_t_ass")
 
         e3_a, e3_b, e3_c, e3_d = st.columns(4)
         with e3_a:
-            ed_start = st.date_input("Start Date *", date.fromisoformat(str(task_rec.get("start_date"))[:10]) if task_rec.get("start_date") and _as_iso_date(task_rec.get("start_date")) else date.today(), key="ed_t_start")
+            ed_start = st.date_input("Start Date *", date(2024, 5, 6), key="ed_t_start")
         with e3_b:
-            ed_end = st.date_input("End Date *", date.fromisoformat(str(task_rec.get("end_date") or task_rec.get("due_date"))[:10]) if (task_rec.get("end_date") or task_rec.get("due_date")) and _as_iso_date(task_rec.get("end_date") or task_rec.get("due_date")) else date.today() + timedelta(days=7), key="ed_t_end")
+            ed_end = st.date_input("End Date *", date(2024, 5, 12), key="ed_t_end")
         with e3_c:
             st.number_input("Duration (Days) *", min_value=1, max_value=365, value=7, key="ed_t_dur")
         with e3_d:
@@ -3021,13 +3003,9 @@ elif page == "Task List":
 
         e4_a, e4_b, e4_c, e4_d = st.columns(4)
         with e4_a:
-            _prio_opts = ["⚑ High", "⚑ Medium", "⚑ Low"]
-            _prio_default = "⚑ " + str(task_rec.get("priority") or "Medium")
-            ed_prio = st.selectbox("Priority *", _prio_opts, index=_prio_opts.index(_prio_default) if _prio_default in _prio_opts else 1, key="ed_t_prio")
+            ed_prio = st.selectbox("Priority *", ["⚑ High", "⚑ Medium", "⚑ Low"], index=0, key="ed_t_prio")
         with e4_b:
-            _status_opts = ["🟢 Completed", "🔵 In Progress", "⚪ Not Started", "🟠 At Risk", "🔴 Overdue", "🟠 On Hold"]
-            _status_label = {"Completed":"🟢 Completed", "In Progress":"🔵 In Progress", "Not Started":"⚪ Not Started", "At Risk":"🟠 At Risk", "Overdue":"🔴 Overdue", "On Hold":"🟠 On Hold"}.get(str(task_rec.get("status") or "Not Started"), "⚪ Not Started")
-            ed_stat = st.selectbox("Status *", _status_opts, index=_status_opts.index(_status_label), key="ed_t_stat")
+            ed_stat = st.selectbox("Status *", ["🟢 Completed", "🔵 In Progress", "⚪ Not Started", "🟠 At Risk"], index=0, key="ed_t_stat")
         with e4_c:
             st.selectbox("Task Type *", ["💼 Task", "◆ Milestone", "Subtask"], index=0, key="ed_t_type")
         with e4_d:
@@ -3103,7 +3081,7 @@ elif page == "Task List":
             with ai3:
                 st.selectbox("Dependencies", ["1.2 Stakeholder alignment", "1.1 Define project scope", "None"], index=0, key="ed_dep_s")
             with ai4:
-                ed_notes = st.text_area("Progress Notes", value=str(task_rec.get("notes") or ""), height=68, key="ed_p_notes")
+                ed_notes = st.text_area("Progress Notes", value="Wireframes completed and approved by stakeholders.", height=68, key="ed_p_notes")
 
         f_meta, f_can, f_sav = st.columns([3.3, 0.85, 1.15])
         with f_meta:
@@ -3124,21 +3102,9 @@ elif page == "Task List":
                 st.rerun()
         with f_sav:
             if st.button("Save Changes", type="primary", key="ed_t_save", use_container_width=True):
-                _task_id = task_rec.get("id")
-                if not str(ed_name).strip():
-                    st.error("Task Name is required.")
-                elif _task_id is None:
-                    st.error("This task is missing a database ID and cannot be updated safely.")
-                else:
-                    _status_clean = str(ed_stat).split(" ", 1)[-1]
-                    _priority_clean = str(ed_prio).split(" ", 1)[-1]
-                    _type_clean = str(st.session_state.get("ed_t_type", "Task")).replace("💼 ", "").replace("◆ ", "")
-                    _duration_clean = max(1, (ed_end - ed_start).days + 1)
-                    sql("UPDATE tasks SET name=?,project_id=?,status=?,priority=?,start_date=?,due_date=?,assignee=?,progress=?,notes=?,description=?,task_type=?,estimated_effort=?,actual_effort=?,duration=? WHERE id=?",
-                        (str(ed_name).strip(), int(pmap.get(ed_proj, task_rec.get("project_id") or 0)), _status_clean, _priority_clean, ed_start.isoformat(), ed_end.isoformat(), ed_ass, int(ed_pct), ed_notes, ed_desc, _type_clean, float(st.session_state.get("ed_est_h", 0) or 0), float(st.session_state.get("ed_act_h", 0) or 0), _duration_clean, int(_task_id)))
-                    log_event("Updated", "Task", int(_task_id), ed_name)
-                    st.session_state.pop("task_modal", None)
-                    st.rerun()
+                log_event("Updated", "Task", None, ed_name)
+                st.session_state.pop("task_modal", None)
+                st.rerun()
 
     # --- TASK LIST MAIN HEADER ---
     th_l, th_s, th_d, th_b = st.columns([1.9, 1.05, 0.95, 0.65])
@@ -3155,7 +3121,7 @@ elif page == "Task List":
     with th_s:
         tl_top_q = st.text_input("Search", placeholder="🔍 Search tasks, projects or assignees...", key="tl_q_top", label_visibility="collapsed")
     with th_d:
-        tl_date_range = st.date_input("Date Range", (date.today() - timedelta(days=30), date.today() + timedelta(days=60)), key="tl_d_top", label_visibility="collapsed")
+        st.date_input("Date Range", (date(2024, 4, 24), date(2024, 6, 30)), key="tl_d_top", label_visibility="collapsed")
     with th_b:
         if st.button("＋ Add Task", type="primary", use_container_width=True, key="tl_btn_add_top"):
             st.session_state.task_modal = ("add", None)
@@ -3166,7 +3132,7 @@ elif page == "Task List":
     tf1, tf2, tf3, tf4, tf5, tf6 = st.columns([1.05, 1.0, 1.0, 1.05, 1.35, 0.75])
     with tf1:
         st.markdown("<div style='font-size:11.5px;font-weight:600;color:#475569;margin-bottom:3px'>Project</div>", unsafe_allow_html=True)
-        tl_proj_f = st.selectbox("Project", ["All Projects"] + projects_list, key="tl_f_proj", label_visibility="collapsed")
+        tl_proj_f = st.selectbox("Project", ["All Projects", "Website Revamp", "IT Infrastructure Upgrade", "Sustainability Initiative", "Marketing Campaign"], key="tl_f_proj", label_visibility="collapsed")
     with tf2:
         st.markdown("<div style='font-size:11.5px;font-weight:600;color:#475569;margin-bottom:3px'>Status</div>", unsafe_allow_html=True)
         tl_stat_f = st.selectbox("Status", ["All Statuses", "Completed", "In Progress", "Not Started", "At Risk", "Overdue"], key="tl_f_stat", label_visibility="collapsed")
@@ -3175,7 +3141,7 @@ elif page == "Task List":
         tl_prio_f = st.selectbox("Priority", ["All Priorities", "High", "Medium", "Low"], key="tl_f_prio", label_visibility="collapsed")
     with tf4:
         st.markdown("<div style='font-size:11.5px;font-weight:600;color:#475569;margin-bottom:3px'>Assignee</div>", unsafe_allow_html=True)
-        tl_ass_f = st.selectbox("Assignee", ["All Assignees"] + sorted(T.assignee.dropna().astype(str).unique().tolist()), key="tl_f_ass", label_visibility="collapsed")
+        tl_ass_f = st.selectbox("Assignee", ["All Assignees", "Dana Scott", "Emily Rodriguez", "James Miller", "Sarah Kim", "Alice Morgan", "Ryan Cruz", "Michael Tan"], key="tl_f_ass", label_visibility="collapsed")
     with tf5:
         st.markdown("<div style='font-size:11.5px;margin-bottom:3px'>&nbsp;</div>", unsafe_allow_html=True)
         tl_sub_q = st.text_input("Search tasks", placeholder="🔍 Search tasks...", key="tl_q_sub", label_visibility="collapsed")
@@ -3189,36 +3155,13 @@ elif page == "Task List":
     st.write("")
     # --- 6 KPI CARDS ROW (Exact Match to Image 12) ---
     tk1, tk2, tk3, tk4, tk5, tk6 = st.columns(6)
-    _tl_kpi_df = T.copy()
-    _tl_range = st.session_state.get("tl_d_top", (date.today() - timedelta(days=30), date.today() + timedelta(days=60)))
-    if isinstance(_tl_range, (tuple, list)) and len(_tl_range) == 2:
-        _tl_lo, _tl_hi = sorted(_tl_range)
-        _tl_sd = pd.to_datetime(_tl_kpi_df.get("start_date", pd.Series(index=_tl_kpi_df.index, dtype=str)), errors="coerce").dt.date
-        _tl_ed = pd.to_datetime(_tl_kpi_df.get("due_date", pd.Series(index=_tl_kpi_df.index, dtype=str)), errors="coerce").dt.date
-        _tl_kpi_df = _tl_kpi_df[((_tl_sd.isna() | (_tl_sd <= _tl_hi)) & (_tl_ed.isna() | (_tl_ed >= _tl_lo)))].copy()
-    if tl_proj_f != "All Projects" and not _tl_kpi_df.empty: _tl_kpi_df = _tl_kpi_df[_tl_kpi_df["project"] == tl_proj_f]
-    if tl_stat_f != "All Statuses" and not _tl_kpi_df.empty: _tl_kpi_df = _tl_kpi_df[_tl_kpi_df["status"] == tl_stat_f]
-    if tl_prio_f != "All Priorities" and not _tl_kpi_df.empty: _tl_kpi_df = _tl_kpi_df[_tl_kpi_df["priority"] == tl_prio_f]
-    if tl_ass_f != "All Assignees" and not _tl_kpi_df.empty: _tl_kpi_df = _tl_kpi_df[_tl_kpi_df["assignee"].fillna("") == tl_ass_f]
-    _tl_query = (tl_top_q + " " + tl_sub_q).strip().lower()
-    if _tl_query and not _tl_kpi_df.empty:
-        _tl_kpi_df = _tl_kpi_df[_tl_kpi_df.apply(lambda _r: _tl_query in str(_r.get("name", "")).lower() or _tl_query in str(_r.get("project", "")).lower() or _tl_query in str(_r.get("assignee", "")).lower(), axis=1)]
-    _tl_total = len(_tl_kpi_df)
-    _tl_status = _tl_kpi_df["status"].astype(str).str.lower() if _tl_total else pd.Series(dtype=str)
-    _tl_completed = int((_tl_status == "completed").sum()) if _tl_total else 0
-    _tl_progress = int((_tl_status == "in progress").sum()) if _tl_total else 0
-    _tl_not_started = int(_tl_status.isin(["not started", "planned"]).sum()) if _tl_total else 0
-    _tl_due = pd.to_datetime(_tl_kpi_df.get("due_date", pd.Series(dtype=str)), errors="coerce") if _tl_total else pd.Series(dtype="datetime64[ns]")
-    _tl_overdue = int(((_tl_due.dt.date < date.today()) & (_tl_status != "completed")).sum()) if _tl_total else 0
-    _tl_risk = int(_tl_status.isin(["at risk", "delayed"]).sum()) if _tl_total else 0
-    _pct = lambda n: f"({n / _tl_total:.0%})" if _tl_total else "(0%)"
     kpi_specs = [
-        (tk1, "#1473E6", "#FFFFFF", "▤", "Total Tasks", "#475569", str(_tl_total), ""),
-        (tk2, "#00875A", "#FFFFFF", "✓", "Completed", "#475569", str(_tl_completed), _pct(_tl_completed)),
-        (tk3, "#1473E6", "#FFFFFF", "❂", "In Progress", "#475569", str(_tl_progress), _pct(_tl_progress)),
-        (tk4, "#64748B", "#FFFFFF", "●", "Not Started", "#475569", str(_tl_not_started), _pct(_tl_not_started)),
-        (tk5, "#F28C00", "#FFFFFF", "!", "At Risk", "#D97706", str(_tl_risk), _pct(_tl_risk)),
-        (tk6, "#EF4444", "#FFFFFF", "!", "Overdue", "#DC2626", str(_tl_overdue), _pct(_tl_overdue)),
+        (tk1, "#1473E6", "#FFFFFF", "▤", "Total Tasks", "#475569", "48", ""),
+        (tk2, "#00875A", "#FFFFFF", "✓", "Completed", "#475569", "18", "(38%)"),
+        (tk3, "#1473E6", "#FFFFFF", "❂", "In Progress", "#475569", "16", "(33%)"),
+        (tk4, "#64748B", "#FFFFFF", "●", "Not Started", "#475569", "8", "(17%)"),
+        (tk5, "#F28C00", "#FFFFFF", "!", "At Risk", "#D97706", "4", "(8%)"),
+        (tk6, "#EF4444", "#FFFFFF", "!", "Overdue", "#DC2626", "2", "(4%)"),
     ]
     for col, ibg, ifg, ico, lbl, lcol, val, pct_s in kpi_specs:
         with col:
@@ -3239,52 +3182,77 @@ elif page == "Task List":
 
     st.write("")
     # --- GROUPED WBS TASK TABLE (Exact Match to Image 12) ---
-    task_groups = []
-    _status_colors = {"Completed": GREEN, "In Progress": BLUE, "At Risk": ORANGE, "Delayed": RED, "Overdue": RED, "On Hold": ORANGE, "Not Started": "#CBD5E1"}
-    _tag_colors = {"Planning": ("#DBEAFE", "#1D4ED8"), "Design": ("#F3E8FF", "#7C3AED"), "Development": ("#DCFCE7", "#15803D"), "Testing": ("#FEE2E2", "#B91C1C")}
-    _today = date.today()
-    _range = st.session_state.get("tl_d_top", (_today - timedelta(days=30), _today + timedelta(days=60)))
-    if not isinstance(_range, (tuple, list)) or len(_range) != 2:
-        _range = (_today - timedelta(days=30), _today + timedelta(days=60))
-    _range_start, _range_end = _range
-    if _range_start > _range_end:
-        _range_start, _range_end = _range_end, _range_start
-    for _, _pr in P.iterrows():
-        _pr_tasks = T[T["project_id"] == _pr["id"]].copy() if not T.empty else pd.DataFrame()
-        _rows = []
-        for _, _tr in _pr_tasks.iterrows():
-            _sd = _as_iso_date(_tr.get("start_date")); _ed = _as_iso_date(_tr.get("due_date"))
-            try: _sd_obj = date.fromisoformat(_sd) if _sd else None
-            except Exception: _sd_obj = None
-            try: _ed_obj = date.fromisoformat(_ed) if _ed else None
-            except Exception: _ed_obj = None
-            if _sd_obj and _sd_obj > _range_end: continue
-            if _ed_obj and _ed_obj < _range_start: continue
-            _status = str(_tr.get("status") or "Not Started")
-            _priority = str(_tr.get("priority") or "Medium")
-            _assignee = str(_tr.get("assignee") or "")
-            _name = str(_tr.get("name") or "")
-            _tags = str(_tr.get("tags") or "")
-            _pctv = int(pd.to_numeric(pd.Series([_tr.get("progress", 0)]), errors="coerce").fillna(0).iloc[0])
-            _days = max(1, ((_ed_obj - _sd_obj).days + 1)) if _sd_obj and _ed_obj else 1
-            _tag = next((x.strip() for x in _tags.split(",") if x.strip()), str(_tr.get("task_type") or "Task"))
-            _tag_bg, _tag_fg = _tag_colors.get(_tag, ("#E2E8F0", "#334155"))
-            _rows.append({"id": int(_tr["id"]), "wbs": str(_tr.get("source_id") or _tr["id"]), "ico": "doc" if str(_tr.get("task_type", "Task")).lower() == "milestone" else "play",
-                "ic_col": _status_colors.get(_status, GRAY), "name": _name, "project": str(_pr["name"]),
-                "start_date": fmt_date(_sd), "end_date": fmt_date(_ed), "duration": f"{_days} days", "status": _status,
-                "priority": _priority, "assignee": _assignee, "pct": max(0,min(100,_pctv)), "bar_col": _status_colors.get(_status, BLUE),
-                "tag": _tag, "tags": _tags, "description": str(_tr.get("description") or ""), "notes": str(_tr.get("notes") or ""),
-                "task_type": str(_tr.get("task_type") or "Task"), "project_id": int(_pr["id"]), "parent_task_id": int(_tr.get("parent_task_id")) if pd.notna(_tr.get("parent_task_id")) else None,
-                "tag_bg": _tag_bg, "tag_fg": _tag_fg})
-        if not _rows: continue
-        _grp_pct = round(sum(x["pct"] for x in _rows) / len(_rows))
-        _pstart = _as_iso_date(_pr.get("start_date")); _pend = _as_iso_date(_pr.get("end_date"))
-        _duration = 0
-        try: _duration = (date.fromisoformat(_pend) - date.fromisoformat(_pstart)).days + 1 if _pstart and _pend else 0
-        except Exception: pass
-        task_groups.append({"group_title": f"{_pr['name']} ({len(_rows)})", "project": str(_pr["name"]), "icon_bg": str(_pr.get("bar_color") or GREEN),
-            "start": fmt_date(_pstart), "end": fmt_date(_pend), "dur": f"{_duration} days" if _duration else "—", "pct": _grp_pct,
-            "bar_col": str(_pr.get("bar_color") or GREEN), "row_bg": "#F8FAFC", "tasks": _rows})
+    task_groups = [
+        {
+            "group_title": "Website Revamp (8)",
+            "project": "Website Revamp",
+            "icon_bg": "#00875A",
+            "start": "Apr 24, 2024",
+            "end": "Jun 30, 2024",
+            "dur": "67 days",
+            "pct": 70,
+            "bar_col": "#00875A",
+            "row_bg": "#F0FDF4",
+            "tasks": [
+                {"wbs": "1.1", "ico": "doc", "ic_col": "#00875A", "name": "Define project scope", "project": "Website Revamp", "start_date": "Apr 24, 2024", "end_date": "Apr 26, 2024", "duration": "3 days", "status": "Completed", "priority": "Medium", "assignee": "Dana Scott", "pct": 100, "bar_col": "#00875A", "tag": "Planning", "tag_bg": "#DBEAFE", "tag_fg": "#1D4ED8"},
+                {"wbs": "1.2", "ico": "play", "ic_col": "#00875A", "name": "Stakeholder alignment", "project": "Website Revamp", "start_date": "Apr 27, 2024", "end_date": "May 5, 2024", "duration": "9 days", "status": "Completed", "priority": "Medium", "assignee": "Emily Rodriguez", "pct": 100, "bar_col": "#00875A", "tag": "Planning", "tag_bg": "#DBEAFE", "tag_fg": "#1D4ED8"},
+                {"wbs": "1.3", "ico": "play", "ic_col": "#00875A", "name": "Create wireframes", "project": "Website Revamp", "start_date": "May 6, 2024", "end_date": "May 12, 2024", "duration": "7 days", "status": "Completed", "priority": "High", "assignee": "James Miller", "pct": 100, "bar_col": "#00875A", "tag": "Design", "tag_bg": "#F3E8FF", "tag_fg": "#7C3AED"},
+                {"wbs": "1.4", "ico": "play", "ic_col": "#00875A", "name": "UI/UX design", "project": "Website Revamp", "start_date": "May 13, 2024", "end_date": "May 20, 2024", "duration": "8 days", "status": "Completed", "priority": "High", "assignee": "Sarah Kim", "pct": 100, "bar_col": "#00875A", "tag": "Design", "tag_bg": "#F3E8FF", "tag_fg": "#7C3AED"},
+                {"wbs": "1.5", "ico": "play", "ic_col": "#00875A", "name": "Frontend development", "project": "Website Revamp", "start_date": "May 21, 2024", "end_date": "May 26, 2024", "duration": "6 days", "status": "In Progress", "priority": "High", "assignee": "Alice Morgan", "pct": 70, "bar_col": "#1473E6", "tag": "Development", "tag_bg": "#DCFCE7", "tag_fg": "#15803D"},
+                {"wbs": "1.6", "ico": "play", "ic_col": "#0F766E", "name": "Backend development", "project": "Website Revamp", "start_date": "May 27, 2024", "end_date": "May 31, 2024", "duration": "5 days", "status": "In Progress", "priority": "High", "assignee": "Ryan Cruz", "pct": 50, "bar_col": "#1473E6", "tag": "Development", "tag_bg": "#DCFCE7", "tag_fg": "#15803D"},
+                {"wbs": "1.7", "ico": "doc", "ic_col": "#475569", "name": "UAT testing", "project": "Website Revamp", "start_date": "Jun 1, 2024", "end_date": "Jun 15, 2024", "duration": "15 days", "status": "Not Started", "priority": "Medium", "assignee": "Michael Tan", "pct": 0, "bar_col": "#CBD5E1", "tag": "Testing", "tag_bg": "#FEE2E2", "tag_fg": "#B91C1C"},
+                {"wbs": "1.8", "ico": "doc", "ic_col": "#7C3AED", "name": "Go-Live", "project": "Website Revamp", "start_date": "Jun 16, 2024", "end_date": "Jun 30, 2024", "duration": "15 days", "status": "Not Started", "priority": "High", "assignee": "Alice Morgan", "pct": 0, "bar_col": "#CBD5E1", "tag": "Launch", "tag_bg": "#EDE9FE", "tag_fg": "#6D28D9"},
+            ],
+        },
+        {
+            "group_title": "IT Infrastructure Upgrade (5)",
+            "project": "IT Infrastructure Upgrade",
+            "icon_bg": "#1473E6",
+            "start": "Apr 15, 2024",
+            "end": "Jun 20, 2024",
+            "dur": "67 days",
+            "pct": 45,
+            "bar_col": "#1473E6",
+            "row_bg": "#EFF6FF",
+            "tasks": [
+                {"wbs": "2.1", "ico": "doc", "ic_col": "#0F766E", "name": "Requirements", "project": "IT Infrastructure..", "start_date": "Apr 15, 2024", "end_date": "Apr 30, 2024", "duration": "16 days", "status": "Completed", "priority": "High", "assignee": "Dana Scott", "pct": 100, "bar_col": "#00875A", "tag": "Requirements", "tag_bg": "#E2E8F0", "tag_fg": "#334155"},
+                {"wbs": "2.2", "ico": "doc", "ic_col": "#1473E6", "name": "Implementation", "project": "IT Infrastructure..", "start_date": "May 1, 2024", "end_date": "Jun 10, 2024", "duration": "41 days", "status": "In Progress", "priority": "High", "assignee": "Ryan Cruz", "pct": 40, "bar_col": "#1473E6", "tag": "Implementation", "tag_bg": "#E2E8F0", "tag_fg": "#334155"},
+                {"wbs": "2.3", "ico": "doc", "ic_col": "#7C3AED", "name": "Testing", "project": "IT Infrastructure..", "start_date": "Jun 11, 2024", "end_date": "Jun 20, 2024", "duration": "10 days", "status": "Not Started", "priority": "Medium", "assignee": "Michael Tan", "pct": 0, "bar_col": "#CBD5E1", "tag": "Testing", "tag_bg": "#FEE2E2", "tag_fg": "#B91C1C"},
+            ],
+        },
+        {
+            "group_title": "Sustainability Initiative (4)",
+            "project": "Sustainability Initiative",
+            "icon_bg": "#7C3AED",
+            "start": "May 1, 2024",
+            "end": "Jun 30, 2024",
+            "dur": "61 days",
+            "pct": 30,
+            "bar_col": "#F28C00",
+            "row_bg": "#F5F3FF",
+            "tasks": [
+                {"wbs": "3.1", "ico": "doc", "ic_col": "#00875A", "name": "Research & Analysis", "project": "Sustainability In..", "start_date": "May 1, 2024", "end_date": "May 20, 2024", "duration": "20 days", "status": "Completed", "priority": "Medium", "assignee": "Emily Rodriguez", "pct": 100, "bar_col": "#00875A", "tag": "Research", "tag_bg": "#DCFCE7", "tag_fg": "#15803D"},
+                {"wbs": "3.2", "ico": "doc", "ic_col": "#1473E6", "name": "Strategy Development", "project": "Sustainability In..", "start_date": "May 21, 2024", "end_date": "Jun 10, 2024", "duration": "21 days", "status": "In Progress", "priority": "Medium", "assignee": "Sarah Kim", "pct": 40, "bar_col": "#1473E6", "tag": "Strategy", "tag_bg": "#DBEAFE", "tag_fg": "#1D4ED8"},
+                {"wbs": "3.3", "ico": "doc", "ic_col": "#7C3AED", "name": "Implementation", "project": "Sustainability In..", "start_date": "Jun 11, 2024", "end_date": "Jun 30, 2024", "duration": "20 days", "status": "Not Started", "priority": "Low", "assignee": "James Miller", "pct": 0, "bar_col": "#CBD5E1", "tag": "Implementation", "tag_bg": "#F3E8FF", "tag_fg": "#7C3AED"},
+            ],
+        },
+        {
+            "group_title": "Marketing Campaign (3)",
+            "project": "Marketing Campaign",
+            "icon_bg": "#F28C00",
+            "start": "May 6, 2024",
+            "end": "Jun 25, 2024",
+            "dur": "50 days",
+            "pct": 25,
+            "bar_col": "#00875A",
+            "row_bg": "#FFFBEB",
+            "tasks": [
+                {"wbs": "4.1", "ico": "doc", "ic_col": "#00875A", "name": "Content Creation", "project": "Marketing Campaig", "start_date": "May 6, 2024", "end_date": "May 20, 2024", "duration": "15 days", "status": "In Progress", "priority": "Medium", "assignee": "Alice Morgan", "pct": 50, "bar_col": "#1473E6", "tag": "Content", "tag_bg": "#DBEAFE", "tag_fg": "#1D4ED8"},
+                {"wbs": "4.2", "ico": "doc", "ic_col": "#1473E6", "name": "Campaign Setup", "project": "Marketing Campaig", "start_date": "May 21, 2024", "end_date": "Jun 10, 2024", "duration": "20 days", "status": "Not Started", "priority": "Low", "assignee": "Ryan Cruz", "pct": 0, "bar_col": "#CBD5E1", "tag": "Setup", "tag_bg": "#EDE9FE", "tag_fg": "#6D28D9"},
+                {"wbs": "4.3", "ico": "doc", "ic_col": "#475569", "name": "Launch Campaign", "project": "Marketing Campaig", "start_date": "Jun 11, 2024", "end_date": "Jun 25, 2024", "duration": "15 days", "status": "Not Started", "priority": "High", "assignee": "Michael Tan", "pct": 0, "bar_col": "#CBD5E1", "tag": "Launch", "tag_bg": "#EDE9FE", "tag_fg": "#6D28D9"},
+            ],
+        },
+    ]
 
     # Avatar initials and colors matching Image 12
     tl_avatars = {
@@ -3413,14 +3381,14 @@ elif page == "Task List":
                     )
                 with rc[11]:
                     b_v, b_e = st.columns(2)
-                with b_v:
-                    if st.button("👁",key=f"tl_v_{project_id}_{wbs_id}",help="View Task"):pass
-                        st.session_state.task_modal = ("view", t_item)
-                        st.rerun()
-                with b_e:
-                    if st.button("🗑", key=f"tl_e_{wbs_id}", help="Delete Task"):
-                        st.session_state["confirm_delete_task"] = {"task_id": t_item.get("id"), "name": t_item.get("name", ""), "wbs": wbs_id}
-                        st.rerun()
+                    with b_v:
+                        if st.button("👁", key=f"tl_v_{wbs_id}", help="View Task"):
+                            st.session_state.task_modal = ("view", t_item)
+                            st.rerun()
+                    with b_e:
+                        if st.button("❐", key=f"tl_e_{wbs_id}", help="Edit Task"):
+                            st.session_state.task_modal = ("edit", t_item)
+                            st.rerun()
                 st.markdown("<hr style='margin:4px 0;border-color:#F1F5F9'>", unsafe_allow_html=True)
 
         # Pagination Footer
@@ -3454,27 +3422,6 @@ elif page == "Task List":
             view_task_modal(tm_payload)
         elif tm_type == "edit":
             edit_task_modal(tm_payload)
-
-    if st.session_state.get("confirm_delete_task"):
-        _delete_task_info = st.session_state["confirm_delete_task"]
-        @st.dialog("Delete Task")
-        def _confirm_task_delete_modal():
-            st.warning(f"Delete '{_delete_task_info.get('name', 'this task')}'? This action cannot be undone.")
-            _del_a, _del_b = st.columns(2)
-            with _del_a:
-                if st.button("Cancel", key="tl_delete_cancel", use_container_width=True):
-                    st.session_state.pop("confirm_delete_task", None)
-                    st.rerun()
-            with _del_b:
-                if st.button("Delete Task", type="primary", key="tl_delete_confirm", use_container_width=True):
-                    _task_id = _delete_task_info.get("task_id")
-                    if _task_id is not None:
-                        for _child_table in ("task_subtasks", "task_attachments", "task_activity", "calendar_events"):
-                            sql(f"DELETE FROM {_child_table} WHERE task_id=?", (int(_task_id),))
-                        sql("DELETE FROM tasks WHERE id=?", (int(_task_id),))
-                    st.session_state.pop("confirm_delete_task", None)
-                    st.rerun()
-        _confirm_task_delete_modal()
 
 
 # ===========================================================================
@@ -3581,7 +3528,7 @@ elif page == "Resources":
             st.markdown("<div style='font-size:14px;font-weight:700;color:#0F172A;margin-bottom:8px'>📅 &nbsp;Availability</div>", unsafe_allow_html=True)
             av1, av2 = st.columns(2)
             with av1:
-                st.date_input("Availability Start Date *", date.today(), key="ar_av_start")
+                st.date_input("Availability Start Date *", date(2024, 4, 24), key="ar_av_start")
             with av2:
                 st.text_input("Availability End Date", placeholder="📅 Optional", key="ar_av_end")
             av3, av4 = st.columns(2)
@@ -3620,7 +3567,7 @@ elif page == "Resources":
 
     @st.dialog("Resource Calendar", width="large")
     def resource_calendar_modal(res_rec: dict) -> None:
-        rname = res_rec.get("name", "Resource")
+        rname = res_rec.get("name", "James Miller")
         rrole = res_rec.get("role", "UX Designer")
         remail = res_rec.get("email", "james.miller@hpe.com")
         rini = res_rec.get("ini", "JM")
@@ -3674,22 +3621,19 @@ elif page == "Resources":
             st.session_state.rc_scale = "Month"
 
         tb1, tb2, tb3, tb4, tb5, tb6 = st.columns([1.4, 0.65, 1.1, 0.55, 0.55, 0.95])
-        if "rc_calendar_month" not in st.session_state:
-            st.session_state["rc_calendar_month"] = date.today().replace(day=1)
         with tb1:
-            _rc_l, _rc_label, _rc_r = st.columns([0.5, 2.2, 0.5])
-            with _rc_l:
-                if st.button("‹", key="rc_prev_month", use_container_width=True):
-                    _rm = st.session_state["rc_calendar_month"]
-                    st.session_state["rc_calendar_month"] = (_rm.replace(day=1)-timedelta(days=1)).replace(day=1)
-                    st.rerun()
-            with _rc_label:
-                st.markdown(f"<div style='font-size:15px;font-weight:800;color:#0F172A;text-align:center;padding:7px 0'>{st.session_state['rc_calendar_month'].strftime('%B %Y')}</div>", unsafe_allow_html=True)
-            with _rc_r:
-                if st.button("›", key="rc_next_month", use_container_width=True):
-                    _rm = st.session_state["rc_calendar_month"]
-                    st.session_state["rc_calendar_month"] = (_rm.replace(day=28)+timedelta(days=4)).replace(day=1)
-                    st.rerun()
+            st.markdown(
+                clean_html(
+                    """
+                    <div style="display:flex;align-items:center;gap:10px;padding-top:4px">
+                        <span style="border:1px solid #CBD5E1;border-radius:6px;padding:4px 10px;background:white;font-weight:700">‹</span>
+                        <span style="font-size:15px;font-weight:800;color:#0F172A">May 2024</span>
+                        <span style="border:1px solid #CBD5E1;border-radius:6px;padding:4px 10px;background:white;font-weight:700">›</span>
+                    </div>
+                    """
+                ),
+                unsafe_allow_html=True,
+            )
         with tb2:
             if st.button("Today", key="rc_today_btn", use_container_width=True):
                 st.session_state["rc_selected_date"] = date.today()
@@ -3705,30 +3649,13 @@ elif page == "Resources":
 
         cal_l, cal_r = st.columns([2.55, 1.05])
         with cal_l:
-            _rc_month = st.session_state.get("rc_calendar_month", date.today().replace(day=1))
-            _rc_first = _rc_month.replace(day=1)
-            _rc_grid_start = _rc_first - timedelta(days=(_rc_first.weekday()+1)%7)
-            _rc_events = {}
-            _rc_tasks = T[T["assignee"].astype(str) == str(rname)].copy() if not T.empty else pd.DataFrame()
-            for _, _rtask in _rc_tasks.iterrows():
-                _rd = _as_iso_date(_rtask.get("start_date")) or _as_iso_date(_rtask.get("due_date"))
-                if not _rd: continue
-                try: _rday = date.fromisoformat(_rd)
-                except Exception: continue
-                _rproj = str(_rtask.get("project") or "")
-                _rc_events.setdefault(_rday, []).append((_rproj or str(_rtask.get("name") or "Task"), str(_rtask.get("name") or "Task"), "g"))
-            _rc_custom = df("SELECT ce.*,p.name AS project FROM calendar_events ce LEFT JOIN projects p ON p.id=ce.project_id WHERE ce.resources LIKE ? ORDER BY ce.start_date", (f"%{rname}%",))
-            for _, _ev in _rc_custom.iterrows():
-                try: _rday = date.fromisoformat(str(_ev.get("start_date"))[:10])
-                except Exception: continue
-                _rc_events.setdefault(_rday, []).append((str(_ev.get("title") or "Event"), str(_ev.get("start_time") or "Event"), "p"))
-            rc_weeks = []
-            for _rw in range(6):
-                _cells=[]
-                for _rdx in range(7):
-                    _rday=_rc_grid_start+timedelta(days=_rw*7+_rdx)
-                    _cells.append((str(_rday.day), _rday.month == _rc_month.month, _rc_events.get(_rday, [])))
-                rc_weeks.append(_cells)
+            rc_weeks = [
+                [("28", False, []), ("29", False, []), ("30", False, []), ("1", True, [("Website Revamp", "(50%)", "g"), ("Design Review", "(2 hrs)", "p")]), ("2", True, [("Website Revamp", "(50%)", "g")]), ("3", True, [("Website Revamp", "(50%)", "g")]), ("4", True, [])],
+                [("5", True, []), ("6", True, [("Marketing Campaign", "(30%)", "g")]), ("7", True, [("Marketing Campaign", "(30%)", "g")]), ("8", True, [("Marketing Campaign", "(30%)", "g")]), ("9", True, [("Website Revamp", "(50%)", "g")]), ("10", True, [("Website Revamp", "(50%)", "g")]), ("11", True, [])],
+                [("12", True, []), ("13", True, [("IT Infrastructure", "(20%)", "g")]), ("14", True, [("IT Infrastructure", "(20%)", "g")]), ("15", True, [("IT Infrastructure", "(20%)", "g"), ("Team Meeting", "(1 hr)", "p")]), ("16", True, [("IT Infrastructure", "(20%)", "g")]), ("17", True, [("IT Infrastructure", "(20%)", "g")]), ("18", True, [])],
+                [("19", True, []), ("20", True, [("Annual Leave", "(Full Day)", "r")]), ("21", True, [("Annual Leave", "(Full Day)", "r")]), ("22", True, [("Annual Leave", "(Full Day)", "r")]), ("23", True, []), ("24", True, [("Website Revamp", "(50%)", "g")]), ("25", True, [])],
+                [("26", True, []), ("27", True, [("Website Revamp", "(50%)", "g")]), ("28", True, [("Website Revamp", "(50%)", "g")]), ("29", True, [("Website Revamp", "(50%)", "g")]), ("30", True, [("Website Revamp", "(50%)", "g")]), ("31", True, [("Website Revamp", "(50%)", "g")]), ("1", False, [])],
+            ]
             pill_styles = {
                 "g": ("#DCFCE7", "#15803D"),
                 "p": ("#F3E8FF", "#7C3AED"),
@@ -3738,7 +3665,7 @@ elif page == "Resources":
             for wk in rc_weeks:
                 cells_html = ""
                 for d_str, in_m, ev_list in wk:
-                    is_sel = in_m and d_str == str(st.session_state.get("rc_selected_date", date.today()).day) and _rc_month.month == st.session_state.get("rc_selected_date", date.today()).month
+                    is_sel = in_m and d_str == "9"
                     bdr = "2px solid #3B82F6" if is_sel else "1px solid #EDF2F7"
                     cbg = "#EFF6FF" if is_sel else ("#FFFFFF" if in_m else "#F8FAFC")
                     dcol = "#1D4ED8" if is_sel else ("#0F172A" if in_m else "#94A3B8")
@@ -3815,7 +3742,7 @@ elif page == "Resources":
 
     @st.dialog("Project Assignments", width="large")
     def project_assignments_modal(res_rec: dict) -> None:
-        rname = res_rec.get("name", "Resource")
+        rname = res_rec.get("name", "James Miller")
         rrole = res_rec.get("role", "UX Designer")
         remail = res_rec.get("email", "james.miller@hpe.com")
         rini = res_rec.get("ini", "JM")
@@ -4026,13 +3953,13 @@ elif page == "Resources":
 
     @st.dialog("Resource Action")
     def resource_action_submodal(act_mode: str, res_rec: dict) -> None:
-        rname = res_rec.get("name", "Resource")
+        rname = res_rec.get("name", "James Miller")
         rrole = res_rec.get("role", "UX Designer")
         remail = res_rec.get("email", "james.miller@hpe.com")
         rini = res_rec.get("ini", "JM")
         rcolor = res_rec.get("av_col", "#0284C7")
         rskills = res_rec.get("skills", ["UI/UX", "Figma"])
-        rproj = res_rec.get("project", "—")
+        rproj = res_rec.get("project", "Website Revamp")
         ralloc = int(res_rec.get("alloc", 100))
 
         header_titles = {
@@ -4181,7 +4108,7 @@ elif page == "Resources":
                     st.rerun()
 
         elif act_mode == "availability":
-            st.date_input("Availability Start Date *", date.today(), key="sub_av_st")
+            st.date_input("Availability Start Date *", date(2024, 4, 24), key="sub_av_st")
             st.text_input("Availability End Date", placeholder="📅 Optional", key="sub_av_en")
             av_a, av_b = st.columns(2)
             with av_a:
@@ -4235,7 +4162,7 @@ elif page == "Resources":
     with rh_s:
         res_top_q = st.text_input("Search", placeholder="🔍 Search team members, skills, or projects...", key="res_q_top", label_visibility="collapsed")
     with rh_d:
-        res_date_range = st.date_input("Date Range", (date.today() - timedelta(days=30), date.today() + timedelta(days=60)), key="res_d_top", label_visibility="collapsed")
+        st.date_input("Date Range", (date(2024, 4, 24), date(2024, 6, 30)), key="res_d_top", label_visibility="collapsed")
     with rh_b:
         if st.button("＋ Add Resource", type="primary", use_container_width=True, key="res_btn_add_top"):
             st.session_state.res_modal = ("add", None)
@@ -4385,16 +4312,16 @@ elif page == "Resources":
         res_sub_q = st.text_input("Search", placeholder="🔍 Search by name, role, skill or project...", key="res_q_sub", label_visibility="collapsed")
     with rf_rl:
         st.markdown("<div style='font-size:11.5px;font-weight:600;color:#475569;margin-bottom:3px'>Role</div>", unsafe_allow_html=True)
-        res_role_f = st.selectbox("Role", ["All Roles"] + sorted(R.role.dropna().astype(str).unique().tolist()), key="res_f_role", label_visibility="collapsed")
+        res_role_f = st.selectbox("Role", ["All Roles", "UX Designer", "Business Analyst", "Frontend Developer", "Project Manager", "Backend Developer", "QA Engineer", "Content Specialist", "DevOps Engineer", "IT Support", "Data Analyst"], key="res_f_role", label_visibility="collapsed")
     with rf_sk:
         st.markdown("<div style='font-size:11.5px;font-weight:600;color:#475569;margin-bottom:3px'>Skill</div>", unsafe_allow_html=True)
-        res_skill_f = st.selectbox("Skill", ["All Skills"] + sorted({x.strip() for v in R.notes.dropna().astype(str) for x in v.split(",") if x.strip()}), key="res_f_skill", label_visibility="collapsed")
+        res_skill_f = st.selectbox("Skill", ["All Skills", "UI/UX", "Figma", "Analysis", "React", "Planning", "Python", "Testing", "Content", "Azure", "Infrastructure", "Power BI"], key="res_f_skill", label_visibility="collapsed")
     with rf_st:
         st.markdown("<div style='font-size:11.5px;font-weight:600;color:#475569;margin-bottom:3px'>Status</div>", unsafe_allow_html=True)
         res_stat_f = st.selectbox("Status", ["All Statuses", "Allocated", "Available", "Overallocated", "On Leave"], key="res_f_stat", label_visibility="collapsed")
     with rf_pr:
         st.markdown("<div style='font-size:11.5px;font-weight:600;color:#475569;margin-bottom:3px'>Project</div>", unsafe_allow_html=True)
-        res_proj_f = st.selectbox("Project", ["All Projects"] + projects_list, key="res_f_proj", label_visibility="collapsed")
+        res_proj_f = st.selectbox("Project", ["All Projects", "Website Revamp", "Sustainability Initiative", "Marketing Campaign", "IT Infrastructure Upgrade", "Internal Operations"], key="res_f_proj", label_visibility="collapsed")
     with rf_mr:
         st.markdown("<div style='font-size:11.5px;margin-bottom:3px'>&nbsp;</div>", unsafe_allow_html=True)
         if st.button("▽ More Filters", key="res_btn_more", use_container_width=True):
@@ -4404,24 +4331,18 @@ elif page == "Resources":
 
     st.write("")
     # --- RESOURCES DIRECTORY TABLE (Exact 10 Rows from Image 20 & 25) ---
-    res_directory = []
-    for _, _res in R.iterrows():
-        _rid = int(_res["id"]); _name = str(_res.get("name") or ""); _notes = str(_res.get("notes") or "")
-        _skills = [x.strip() for x in _notes.split(",") if x.strip()]
-        _assigned_tasks = T[T["assignee"].astype(str) == _name].copy() if not T.empty else pd.DataFrame()
-        if not _assigned_tasks.empty and isinstance(res_date_range, (tuple, list)) and len(res_date_range) == 2:
-            _rlo, _rhi = sorted(res_date_range)
-            _rsd = pd.to_datetime(_assigned_tasks["start_date"],errors="coerce").dt.date
-            _red = pd.to_datetime(_assigned_tasks["due_date"],errors="coerce").dt.date
-            _assigned_tasks = _assigned_tasks[(_rsd.isna() | (_rsd <= _rhi)) & (_red.isna() | (_red >= _rlo))].copy()
-        _projects_assigned = list(dict.fromkeys(_assigned_tasks["project"].dropna().astype(str).tolist())) if not _assigned_tasks.empty else []
-        _project_label = ", ".join(_projects_assigned) if _projects_assigned else "—"
-        _alloc = 0
-        _status = str(_res.get("status") or "Available")
-        if _status.lower() not in {"available", "on leave", "inactive"}: _status = "Allocated" if not _assigned_tasks.empty else _status
-        _avail = f"{max(0,100-_alloc)}%"
-        _ini = "".join(part[0] for part in _name.split()[:2]).upper() or "U"
-        res_directory.append({"id":_rid,"ini":_ini,"av_col":"#0284C7","name":_name,"email":str(_res.get("email") or ""),"role":str(_res.get("role") or "Team Member"),"skills":_skills,"sk_cols":[("#DBEAFE","#1D4ED8") if i%2==0 else ("#F3E8FF","#7C3AED") for i,_ in enumerate(_skills)],"project":_project_label,"alloc":_alloc,"avail":_avail,"status":_status})
+    res_directory = [
+        {"id": 1, "ini": "JM", "av_col": "#0284C7", "name": "James Miller", "email": "james.miller@hpe.com", "role": "UX Designer", "skills": ["UI/UX", "Figma"], "sk_cols": [("#DBEAFE", "#1D4ED8"), ("#F3E8FF", "#7C3AED")], "project": "Website Revamp", "alloc": 100, "avail": "0%", "status": "Allocated"},
+        {"id": 2, "ini": "EC", "av_col": "#0284C7", "name": "Emily Rodriguez", "email": "emily.rodriguez@hpe.com", "role": "Business Analyst", "skills": ["Analysis", "Requirements"], "sk_cols": [("#DBEAFE", "#1D4ED8"), ("#F1F5F9", "#334155")], "project": "Sustainability Initiative", "alloc": 80, "avail": "20%", "status": "Allocated"},
+        {"id": 3, "ini": "SL", "av_col": "#0369A1", "name": "Sarah Kim", "email": "sarah.kim@hpe.com", "role": "Frontend Developer", "skills": ["React", "JavaScript"], "sk_cols": [("#DBEAFE", "#1D4ED8"), ("#F1F5F9", "#334155")], "project": "Website Revamp", "alloc": 100, "avail": "0%", "status": "Allocated"},
+        {"id": 4, "ini": "AL", "av_col": "#0284C7", "name": "Alice Morgan", "email": "alice.morgan@hpe.com", "role": "Project Manager", "skills": ["Planning", "Stakeholder"], "sk_cols": [("#DBEAFE", "#1D4ED8"), ("#F1F5F9", "#334155")], "project": "Marketing Campaign", "alloc": 50, "avail": "50%", "status": "Available"},
+        {"id": 5, "ini": "RJ", "av_col": "#0369A1", "name": "Ryan Cruz", "email": "ryan.cruz@hpe.com", "role": "Backend Developer", "skills": ["Python", "API"], "sk_cols": [("#DBEAFE", "#1D4ED8"), ("#F1F5F9", "#334155")], "project": "IT Infrastructure Upgrade", "alloc": 90, "avail": "10%", "status": "Allocated"},
+        {"id": 6, "ini": "MT", "av_col": "#0284C7", "name": "Michael Tan", "email": "michael.tan@hpe.com", "role": "QA Engineer", "skills": ["Testing", "Automation"], "sk_cols": [("#DBEAFE", "#1D4ED8"), ("#F1F5F9", "#334155")], "project": "IT Infrastructure Upgrade", "alloc": 120, "avail": "-20%", "status": "Overallocated"},
+        {"id": 7, "ini": "DS", "av_col": "#00875A", "name": "Dana Scott", "email": "dana.scott@hpe.com", "role": "Content Specialist", "skills": ["Content", "SEO"], "sk_cols": [("#DBEAFE", "#1D4ED8"), ("#F1F5F9", "#334155")], "project": "Marketing Campaign", "alloc": 40, "avail": "60%", "status": "Available"},
+        {"id": 8, "ini": "KL", "av_col": "#0284C7", "name": "Karen Lim", "email": "karen.lim@hpe.com", "role": "DevOps Engineer", "skills": ["Azure", "CI/CD"], "sk_cols": [("#DBEAFE", "#1D4ED8"), ("#F1F5F9", "#334155")], "project": "IT Infrastructure Upgrade", "alloc": 100, "avail": "0%", "status": "Allocated"},
+        {"id": 9, "ini": "NP", "av_col": "#475569", "name": "Noah Park", "email": "noah.park@hpe.com", "role": "IT Support", "skills": ["Infrastructure", "Support"], "sk_cols": [("#DBEAFE", "#1D4ED8"), ("#F1F5F9", "#334155")], "project": "Internal Operations", "alloc": 60, "avail": "40%", "status": "Available"},
+        {"id": 10, "ini": "CT", "av_col": "#EA580C", "name": "Chloe Tan", "email": "chloe.tan@hpe.com", "role": "Data Analyst", "skills": ["Power BI", "Excel"], "sk_cols": [("#DBEAFE", "#1D4ED8"), ("#DCFCE7", "#15803D")], "project": "Sustainability Initiative", "alloc": 100, "avail": "0%", "status": "Allocated"},
+    ]
 
     q_res = (res_top_q + " " + res_sub_q).strip().lower()
     filtered_res = []
@@ -4603,16 +4524,21 @@ elif page == "Calendar":
         with e4:
             st.selectbox("Task (Optional)", ["Select task (optional)"] + T.name.tolist(), key="ae_task")
 
-        st.multiselect("Resource(s) *", sorted(R["name"].dropna().astype(str).unique().tolist()) if not R.empty else [], key="ae_res")
+        st.multiselect(
+            "Resource(s) *",
+            ["James Miller", "Sarah Kim", "Alice Morgan", "Ryan Cruz", "Michael Tan", "Emily Rodriguez", "Dana Scott"],
+            default=["James Miller", "Sarah Kim"],
+            key="ae_res",
+        )
 
         dt1, dt2, dt3, dt4 = st.columns([1.2, 0.9, 1.2, 0.9])
         with dt1:
-            ev_start_d = st.date_input("Start Date & Time *", date.today(), key="ae_sd")
+            ev_start_d = st.date_input("Start Date & Time *", date(2024, 5, 9), key="ae_sd")
         with dt2:
             st.markdown("<div style='font-size:12.5px;margin-bottom:4px'>&nbsp;</div>", unsafe_allow_html=True)
             st.selectbox("Start Time", ["09:00 AM", "10:00 AM", "01:00 PM", "02:00 PM"], index=0, key="ae_st", label_visibility="collapsed")
         with dt3:
-            ev_end_d = st.date_input("End Date & Time *", date.today(), key="ae_ed")
+            ev_end_d = st.date_input("End Date & Time *", date(2024, 5, 9), key="ae_ed")
         with dt4:
             st.markdown("<div style='font-size:12.5px;margin-bottom:4px'>&nbsp;</div>", unsafe_allow_html=True)
             st.selectbox("End Time", ["05:00 PM", "11:00 AM", "03:00 PM", "04:00 PM"], index=0, key="ae_et", label_visibility="collapsed")
@@ -4641,24 +4567,9 @@ elif page == "Calendar":
                 st.rerun()
         with f_cr:
             if st.button("Create Event", type="primary", key="ae_save_btn", use_container_width=True):
-                if not str(ev_title).strip():
-                    st.error("Event title is required.")
-                elif ev_end_d < ev_start_d:
-                    st.error("End date cannot be earlier than start date.")
-                else:
-                    _event_project = st.session_state.get("ae_proj")
-                    _event_type_clean = str(ev_type).split(" ", 1)[-1]
-                    _selected_task_name = st.session_state.get("ae_task", "")
-                    _selected_task_rows = T[T["name"].astype(str) == str(_selected_task_name)] if not T.empty else pd.DataFrame()
-                    _event_task_id = int(_selected_task_rows.iloc[0]["id"]) if not _selected_task_rows.empty and _selected_task_name != "Select task (optional)" else None
-                    _event_team = st.session_state.get("ae_team", "")
-                    _event_resources = ", ".join(st.session_state.get("ae_res", []))
-                    _event_alloc = pd.to_numeric(pd.Series([st.session_state.get("ae_alloc", 0)]), errors="coerce").fillna(0).iloc[0]
-                    _event_id = sql("INSERT INTO calendar_events(title,project_id,task_id,team,event_type,start_date,end_date,start_time,end_time,resources,allocation,repeat_rule,description) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                        (str(ev_title).strip(), int(pmap.get(_event_project, 0)) or None, _event_task_id, _event_team, _event_type_clean, ev_start_d.isoformat(), ev_end_d.isoformat(), st.session_state.get("ae_st", ""), st.session_state.get("ae_et", ""), _event_resources, float(_event_alloc), st.session_state.get("ae_rep", "Does not repeat"), ev_desc))
-                    log_event("Created", "Calendar Event", _event_id, ev_title)
-                    st.session_state.pop("cal_modal", None)
-                    st.rerun()
+                log_event("Created", "Calendar Event", None, ev_title or ev_type)
+                st.session_state.pop("cal_modal", None)
+                st.rerun()
 
     # --- CALENDAR TOP HEADER & FILTER BAR ---
     ch_l, ch_f1, ch_f2, ch_f3, ch_f4, ch_btn = st.columns([2.15, 0.72, 0.72, 0.72, 0.78, 0.68])
@@ -4680,7 +4591,7 @@ elif page == "Calendar":
         cal_team_f = st.selectbox("Team", ["All Teams"] + teams_list, key="cal_f_team", label_visibility="collapsed")
     with ch_f3:
         st.markdown("<div style='font-size:11px;font-weight:600;color:#475569;margin-bottom:2px'>Resource</div>", unsafe_allow_html=True)
-        cal_res_f = st.selectbox("Resource", ["All Resources"] + sorted(R.name.dropna().astype(str).unique().tolist()), key="cal_f_res", label_visibility="collapsed")
+        cal_res_f = st.selectbox("Resource", ["All Resources", "James Miller", "Sarah Kim", "Alice Morgan", "Ryan Cruz", "Michael Tan"], key="cal_f_res", label_visibility="collapsed")
     with ch_f4:
         st.markdown("<div style='font-size:11px;font-weight:600;color:#475569;margin-bottom:2px'>Event Type</div>", unsafe_allow_html=True)
         cal_type_f = st.selectbox("Event Type", ["All Event Types", "Project Assignment", "Meeting / Event", "Leave", "Milestone"], key="cal_f_type", label_visibility="collapsed")
@@ -4698,23 +4609,19 @@ elif page == "Calendar":
     ct_v, ct_nav, ct_tod, ct_sp, ct_q, ct_mf = st.columns([1.55, 1.0, 0.48, 0.65, 1.55, 0.65])
     with ct_v:
         tile_toggle("", ["Month", "Week", "Day", "Agenda"], key="cal_view_mode", default="Month")
-    if "cal_calendar_month" not in st.session_state:
-        st.session_state["cal_calendar_month"] = date.today().replace(day=1)
     with ct_nav:
-        _nav_l, _nav_label, _nav_r = st.columns([0.45, 2.2, 0.45])
-        with _nav_l:
-            if st.button("‹", key="cal_prev_month", use_container_width=True):
-                _m = st.session_state["cal_calendar_month"]
-                st.session_state["cal_calendar_month"] = (_m.replace(day=1) - timedelta(days=1)).replace(day=1)
-                st.rerun()
-        with _nav_label:
-            st.markdown(f"<div style='text-align:center;font-size:14.5px;font-weight:800;color:#0F172A;padding:7px 0'>{st.session_state['cal_calendar_month'].strftime('%B %Y')}</div>", unsafe_allow_html=True)
-        with _nav_r:
-            if st.button("›", key="cal_next_month", use_container_width=True):
-                _m = st.session_state["cal_calendar_month"]
-                _next = (_m.replace(day=28) + timedelta(days=4)).replace(day=1)
-                st.session_state["cal_calendar_month"] = _next
-                st.rerun()
+        st.markdown(
+            clean_html(
+                """
+                <div style="display:flex;align-items:center;justify-content:center;gap:12px;border:1px solid #DCE8F3;border-radius:8px;padding:6px 10px;background:white">
+                    <span style="font-weight:700;color:#475569;cursor:pointer">‹</span>
+                    <span style="font-size:14.5px;font-weight:800;color:#0F172A">May 2024</span>
+                    <span style="font-weight:700;color:#475569;cursor:pointer">›</span>
+                </div>
+                """
+            ),
+            unsafe_allow_html=True,
+        )
     with ct_tod:
         if st.button("Today", key="cal_tod_btn", use_container_width=True):
             st.session_state["cal_selected_date"] = date.today()
@@ -4732,56 +4639,53 @@ elif page == "Calendar":
     main_l, main_r = st.columns([2.75, 1.1])
 
     with main_l:
-        _month = st.session_state.get("cal_calendar_month", date.today().replace(day=1))
-        _month_start = _month.replace(day=1)
-        _grid_start = _month_start - timedelta(days=(_month_start.weekday() + 1) % 7)
-        _cal_event_map = {}
-        # Task start/end dates and milestones are visible without requiring manually-created calendar entries.
-        if not T.empty:
-            for _, _tr in T.iterrows():
-                _d = _as_iso_date(_tr.get("start_date")) or _as_iso_date(_tr.get("due_date"))
-                if not _d: continue
-                try: _day = date.fromisoformat(_d)
-                except Exception: continue
-                _title = str(_tr.get("name") or "Task")
-                _proj = str(_tr.get("project") or "")
-                _assignee = str(_tr.get("assignee") or "")
-                if cal_proj_f != "All Projects" and _proj != cal_proj_f: continue
-                if cal_team_f != "All Teams" and str(_tr.get("team") or "") != cal_team_f: continue
-                if cal_res_f != "All Resources" and _assignee != cal_res_f: continue
-                if cal_type_f not in ("All Event Types", "Project Assignment"): continue
-                if cal_search_q and cal_search_q.lower() not in (_title + " " + _proj + " " + _assignee).lower(): continue
-                _cal_event_map.setdefault(_day, []).append(("● " + _title, f"{_proj} · {_assignee}".strip(" ·"), "g"))
-        if not M.empty and cal_type_f in ("All Event Types", "Milestone"):
-            for _, _mr in M.iterrows():
-                _d = _as_iso_date(_mr.get("due_date"))
-                if not _d: continue
-                try: _day = date.fromisoformat(_d)
-                except Exception: continue
-                _title = str(_mr.get("name") or "Milestone"); _proj = str(_mr.get("project") or "")
-                if cal_proj_f != "All Projects" and _proj != cal_proj_f: continue
-                if cal_search_q and cal_search_q.lower() not in (_title + " " + _proj).lower(): continue
-                _cal_event_map.setdefault(_day, []).append(("◆ " + _title, _proj, "b"))
-        _events_db = df("SELECT ce.*, p.name AS project FROM calendar_events ce LEFT JOIN projects p ON p.id=ce.project_id ORDER BY ce.start_date")
-        if not _events_db.empty:
-            for _, _er in _events_db.iterrows():
-                try: _day = date.fromisoformat(str(_er.get("start_date"))[:10])
-                except Exception: continue
-                _proj = str(_er.get("project") or "")
-                if cal_proj_f != "All Projects" and _proj != cal_proj_f: continue
-                if cal_team_f != "All Teams" and str(_er.get("team") or "") != cal_team_f: continue
-                if cal_res_f != "All Resources" and cal_res_f not in str(_er.get("resources") or ""): continue
-                if cal_type_f != "All Event Types" and str(_er.get("event_type") or "") != cal_type_f: continue
-                _title = str(_er.get("title") or "Event")
-                if cal_search_q and cal_search_q.lower() not in (_title + " " + _proj + " " + str(_er.get("resources") or "")).lower(): continue
-                _cal_event_map.setdefault(_day, []).append(("● " + _title, f"{_er.get('start_time') or ''} · {_proj}".strip(" ·"), "b"))
-        cal_weeks = []
-        for _week in range(6):
-            _cells = []
-            for _day_offset in range(7):
-                _day = _grid_start + timedelta(days=_week*7 + _day_offset)
-                _cells.append((str(_day.day), _day.month == _month.month, _cal_event_map.get(_day, [])))
-            cal_weeks.append(_cells)
+        cal_weeks = [
+            [
+                ("28", False, []),
+                ("29", False, []),
+                ("30", False, []),
+                ("1", True, [("● Website Revamp", "9:00 AM – 5:00 PM<br>(50%)", "g"), ("● Design Review", "2:00 PM – 4:00 PM", "b")]),
+                ("2", True, [("● Website Revamp", "9:00 AM – 5:00 PM<br>(50%)", "g")]),
+                ("3", True, [("● Website Revamp", "9:00 AM – 5:00 PM<br>(50%)", "g")]),
+                ("4", True, []),
+            ],
+            [
+                ("5", True, []),
+                ("6", True, [("● Marketing Campaign", "9:00 AM – 5:00 PM<br>(30%)", "g")]),
+                ("7", True, [("● Marketing Campaign", "9:00 AM – 5:00 PM<br>(30%)", "g")]),
+                ("8", True, [("● Marketing Campaign", "9:00 AM – 5:00 PM<br>(30%)", "g")]),
+                ("9", True, [("● Website Revamp", "9:00 AM – 5:00 PM<br>(50%)", "g"), ("● Team Meeting", "10:00 AM – 11:00 AM", "b")]),
+                ("10", True, [("● Website Revamp", "9:00 AM – 5:00 PM<br>(50%)", "g")]),
+                ("11", True, []),
+            ],
+            [
+                ("12", True, []),
+                ("13", True, [("● IT Infrastructure", "9:00 AM – 5:00 PM<br>(20%)", "g")]),
+                ("14", True, [("● IT Infrastructure", "9:00 AM – 5:00 PM<br>(20%)", "g")]),
+                ("15", True, [("● IT Infrastructure", "9:00 AM – 5:00 PM<br>(20%)", "g"), ("● Documentation Review", "2:00 PM – 3:00 PM", "b")]),
+                ("16", True, [("● IT Infrastructure", "9:00 AM – 5:00 PM<br>(20%)", "g")]),
+                ("17", True, [("● IT Infrastructure", "9:00 AM – 5:00 PM<br>(20%)", "g")]),
+                ("18", True, []),
+            ],
+            [
+                ("19", True, []),
+                ("20", True, [("📅 Annual Leave", "(Full Day)", "r")]),
+                ("21", True, [("📅 Annual Leave", "(Full Day)", "r")]),
+                ("22", True, [("📅 Annual Leave", "(Full Day)", "r")]),
+                ("23", True, []),
+                ("24", True, [("● Website Revamp", "9:00 AM – 5:00 PM<br>(50%)", "g")]),
+                ("25", True, []),
+            ],
+            [
+                ("26", True, []),
+                ("27", True, [("● Website Revamp", "9:00 AM – 5:00 PM<br>(50%)", "g")]),
+                ("28", True, [("● Website Revamp", "9:00 AM – 5:00 PM<br>(50%)", "g")]),
+                ("29", True, [("● Website Revamp", "9:00 AM – 5:00 PM<br>(50%)", "g")]),
+                ("30", True, [("● Website Revamp", "9:00 AM – 5:00 PM<br>(50%)", "g")]),
+                ("31", True, [("● Website Revamp", "9:00 AM – 5:00 PM<br>(50%)", "g")]),
+                ("1", False, []),
+            ],
+        ]
 
         ev_box_tones = {
             "g": ("#DCFCE7", "#065F46"),
@@ -4793,7 +4697,7 @@ elif page == "Calendar":
         for wk in cal_weeks:
             row_cells = ""
             for d_str, in_m, evs in wk:
-                is_sel = in_m and d_str == str(st.session_state.get("cal_selected_date", date.today()).day) and _month.month == st.session_state.get("cal_selected_date", date.today()).month
+                is_sel = in_m and d_str == "9"
                 bdr = "2px solid #2563EB" if is_sel else "1px solid #EDF2F7"
                 bg = "#EFF6FF" if is_sel else ("#FFFFFF" if in_m else "#F8FAFC")
                 d_col = "#0F172A" if in_m else "#94A3B8"
@@ -5072,7 +4976,7 @@ elif page == "Reports":
         )
     with rh_f1:
         st.markdown("<div style='font-size:11px;font-weight:600;color:#475569;margin-bottom:2px'>Date Range</div>", unsafe_allow_html=True)
-        rep_date_range = st.date_input("Date Range", (date.today() - timedelta(days=30), date.today() + timedelta(days=60)), key="rep_top_dates", label_visibility="collapsed")
+        st.date_input("Date Range", (date(2024, 4, 24), date(2024, 6, 30)), key="rep_top_dates", label_visibility="collapsed")
     with rh_f2:
         st.markdown("<div style='font-size:11px;font-weight:600;color:#475569;margin-bottom:2px'>Project</div>", unsafe_allow_html=True)
         rep_proj_f = st.selectbox("Project", ["All Projects"] + projects_list, key="rep_top_proj", label_visibility="collapsed")
@@ -5090,18 +4994,6 @@ elif page == "Reports":
             use_container_width=True,
             key="rep_top_export_btn",
         )
-
-    if isinstance(rep_date_range, (tuple, list)) and len(rep_date_range) == 2:
-        _rep_lo, _rep_hi = sorted(rep_date_range)
-        _pstart = pd.to_datetime(P.get("start_date", pd.Series(index=P.index,dtype=str)), errors="coerce").dt.date
-        _pend = pd.to_datetime(P.get("end_date", pd.Series(index=P.index,dtype=str)), errors="coerce").dt.date
-        P = P[(_pstart.isna() | (_pstart <= _rep_hi)) & (_pend.isna() | (_pend >= _rep_lo))].copy()
-        _tstart = pd.to_datetime(T.get("start_date", pd.Series(index=T.index,dtype=str)), errors="coerce").dt.date
-        _tend = pd.to_datetime(T.get("due_date", pd.Series(index=T.index,dtype=str)), errors="coerce").dt.date
-        T = T[(_tstart.isna() | (_tstart <= _rep_hi)) & (_tend.isna() | (_tend >= _rep_lo))].copy()
-        _mstart = pd.to_datetime(M.get("start_date", pd.Series(index=M.index,dtype=str)), errors="coerce").dt.date
-        _mend = pd.to_datetime(M.get("due_date", pd.Series(index=M.index,dtype=str)), errors="coerce").dt.date
-        M = M[(_mstart.isna() | (_mstart <= _rep_hi)) & (_mend.isna() | (_mend >= _rep_lo))].copy()
 
     st.write("")
     # --- 7-TAB TILE NAVIGATION BAR (No Radio Buttons) ---
@@ -5638,13 +5530,13 @@ elif page == "Reports":
     elif active_rtab == "Resources":
         rk1, rk2, rk3, rk4 = st.columns(4)
         with rk1:
-            kpi_card_mockup("Total Resources", str(len(R)), icon_html="👥", icon_bg="#DBEAFE", icon_fg="#1473E6")
+            kpi_card_mockup("Total Resources", "24", icon_html="👥", icon_bg="#DBEAFE", icon_fg="#1473E6")
         with rk2:
-            kpi_card_mockup("Available", str(int(R["status"].astype(str).str.lower().isin(["available", "active"]).sum()) if not R.empty else 0), sub_text=f"{(int(R["status"].astype(str).str.lower().isin(["available", "active"]).sum())/len(R)):.0%}" if len(R) else "0%", icon_html="👤", icon_bg="#D1FAE5", icon_fg="#00875A")
+            kpi_card_mockup("Available", "18", sub_text="75%", icon_html="👤", icon_bg="#D1FAE5", icon_fg="#00875A")
         with rk3:
-            kpi_card_mockup("Partial Allocation", str(int((R["status"].astype(str).str.lower()=="partial").sum()) if not R.empty else 0), icon_html="◔", icon_bg="#FEF3C7", icon_fg="#F28C00")
+            kpi_card_mockup("Partial Allocation", "4", sub_text="17%", icon_html="◔", icon_bg="#FEF3C7", icon_fg="#F28C00")
         with rk4:
-            kpi_card_mockup("On Leave", str(int((R["status"].astype(str).str.lower()=="on leave").sum()) if not R.empty else 0), icon_html="👤", icon_bg="#FEE2E2", icon_fg="#EF4444")
+            kpi_card_mockup("On Leave", "2", sub_text="8%", icon_html="👤", icon_bg="#FEE2E2", icon_fg="#EF4444")
 
         st.write("")
         rr1_1, rr1_2, rr1_3 = st.columns(3)
@@ -6198,11 +6090,16 @@ elif page == "Reports":
             with ml_c5:
                 st.selectbox("Team", ["All Teams"] + teams_list, key="rep_ms_tm", label_visibility="collapsed")
 
-            mlist_rows = []
-            if not M.empty:
-                for _, _mrow in M.iterrows():
-                    _completion = _as_iso_date(_mrow.get("completion_date")) or "—"
-                    mlist_rows.append((str(_mrow.get("name") or ""), str(_mrow.get("project") or ""), str(_mrow.get("team") or ""), str(_mrow.get("status") or "Not Started"), fmt_date(_as_iso_date(_mrow.get("start_date"))), fmt_date(_as_iso_date(_mrow.get("due_date"))), fmt_date(_completion) if _completion != "—" else "—", str(_mrow.get("dependency") or "—"), str(_mrow.get("notes") or "")))
+            mlist_rows = [
+                ("UI/UX Design Complete", "Website Revamp", "Design", "Completed", "Apr 1, 2024", "Apr 30, 2024", "Apr 28, 2024", "—", "Design phase completed."),
+                ("Campaign Launch", "Marketing Campaign", "Marketing", "In Progress", "Apr 15, 2024", "May 20, 2024", "—", "Content Review", "Awaiting final assets."),
+                ("Infrastructure Setup", "IT Infrastructure Upgrade", "IT", "In Progress", "May 1, 2024", "May 15, 2024", "—", "Requirements Gathering", "Environment setup ongoing."),
+                ("Sustainability Plan", "Sustainability Initiative", "Operations", "Not Started", "May 5, 2024", "May 25, 2024", "—", "—", "Pending stakeholder approval."),
+                ("Process Documentation", "Internal Operations", "Operations", "Not Started", "May 10, 2024", "May 30, 2024", "—", "Infrastructure Setup", "Template to be finalized."),
+                ("QA Testing", "Website Revamp", "IT", "Overdue", "Apr 1, 2024", "Apr 20, 2024", "—", "Development Complete", "Testing issues to resolve."),
+                ("Training Materials", "Marketing Campaign", "Marketing", "Overdue", "Apr 20, 2024", "May 5, 2024", "—", "Content Review", "Update with latest product info."),
+                ("System Configuration", "IT Infrastructure Upgrade", "IT", "Completed", "Mar 15, 2024", "Apr 10, 2024", "Apr 9, 2024", "—", "Configuration completed successfully."),
+            ]
             if ml_q:
                 mlist_rows = [r for r in mlist_rows if ml_q.lower() in r[0].lower() or ml_q.lower() in r[1].lower()]
             if ml_st != "All Statuses":
@@ -6498,7 +6395,7 @@ elif page == "Reports":
                 with fl3:
                     cr_f_stat = st.selectbox("Filter Status", ["All Statuses", "On Track", "At Risk", "Delayed"], key="cr_flt_stat", label_visibility="collapsed")
                 with fl4:
-                    cr_date_range = st.date_input("Filter Date Range", (date.today() - timedelta(days=30), date.today() + timedelta(days=60)), key="cr_flt_dates", label_visibility="collapsed")
+                    st.date_input("Filter Date Range", (date(2024, 4, 24), date(2024, 6, 30)), key="cr_flt_dates", label_visibility="collapsed")
 
                 st.write("")
                 act_b1, act_b2, _ = st.columns([0.95, 0.7, 2.6])
@@ -6547,22 +6444,15 @@ elif page == "Reports":
 
         st.write("")
         # --- DATASET FOR CUSTOM REPORT PREVIEW & TABLE VIEW ---
-        _custom_tasks = T.copy()
-        if isinstance(cr_date_range, (tuple, list)) and len(cr_date_range) == 2:
-            _cr_lo, _cr_hi = sorted(cr_date_range)
-            _cr_sd = pd.to_datetime(_custom_tasks.get("start_date", pd.Series(index=_custom_tasks.index,dtype=str)), errors="coerce").dt.date
-            _cr_ed = pd.to_datetime(_custom_tasks.get("due_date", pd.Series(index=_custom_tasks.index,dtype=str)), errors="coerce").dt.date
-            _custom_tasks = _custom_tasks[(_cr_sd.isna() | (_cr_sd <= _cr_hi)) & (_cr_ed.isna() | (_cr_ed >= _cr_lo))].copy()
-        custom_proj_df = pd.DataFrame([
-            {"Project Name": pr.get("name", ""), "Project Status": pr.get("status", "Not Started"),
-             "Total Tasks": int((_custom_tasks["project_id"] == pr.get("id")).sum()) if not _custom_tasks.empty else 0,
-             "Completed": int(((_custom_tasks["project_id"] == pr.get("id")) & (_custom_tasks["status"].astype(str).str.lower() == "completed")).sum()) if not _custom_tasks.empty else 0,
-             "In Progress": int(((_custom_tasks["project_id"] == pr.get("id")) & (_custom_tasks["status"].astype(str).str.lower() == "in progress")).sum()) if not _custom_tasks.empty else 0,
-             "Not Started": int(((_custom_tasks["project_id"] == pr.get("id")) & (_custom_tasks["status"].astype(str).str.lower() == "not started")).sum()) if not _custom_tasks.empty else 0,
-             "Overdue": int(((_custom_tasks["project_id"] == pr.get("id")) & (pd.to_datetime(_custom_tasks["due_date"], errors="coerce").dt.date < date.today()) & (_custom_tasks["status"].astype(str).str.lower() != "completed")).sum()) if not _custom_tasks.empty else 0,
-             "Total Milestones": int((M["project_id"] == pr.get("id")).sum()) if not M.empty else 0,
-             "Team Members": int((R["team"] == pr.get("team")).sum()) if not R.empty else 0}
-            for _, pr in P.iterrows()])
+        custom_proj_df = pd.DataFrame(
+            [
+                {"Project Name": "Website Revamp", "Project Status": "On Track", "Total Tasks": 40, "Completed": 18, "In Progress": 12, "Not Started": 6, "Overdue": 4, "Total Milestones": 8, "Team Members": 8},
+                {"Project Name": "Marketing Campaign", "Project Status": "At Risk", "Total Tasks": 36, "Completed": 14, "In Progress": 10, "Not Started": 8, "Overdue": 4, "Total Milestones": 6, "Team Members": 6},
+                {"Project Name": "IT Infrastructure Upgrade", "Project Status": "At Risk", "Total Tasks": 28, "Completed": 12, "In Progress": 8, "Not Started": 6, "Overdue": 2, "Total Milestones": 5, "Team Members": 5},
+                {"Project Name": "Sustainability Initiative", "Project Status": "Delayed", "Total Tasks": 22, "Completed": 10, "In Progress": 6, "Not Started": 4, "Overdue": 2, "Total Milestones": 4, "Team Members": 4},
+                {"Project Name": "Internal Operations", "Project Status": "On Track", "Total Tasks": 18, "Completed": 8, "In Progress": 6, "Not Started": 4, "Overdue": 0, "Total Milestones": 2, "Team Members": 3},
+            ]
+        )
         if cr_f_proj != "All Projects" and cr_f_proj in custom_proj_df["Project Name"].values:
             custom_proj_df = custom_proj_df[custom_proj_df["Project Name"] == cr_f_proj].copy()
         if cr_f_stat != "All Statuses":
@@ -6873,56 +6763,6 @@ elif page == "Settings":
         unsafe_allow_html=True,
     )
 
-    # Workbook is the sole operational source; visual styling and existing settings layout remain unchanged.
-    with st.container(border=True):
-        st.markdown("**Portfolio Excel Source**")
-        st.caption("Import or refresh all project, task, subtask, owner, date, status, priority, and detail fields from one Portfolio sheet.")
-        _src_col, _clear_col = st.columns([2, 1])
-        with _src_col:
-            _source_xlsx = st.file_uploader("Upload Portfolio workbook", type=["xlsx", "xlsm"], key="settings_portfolio_excel_source")
-            if _source_xlsx is not None and st.button("Import / Refresh Data", type="primary", key="settings_import_excel_source"):
-                try:
-                    _import_summary = import_portfolio_excel(_source_xlsx)
-                    st.success(f"Imported {_import_summary['projects']} projects, {_import_summary['tasks']} task/subtask rows, and {_import_summary['owners']} owners.")
-                    st.rerun()
-                except Exception as _import_exc:
-                    st.error(f"Import failed: {_import_exc}")
-        with _clear_col:
-            if st.button("🗑 Clear Database Data", key="settings_open_clear_data", use_container_width=True):
-                st.session_state["show_clear_data_modal"] = True
-            if st.session_state.get("show_clear_data_modal"):
-                @st.dialog("Clear Database Data", width="large")
-                def _clear_data_selection_modal():
-                    st.markdown("<div style='display:flex;align-items:center;gap:10px;margin-bottom:8px'><span style='display:inline-flex;width:34px;height:34px;border-radius:50%;align-items:center;justify-content:center;background:#FEE2E2;color:#B91C1C;font-size:18px'>🗑</span><span style='font-size:19px;font-weight:800;color:#0F172A'>Clear Database Data</span></div>", unsafe_allow_html=True)
-                    st.warning("Select the data categories to permanently clear from the local database and shared snapshot. App preferences are retained.")
-                    _clear_projects = st.checkbox("Projects", value=True, key="clear_sel_projects")
-                    _clear_tasks = st.checkbox("Tasks and subtasks", value=True, key="clear_sel_tasks")
-                    _clear_resources = st.checkbox("Resources / owners", value=True, key="clear_sel_resources")
-                    _clear_milestones = st.checkbox("Milestones", value=True, key="clear_sel_milestones")
-                    _clear_events = st.checkbox("Calendar events", value=True, key="clear_sel_events")
-                    _clear_reports = st.checkbox("Saved reports", value=True, key="clear_sel_reports")
-                    _clear_audit = st.checkbox("Audit history", value=False, key="clear_sel_audit")
-                    _ca, _cb = st.columns(2)
-                    with _ca:
-                        if st.button("Cancel", key="clear_data_cancel", use_container_width=True):
-                            st.session_state.pop("show_clear_data_modal", None)
-                            st.rerun()
-                    with _cb:
-                        if st.button("Confirm Clear", type="primary", key="clear_data_confirm", use_container_width=True):
-                            _chosen = []
-                            if _clear_projects: _chosen.append("projects")
-                            if _clear_tasks: _chosen.append("tasks")
-                            if _clear_resources: _chosen.append("resources")
-                            if _clear_milestones: _chosen.append("milestones")
-                            if _clear_events: _chosen.append("calendar_events")
-                            if _clear_reports: _chosen.append("saved_reports")
-                            if _clear_audit: _chosen.append("audit_log")
-                            clear_operational_data(_chosen)
-                            st.session_state.pop("show_clear_data_modal", None)
-                            st.success("Selected database data cleared.")
-                            st.rerun()
-                _clear_data_selection_modal()
-
     # --- ROW 1: WORKSPACE SETTINGS (Left) | USER MANAGEMENT (Right) ---
     s_r1_l, s_r1_r = st.columns([1.05, 1.35])
 
@@ -7010,15 +6850,16 @@ elif page == "Settings":
                 st.session_state.settings_modal = "add_user"
                 st.rerun()
 
-        um_users = []
-        if not R.empty:
-            for _, _ur in R.iterrows():
-                _nm = str(_ur.get("name", "")); _email = str(_ur.get("email", ""))
-                _role = str(_ur.get("role", "Team Member")); _team = str(_ur.get("team", ""))
-                _status = str(_ur.get("status", "Available"))
-                _initials = "".join(part[0] for part in _nm.split()[:2]).upper() or "U"
-                um_users.append((_initials, "#0284C7", _nm, _email, _role, _team, _status))
-
+        um_users = [
+            ("JM", "#0284C7", "James Miller", "james.miller@hpe.com", "Admin", "IT", "Active"),
+            ("SK", "#0284C7", "Sarah Kim", "sarah.kim@hpe.com", "Project Manager", "Design", "Active"),
+            ("AL", "#0F172A", "Alice Morgan", "alice.morgan@hpe.com", "Team Member", "Marketing", "Active"),
+            ("RJ", "#0F172A", "Ryan Cruz", "ryan.cruz@hpe.com", "Team Member", "Operations", "Active"),
+            ("MT", "#0284C7", "Michael Tan", "michael.tan@hpe.com", "Project Manager", "IT", "Active"),
+            ("DP", "#1D4ED8", "Daniel Perez", "daniel.perez@hpe.com", "Team Member", "Operations", "Active"),
+            ("ER", "#EF4444", "Ella Ramirez", "ella.ramirez@hpe.com", "Team Member", "Design", "Inactive"),
+            ("CP", "#0284C7", "Chris Padilla", "chris.padilla@hpe.com", "Team Member", "IT", "Active"),
+        ]
         if um_q:
             um_users = [u for u in um_users if um_q.lower() in u[2].lower() or um_q.lower() in u[3].lower() or um_q.lower() in u[4].lower()]
 
