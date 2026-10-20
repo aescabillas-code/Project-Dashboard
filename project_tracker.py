@@ -3414,9 +3414,9 @@ elif page == "Task List":
                 with rc[11]:
                     b_v, b_e = st.columns(2)
                     with b_v:
-                        if st.button("👁",key=f"tl_v_{project_id}_{wbs_id}",help="View Task"):pass
-                            st.session_state.task_modal = ("view", t_item)
-                            st.rerun()
+                    if st.button("👁",key=f"tl_v_{project_id}_{wbs_id}",help="View Task"):pass
+                        st.session_state.task_modal = ("view", t_item)
+                        st.rerun()
                     with b_e:
                         if st.button("🗑", key=f"tl_e_{wbs_id}", help="Delete Task"):
                             st.session_state["confirm_delete_task"] = {"task_id": t_item.get("id"), "name": t_item.get("name", ""), "wbs": wbs_id}
