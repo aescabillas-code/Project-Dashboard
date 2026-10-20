@@ -136,15 +136,7 @@ def _restore_snapshot() -> bool:
 
 
 def _clear_mock_records(except_table: str = "") -> None:
-    """Remove seeded mock records when the first real project/task/resource is created."""
-    if st.session_state.get("_vektor_has_real_data"):
-        return
-    tables = ("projects", "tasks", "resources", "milestones", "saved_reports")
-    with conn() as c:
-        for table in tables:
-            if table != except_table:
-                c.execute(f"DELETE FROM {table}")
-        c.commit()
+    """Compatibility no-op: the app no longer creates sample entity records."""
     st.session_state["_vektor_has_real_data"] = True
 
 
@@ -305,198 +297,45 @@ def init_db(force_reset: bool = False) -> None:
             """
         )
 
-        if c.execute("SELECT COUNT(*) FROM projects").fetchone()[0] == 0:
-            # Exact 12 projects from the uploaded mockups (List View order #1 to #12)
-            ps = [
-                (
-                    1, "Website Revamp", "Alice Morgan", "Marketing", "Web Development",
-                    "On Track", "High", "2024-04-24", "2024-06-30", 70, 45, 14, 20,
-                    "Web,Marketing,Corporate", "#00875A", "Redesign corporate website",
-                    "Redesign and launch the corporate website with improved user experience.", "Healthy"
-                ),
-                (
-                    2, "E-Commerce Platform", "Brian Taylor", "IT", "IT & Development",
-                    "In Progress", "High", "2024-03-15", "2024-06-15", 50, 30, 12, 24,
-                    "IT,Development", "#1473E6", "Build new e-commerce platform",
-                    "Build new e-commerce platform to expand digital presence.", "Healthy"
-                ),
-                (
-                    3, "Mobile App Development", "Emily Rodriguez", "Design", "Mobile Development",
-                    "At Risk", "Medium", "2024-04-01", "2024-08-30", 30, 90, 8, 26,
-                    "Mobile,Customer", "#7C3AED", "Develop customer mobile app",
-                    "Develop customer mobile application for iOS and Android.", "At Risk"
-                ),
-                (
-                    4, "Data Migration", "Carlos Diaz", "IT", "Cloud & Data",
-                    "On Track", "High", "2024-05-01", "2024-07-31", 80, 60, 18, 22,
-                    "Data,Cloud", "#F28C00", "Migrate legacy data to cloud",
-                    "Migrate legacy data to cloud infrastructure with minimal downtime.", "Healthy"
-                ),
-                (
-                    5, "IT Infrastructure Upgrade", "Dana Scott", "IT", "Infrastructure",
-                    "At Risk", "High", "2024-05-20", "2024-09-15", 20, 110, 6, 28,
-                    "Infrastructure,IT", "#00875A", "Upgrade servers and network",
-                    "Upgrade servers and network infrastructure to support business growth.", "At Risk"
-                ),
-                (
-                    6, "Security Enhancement", "Mark Wilson", "IT", "Security & Compliance",
-                    "On Track", "Medium", "2024-04-10", "2024-07-10", 65, 50, 13, 20,
-                    "Security,Compliance", "#00875A", "Implement security measures",
-                    "Implement security measures to strengthen system protection and compliance.", "Healthy"
-                ),
-                (
-                    7, "Customer Portal", "Sarah Kim", "Marketing", "Web Development",
-                    "On Track", "High", "2024-03-01", "2024-06-30", 90, 45, 18, 20,
-                    "Customer,Web", "#7C3AED", "Enhance customer portal",
-                    "Enhance customer portal with new features and improved user experience.", "Healthy"
-                ),
-                (
-                    8, "AI Integration", "Kevin Lee", "IT", "AI & Innovation",
-                    "Not Started", "Medium", "2024-05-05", "2024-10-31", 15, 140, 3, 18,
-                    "AI,Innovation", "#EC4899", "Integrate AI capabilities",
-                    "Integrate AI capabilities to improve business processes and customer support.", "Healthy"
-                ),
-                (
-                    9, "Process Automation", "Jason Tan", "Operations", "Operations",
-                    "In Progress", "Low", "2024-06-01", "2024-09-30", 40, 120, 8, 20,
-                    "Automation,Operations", "#1473E6", "Automate internal processes",
-                    "Automate internal processes to increase efficiency and reduce manual work.", "Healthy"
-                ),
-                (
-                    10, "Training Program", "Nicole Reyes", "Operations", "HR & Training",
-                    "In Progress", "Low", "2024-04-15", "2024-08-15", 55, 75, 11, 20,
-                    "HR,Training", "#DB2777", "Employee training and upskilling",
-                    "Employee training and upskilling program for new systems.", "Healthy"
-                ),
-                (
-                    11, "Vendor Management System", "David Park", "Operations", "Procurement",
-                    "Not Started", "Medium", "2024-05-10", "2024-11-30", 10, 170, 2, 18,
-                    "Procurement,IT", "#0284C7", "Implement vendor management",
-                    "Implement vendor management system to streamline procurement.", "At Risk"
-                ),
-                (
-                    12, "Sustainability Initiative", "Laura Torres", "Operations", "Sustainability",
-                    "Not Started", "Low", "2024-06-15", "2024-12-31", 5, 200, 1, 24,
-                    "Sustainability,ESG", "#00875A", "Implement green IT practices",
-                    "Implement green IT practices and sustainability programs.", "Critical"
-                ),
-            ]
-            c.executemany(
-                """
-                INSERT INTO projects(
-                    id,name,owner,team,category,status,priority,start_date,end_date,
-                    progress,days_left,tasks_done,tasks_total,tags,bar_color,short_desc,description,health
-                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-                """,
-                ps,
-            )
-
-            people = [
-                "Alice Morgan", "Brian Taylor", "Emily Rodriguez", "Carlos Diaz", "Dana Scott",
-                "Mark Wilson", "Sarah Kim", "Kevin Lee", "Jason Tan", "Nicole Reyes",
-                "David Park", "Laura Torres", "James Miller", "Ryan Cruz", "Michael Tan",
-                "Daniel Perez", "Ella Ramirez", "Chris Padilla", "Anna Reyes", "Kevin Santos",
-                "Lisa Chan", "David Lim", "Maria Santos", "John Cruz",
-            ]
-            teams_list_seed = [
-                "Marketing", "IT", "Design", "IT", "IT",
-                "IT", "Marketing", "IT", "Operations", "Operations",
-                "Operations", "Operations", "IT", "Operations", "IT",
-                "Operations", "Design", "IT", "Marketing", "Operations",
-                "Design", "IT", "Marketing", "Others",
-            ]
-            for i, (n, t) in enumerate(zip(people, teams_list_seed)):
-                status = "On Leave" if i in (14, 20) else ("Partial" if i in (2, 6, 11, 17) else "Available")
-                role = "Admin" if i in (0, 12) else ("Project Manager" if i < 12 else "Team Member")
-                cap = 0 if status == "On Leave" else (50 if status == "Partial" else 100)
-                c.execute(
-                    "INSERT INTO resources(name,email,team,role,status,capacity,notes) VALUES(?,?,?,?,?,?,?)",
-                    (n, n.lower().replace(" ", ".") + "@vektor.example", t, role, status, cap, ""),
-                )
-
-            tasks_seed = [
-                ("UI/UX Design Complete", 1, "Design", "Completed", "High", "2024-04-01", "2024-04-30", "Alice Morgan", 100, "", "Design phase completed."),
-                ("Homepage Development", 1, "IT", "In Progress", "High", "2024-04-10", "2024-05-15", "James Miller", 65, "UI/UX Design Complete", "Frontend responsive build."),
-                ("Content Review", 7, "Marketing", "In Progress", "Medium", "2024-04-15", "2024-05-20", "Sarah Kim", 55, "", "Copywriting and creative review."),
-                ("Infrastructure Setup", 5, "IT", "Not Started", "High", "2024-05-01", "2024-05-15", "Dana Scott", 0, "Requirements Gathering", "Provisioning cluster nodes."),
-                ("Sustainability Plan", 12, "Operations", "Completed", "Medium", "2024-05-05", "2024-05-30", "Laura Torres", 100, "", "Charter approved by leadership."),
-                ("Process Documentation", 9, "Operations", "In Progress", "Low", "2024-05-10", "2024-06-20", "Jason Tan", 50, "", "Mapping core operational workflows."),
-                ("Training Materials", 10, "Operations", "Not Started", "Medium", "2024-05-20", "2024-06-30", "Nicole Reyes", 0, "Content Review", "Sales enablement deck."),
-                ("QA Testing", 1, "IT", "In Progress", "High", "2024-05-25", "2024-06-25", "Chris Padilla", 35, "Homepage Development", "Cross-browser regression testing."),
-                ("API Integration", 2, "IT", "In Progress", "High", "2024-04-12", "2024-05-25", "Brian Taylor", 60, "", "Payment gateway & cart API."),
-                ("UI Development", 3, "Design", "In Progress", "Medium", "2024-04-18", "2024-06-10", "Emily Rodriguez", 40, "", "Mobile screens implementation."),
-                ("Data Mapping", 4, "IT", "Completed", "Low", "2024-04-01", "2024-04-25", "Carlos Diaz", 100, "", "Schema validation finished."),
-            ]
-            c.executemany(
-                "INSERT INTO tasks(name,project_id,team,status,priority,start_date,due_date,assignee,progress,dependency,notes) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
-                tasks_seed,
-            )
-
-            ms_seed = [
-                ("Project Kick-off", 1, "Marketing", "Completed", "2024-04-20", "2024-04-24", "2024-04-24", "", "Initial kick-off complete."),
-                ("Requirements Finalized", 1, "Marketing", "Completed", "2024-04-25", "2024-05-05", "2024-05-05", "Project Kick-off", "Scope signed off."),
-                ("Design Sign-off", 1, "Design", "Completed", "2024-04-10", "2024-04-30", "2024-04-30", "Requirements Finalized", "Design phase completed."),
-                ("Development Complete", 1, "IT", "In Progress", "2024-05-01", "2024-05-31", "", "Design Sign-off", "Core build underway."),
-                ("UAT Completion", 1, "IT", "Not Started", "2024-06-01", "2024-06-15", "", "Development Complete", "Pending staging build."),
-                ("Go-Live", 1, "IT", "Not Started", "2024-06-16", "2024-06-30", "", "UAT Completion", "Production launch."),
-                ("MVP Release", 3, "Design", "At Risk", "2024-04-15", "2024-05-15", "", "UI Development", "Awaiting final assets."),
-                ("Data Migration Cutover", 4, "IT", "On Track", "2024-05-10", "2024-06-15", "", "Data Mapping", "Environment setup ongoing."),
-                ("Infrastructure Go-Live", 5, "IT", "On Track", "2024-06-01", "2024-07-01", "", "Infrastructure Setup", "Scheduled cutover."),
-            ]
-            c.executemany(
-                "INSERT INTO milestones(name,project_id,team,status,start_date,due_date,completion_date,dependency,notes) VALUES(?,?,?,?,?,?,?,?,?)",
-                ms_seed,
-            )
-
-            default_settings = [
-                ("workspace_name", "Vektor"),
-                ("workspace_description", "Project management workspace for planning, tracking, and delivery."),
-                ("theme", "HPE Green"),
-                ("language", "English"),
-                ("date_format", "MMM DD, YYYY"),
-                ("default_landing", "Overview"),
-                ("default_project_status", "On Track"),
-                ("project_template", "Standard Project"),
-                ("auto_project_id", "true"),
-                ("require_project_desc", "true"),
-                ("allow_project_attachments", "true"),
-                ("project_archiving", "false"),
-                ("default_task_status", "Not Started"),
-                ("default_task_priority", "Medium"),
-                ("task_dependencies", "true"),
-                ("allow_subtasks", "true"),
-                ("recurring_tasks", "false"),
-                ("require_assignee", "true"),
-                ("task_attachments", "true"),
-                ("default_milestone_status", "Not Started"),
-                ("milestones_enabled", "true"),
-                ("milestones_require_due", "true"),
-                ("milestone_dependencies", "true"),
-                ("milestone_notifications", "true"),
-                ("notification_frequency", "Daily digest"),
-                ("integration_Microsoft 365", "true"),
-                ("integration_Slack", "true"),
-                ("integration_Microsoft Teams", "false"),
-                ("integration_OneDrive", "false"),
-                ("audit_logs", "true"),
-                ("data_export", "true"),
-                ("automatic_backups", "true"),
-                ("maintenance_mode", "false"),
-                ("session_timeout", "8 hours"),
-            ]
-            c.executemany("INSERT OR IGNORE INTO settings(key,value) VALUES(?,?)", default_settings)
-
-            if c.execute("SELECT COUNT(*) FROM saved_reports").fetchone()[0] == 0:
-                saved_seed = [
-                    ("Monthly Project Summary", "Project Report", json.dumps({"type": "Project Report", "group": "Status", "metrics": ["Project Status", "Progress"], "viz": "Bar Chart"}), "2024-04-20", "Alice Morgan"),
-                    ("Q2 Resource Allocation", "Resource Report", json.dumps({"type": "Resource Report", "group": "Team", "metrics": ["Team Members"], "viz": "Column Chart"}), "2024-04-18", "Sarah Kim"),
-                    ("Overdue Tasks & Milestones", "Task Report", json.dumps({"type": "Task Report", "group": "Priority", "metrics": ["Task Status", "Priority"], "viz": "Pie Chart"}), "2024-04-15", "Dana Scott"),
-                ]
-                c.executemany(
-                    "INSERT INTO saved_reports(name,report_type,config,last_generated,created_by) VALUES(?,?,?,?,?)",
-                    saved_seed,
-                )
-            c.commit()
+        # No sample projects, tasks, resources, milestones, or reports are created.
+        default_settings = [
+            ("workspace_name", "Vektor"),
+            ("workspace_description", "Project management workspace for planning, tracking, and delivery."),
+            ("theme", "HPE Green"),
+            ("language", "English"),
+            ("date_format", "MMM DD, YYYY"),
+            ("default_landing", "Overview"),
+            ("default_project_status", "On Track"),
+            ("project_template", "Standard Project"),
+            ("auto_project_id", "true"),
+            ("require_project_desc", "true"),
+            ("allow_project_attachments", "true"),
+            ("project_archiving", "false"),
+            ("default_task_status", "Not Started"),
+            ("default_task_priority", "Medium"),
+            ("task_dependencies", "true"),
+            ("allow_subtasks", "true"),
+            ("recurring_tasks", "false"),
+            ("require_assignee", "true"),
+            ("task_attachments", "true"),
+            ("default_milestone_status", "Not Started"),
+            ("milestones_enabled", "true"),
+            ("milestones_require_due", "true"),
+            ("milestone_dependencies", "true"),
+            ("milestone_notifications", "true"),
+            ("notification_frequency", "Daily digest"),
+            ("integration_Microsoft 365", "true"),
+            ("integration_Slack", "true"),
+            ("integration_Microsoft Teams", "false"),
+            ("integration_OneDrive", "false"),
+            ("audit_logs", "true"),
+            ("data_export", "true"),
+            ("automatic_backups", "true"),
+            ("maintenance_mode", "false"),
+            ("session_timeout", "8 hours"),
+        ]
+        c.executemany("INSERT OR IGNORE INTO settings(key,value) VALUES(?,?)", default_settings)
+        c.commit()
 
 
 def get_setting(k: str, default: str = "") -> str:
@@ -894,6 +733,9 @@ div[data-testid="stDialog"] > div > div {{
     border-radius: 14px !important;
     padding: 0 !important;
 }}
+/* Hide Streamlit's duplicate dialog caption; retain the designed icon/title inside each modal. */
+div[data-testid="stDialog"] [data-testid="stDialogHeader"] > div:first-child {{ display: none !important; }}
+div[data-testid="stDialog"] [data-testid="stDialogHeader"] {{ min-height: 0 !important; padding: 0 !important; }}
 </style>
 """,
     unsafe_allow_html=True,
@@ -3386,8 +3228,8 @@ elif page == "Task List":
                             st.session_state.task_modal = ("view", t_item)
                             st.rerun()
                     with b_e:
-                        if st.button("❐", key=f"tl_e_{wbs_id}", help="Edit Task"):
-                            st.session_state.task_modal = ("edit", t_item)
+                        if st.button("🗑", key=f"tl_e_{wbs_id}", help="Delete Task"):
+                            st.session_state["confirm_delete_task"] = t_item
                             st.rerun()
                 st.markdown("<hr style='margin:4px 0;border-color:#F1F5F9'>", unsafe_allow_html=True)
 
@@ -3414,6 +3256,24 @@ elif page == "Task List":
         )
 
     # Trigger Task Modal if active
+    if st.session_state.get("confirm_delete_task"):
+        delete_rec = st.session_state["confirm_delete_task"]
+        st.warning(f"Delete task '{delete_rec.get('name', 'this task')}'? This cannot be undone.")
+        dc1, dc2 = st.columns(2)
+        with dc1:
+            if st.button("Cancel", key="tl_delete_cancel", use_container_width=True):
+                st.session_state.pop("confirm_delete_task", None)
+                st.rerun()
+        with dc2:
+            if st.button("Delete Task", type="primary", key="tl_delete_confirm", use_container_width=True):
+                task_id = delete_rec.get("id")
+                if task_id is not None:
+                    sql("DELETE FROM tasks WHERE id=?", (task_id,))
+                st.session_state.pop("confirm_delete_task", None)
+                st.session_state.pop("task_modal", None)
+                st.success("Task deleted.")
+                st.rerun()
+
     if "task_modal" in st.session_state:
         tm_type, tm_payload = st.session_state.task_modal
         if tm_type == "add":
@@ -6762,6 +6622,31 @@ elif page == "Settings":
         ),
         unsafe_allow_html=True,
     )
+
+    # Clear Data control: intentionally separate from ordinary settings and requires confirmation.
+    with st.container(border=True):
+        st.markdown("**Data Management**")
+        st.caption("Clear project, task, resource, milestone, and saved-report records. Workspace preferences are retained.")
+        if st.button("Clear All App Data", key="settings_clear_data", type="secondary"):
+            st.session_state["confirm_clear_app_data"] = True
+        if st.session_state.get("confirm_clear_app_data"):
+            st.warning("This permanently deletes all projects, tasks, resources, milestones, saved reports, and audit history from the app database and shared snapshot.")
+            clr1, clr2 = st.columns(2)
+            with clr1:
+                if st.button("Cancel", key="settings_clear_cancel", use_container_width=True):
+                    st.session_state.pop("confirm_clear_app_data", None)
+                    st.rerun()
+            with clr2:
+                if st.button("Confirm Clear Data", key="settings_clear_confirm", type="primary", use_container_width=True):
+                    with conn() as c:
+                        for table in ("tasks", "milestones", "projects", "resources", "saved_reports", "audit_log"):
+                            c.execute(f"DELETE FROM {table}")
+                        c.commit()
+                    st.session_state["_vektor_has_real_data"] = False
+                    st.session_state.pop("confirm_clear_app_data", None)
+                    _persist_snapshot()
+                    st.success("App data cleared. Workspace settings were retained.")
+                    st.rerun()
 
     # --- ROW 1: WORKSPACE SETTINGS (Left) | USER MANAGEMENT (Right) ---
     s_r1_l, s_r1_r = st.columns([1.05, 1.35])
