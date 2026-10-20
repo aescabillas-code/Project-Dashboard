@@ -643,12 +643,22 @@ def import_portfolio(payload: dict, replace_existing: bool = True) -> dict[str,i
 
 def clear_selected_data(selections: Iterable[str]) -> None:
     mapping={"Projects":"projects","Tasks":"tasks","Resources":"resources","Milestones":"milestones","Saved reports":"saved_reports","Audit log":"audit_log","Settings":"settings"}
-    selected=[mapping[x] for x in selections if x in mapping]
+    selected={mapping[x] for x in selections if x in mapping}
+    # Deleting projects must also remove child tasks and milestones so no orphaned rows remain.
+    if "projects" in selected:
+        selected.update({"tasks", "milestones"})
+    delete_order=("tasks","milestones","projects","resources","saved_reports","audit_log","settings")
     with conn() as c:
-        for table in selected: c.execute(f"DELETE FROM {table}")
+        for table in delete_order:
+            if table in selected:
+                c.execute(f"DELETE FROM {table}")
         c.commit()
-    if "settings" in selected: ensure_default_settings()
-    _cached_df.clear(); _persist_snapshot()
+    if "settings" in selected:
+        ensure_default_settings()
+    _cached_df.clear()
+    st.cache_data.clear()
+    st.session_state["_vektor_has_real_data"] = True
+    _persist_snapshot()
 
 def get_setting(k: str, default: str = "") -> str:
     x = df("SELECT value FROM settings WHERE key=?", (k,))
@@ -673,7 +683,9 @@ def log_event(event: str, typ: str = "", item_id: int | None = None, details: st
 init_db()
 ensure_default_settings()
 try:
-    _mongo_restored = _restore_snapshot()
+    if not st.session_state.get("_vektor_snapshot_restore_attempted", False):
+        _mongo_restored = _restore_snapshot()
+        st.session_state["_vektor_snapshot_restore_attempted"] = True
     if not st.session_state.get("_vektor_mongo_connected", False):
         st.warning(
             "MongoDB is not configured. Add MONGODB_URI to Streamlit Secrets or the environment "
@@ -1895,9 +1907,14 @@ def delete_project_modal(pid: int) -> None:
             st.rerun()
     with c3:
         if st.button("🗑 Delete Project", type="primary", use_container_width=True, key="confirm_del_modal"):
-            sql("DELETE FROM tasks WHERE project_id=?", (pid,))
-            sql("DELETE FROM milestones WHERE project_id=?", (pid,))
-            sql("DELETE FROM projects WHERE id=?", (pid,))
+            with conn() as c:
+                c.execute("DELETE FROM tasks WHERE project_id=?", (pid,))
+                c.execute("DELETE FROM milestones WHERE project_id=?", (pid,))
+                c.execute("DELETE FROM projects WHERE id=?", (pid,))
+                c.commit()
+            _cached_df.clear()
+            st.cache_data.clear()
+            _persist_snapshot()
             log_event("Deleted", "Project", pid, r["name"])
             st.session_state.pop("active_modal", None)
             st.rerun()
@@ -2188,14 +2205,22 @@ elif page == "Projects":
     k1, k2, k3, k4, k5 = st.columns(5)
     with k1:
         kpi_card_mockup("TOTAL PROJECTS", str(total_p), bar_pct=60, icon_html="❖", icon_bg="#DCFCE7", icon_fg="#00875A", bar_color="#00875A")
+    def _project_count(*statuses):
+        return int(P.status.fillna("").str.lower().isin([x.lower() for x in statuses]).sum()) if not P.empty else 0
+    def _project_pct(n):
+        return round(100 * n / total_p) if total_p else 0
+    on_track_n = _project_count("On Track", "Completed")
+    in_progress_n = _project_count("In Progress")
+    at_risk_n = _project_count("At Risk")
+    overdue_n = _project_count("Overdue", "Delayed")
     with k2:
-        kpi_card_mockup("ON TRACK", "6", "(50%)", bar_pct=50, icon_html="✓", icon_bg="#DCFCE7", icon_fg="#00875A", bar_color="#00875A")
+        kpi_card_mockup("ON TRACK", str(on_track_n), f"({_project_pct(on_track_n)}%)", bar_pct=_project_pct(on_track_n), icon_html="✓", icon_bg="#DCFCE7", icon_fg="#00875A", bar_color="#00875A")
     with k3:
-        kpi_card_mockup("IN PROGRESS", "3", "(25%)", bar_pct=25, icon_html="▶", icon_bg="#DBEAFE", icon_fg="#1473E6", bar_color="#1473E6")
+        kpi_card_mockup("IN PROGRESS", str(in_progress_n), f"({_project_pct(in_progress_n)}%)", bar_pct=_project_pct(in_progress_n), icon_html="▶", icon_bg="#DBEAFE", icon_fg="#1473E6", bar_color="#1473E6")
     with k4:
-        kpi_card_mockup("AT RISK", "2", "(17%)", bar_pct=17, icon_html="❚❚", icon_bg="#FEF3C7", icon_fg="#F28C00", bar_color="#F28C00")
+        kpi_card_mockup("AT RISK", str(at_risk_n), f"({_project_pct(at_risk_n)}%)", bar_pct=_project_pct(at_risk_n), icon_html="❚❚", icon_bg="#FEF3C7", icon_fg="#F28C00", bar_color="#F28C00")
     with k5:
-        kpi_card_mockup("OVERDUE", "1", "(8%)", bar_pct=8, icon_html="✕", icon_bg="#FEE2E2", icon_fg="#EF4444", bar_color="#EF4444")
+        kpi_card_mockup("OVERDUE", str(overdue_n), f"({_project_pct(overdue_n)}%)", bar_pct=_project_pct(overdue_n), icon_html="✕", icon_bg="#FEE2E2", icon_fg="#EF4444", bar_color="#EF4444")
 
     st.write("")
     # Filter & View Mode Row (No radio buttons — uses tile buttons for List View / Card View)
@@ -3300,7 +3325,7 @@ elif page == "Task List":
     tf1, tf2, tf3, tf4, tf5, tf6 = st.columns([1.05, 1.0, 1.0, 1.05, 1.35, 0.75])
     with tf1:
         st.markdown("<div style='font-size:11.5px;font-weight:600;color:#475569;margin-bottom:3px'>Project</div>", unsafe_allow_html=True)
-        tl_proj_f = st.selectbox("Project", ["All Projects", "Website Revamp", "IT Infrastructure Upgrade", "Sustainability Initiative", "Marketing Campaign"], key="tl_f_proj", label_visibility="collapsed")
+        tl_proj_f = st.selectbox("Project", ["All Projects"] + projects_list, key="tl_f_proj", label_visibility="collapsed")
     with tf2:
         st.markdown("<div style='font-size:11.5px;font-weight:600;color:#475569;margin-bottom:3px'>Status</div>", unsafe_allow_html=True)
         tl_stat_f = st.selectbox("Status", ["All Statuses", "Completed", "In Progress", "Not Started", "At Risk", "Overdue"], key="tl_f_stat", label_visibility="collapsed")
@@ -3309,7 +3334,7 @@ elif page == "Task List":
         tl_prio_f = st.selectbox("Priority", ["All Priorities", "High", "Medium", "Low"], key="tl_f_prio", label_visibility="collapsed")
     with tf4:
         st.markdown("<div style='font-size:11.5px;font-weight:600;color:#475569;margin-bottom:3px'>Assignee</div>", unsafe_allow_html=True)
-        tl_ass_f = st.selectbox("Assignee", ["All Assignees", "Dana Scott", "Emily Rodriguez", "James Miller", "Sarah Kim", "Alice Morgan", "Ryan Cruz", "Michael Tan"], key="tl_f_ass", label_visibility="collapsed")
+        tl_ass_f = st.selectbox("Assignee", ["All Assignees"] + sorted(T.assignee.dropna().astype(str).unique().tolist()), key="tl_f_ass", label_visibility="collapsed")
     with tf5:
         st.markdown("<div style='font-size:11.5px;margin-bottom:3px'>&nbsp;</div>", unsafe_allow_html=True)
         tl_sub_q = st.text_input("Search tasks", placeholder="🔍 Search tasks...", key="tl_q_sub", label_visibility="collapsed")
@@ -3323,13 +3348,23 @@ elif page == "Task List":
     st.write("")
     # --- 6 KPI CARDS ROW (Exact Match to Image 12) ---
     tk1, tk2, tk3, tk4, tk5, tk6 = st.columns(6)
+    total_tasks = len(T)
+    def _task_count(*statuses):
+        return int(T.status.fillna("").str.lower().isin([x.lower() for x in statuses]).sum()) if not T.empty else 0
+    def _task_pct(n):
+        return round(100 * n / total_tasks) if total_tasks else 0
+    completed_n = _task_count("Completed")
+    progress_n = _task_count("In Progress")
+    not_started_n = _task_count("Not Started")
+    at_risk_task_n = _task_count("At Risk")
+    overdue_task_n = _task_count("Overdue", "Delayed")
     kpi_specs = [
-        (tk1, "#1473E6", "#FFFFFF", "▤", "Total Tasks", "#475569", "48", ""),
-        (tk2, "#00875A", "#FFFFFF", "✓", "Completed", "#475569", "18", "(38%)"),
-        (tk3, "#1473E6", "#FFFFFF", "❂", "In Progress", "#475569", "16", "(33%)"),
-        (tk4, "#64748B", "#FFFFFF", "●", "Not Started", "#475569", "8", "(17%)"),
-        (tk5, "#F28C00", "#FFFFFF", "!", "At Risk", "#D97706", "4", "(8%)"),
-        (tk6, "#EF4444", "#FFFFFF", "!", "Overdue", "#DC2626", "2", "(4%)"),
+        (tk1, "#1473E6", "#FFFFFF", "▤", "Total Tasks", "#475569", str(total_tasks), ""),
+        (tk2, "#00875A", "#FFFFFF", "✓", "Completed", "#475569", str(completed_n), f"({_task_pct(completed_n)}%)"),
+        (tk3, "#1473E6", "#FFFFFF", "❂", "In Progress", "#475569", str(progress_n), f"({_task_pct(progress_n)}%)"),
+        (tk4, "#64748B", "#FFFFFF", "●", "Not Started", "#475569", str(not_started_n), f"({_task_pct(not_started_n)}%)"),
+        (tk5, "#F28C00", "#FFFFFF", "!", "At Risk", "#D97706", str(at_risk_task_n), f"({_task_pct(at_risk_task_n)}%)"),
+        (tk6, "#EF4444", "#FFFFFF", "!", "Overdue", "#DC2626", str(overdue_task_n), f"({_task_pct(overdue_task_n)}%)"),
     ]
     for col, ibg, ifg, ico, lbl, lcol, val, pct_s in kpi_specs:
         with col:
@@ -3422,6 +3457,23 @@ elif page == "Task List":
         },
     ]
 
+    # Replace legacy mock rows with live database rows. This keeps the existing visual renderer intact.
+    task_groups = []
+    for _, pr in P.iterrows():
+        pr_tasks = T[T.project_id == pr.id].copy()
+        live_tasks = []
+        for seq, (_, tr) in enumerate(pr_tasks.iterrows(), start=1):
+            try:
+                sd = date.fromisoformat(str(tr.start_date)[:10])
+                ed = date.fromisoformat(str(tr.due_date)[:10])
+                duration = f"{max(1, (ed-sd).days + 1)} days"
+            except Exception:
+                duration = "—"
+            status = str(tr.status or "Not Started")
+            pct = int(tr.progress or 0)
+            live_tasks.append({"db_id": int(tr.id), "wbs": f"{int(pr.id)}.{seq}", "ico": "doc", "ic_col": GREEN if status == "Completed" else BLUE if status == "In Progress" else "#475569", "name": str(tr["name"]), "project": str(pr["name"]), "start_date": fmt_date(tr.start_date), "end_date": fmt_date(tr.due_date), "duration": duration, "status": status, "priority": str(tr.priority or "Medium"), "assignee": str(tr.assignee or "Unassigned"), "pct": pct, "bar_col": GREEN if pct == 100 else BLUE if pct else "#CBD5E1", "tag": str(tr.team or "Task"), "tag_bg": "#DBEAFE", "tag_fg": "#1D4ED8"})
+        if live_tasks:
+            task_groups.append({"group_title": f"{pr['name']} ({len(live_tasks)})", "project": str(pr["name"]), "icon_bg": str(pr.bar_color or GREEN), "start": fmt_date(pr.start_date), "end": fmt_date(pr.end_date), "dur": "—", "pct": int(pr.progress or 0), "bar_col": str(pr.bar_color or GREEN), "row_bg": "#F0FDF4", "tasks": live_tasks})
     # Avatar initials and colors matching Image 12
     tl_avatars = {
         "Dana Scott": ("DS", "#0284C7"),
@@ -3559,16 +3611,18 @@ elif page == "Task List":
                             st.rerun()
                 st.markdown("<hr style='margin:4px 0;border-color:#F1F5F9'>", unsafe_allow_html=True)
 
+        if not task_groups:
+            st.info("No tasks are currently saved in the database.")
         # Pagination Footer
         st.markdown(
             clean_html(
-                """
+                f"""
                 <div style="display:flex;align-items:center;justify-content:space-between;padding-top:10px;font-size:12.5px;color:#475569">
                     <div style="display:flex;align-items:center;gap:8px">
                         <span>Show</span>
                         <span style="border:1px solid #CBD5E1;border-radius:6px;padding:3px 10px;background:white;font-weight:600;color:#0F172A">25 &nbsp;▾</span>
                         <span>entries</span>
-                        <span style="margin-left:14px">Showing 1 to 17 of 17 tasks</span>
+                        <span style="margin-left:14px">Showing {0 if total_tasks == 0 else 1} to {total_tasks} of {total_tasks} tasks</span>
                     </div>
                     <div style="display:flex;align-items:center;gap:6px">
                         <span style="border:1px solid #CBD5E1;border-radius:6px;padding:4px 10px;background:white">‹</span>
