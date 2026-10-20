@@ -25,6 +25,7 @@ except ImportError:  # A clear setup message is shown if MongoDB is configured b
     PyMongoError = Exception
 
 import pandas as pd
+from openpyxl import load_workbook
 import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
@@ -544,66 +545,80 @@ def _split_people(value: object) -> list[str]:
     return [n.strip() for n in names if n.strip()]
 
 def extract_portfolio_workbook(uploaded_file) -> dict[str, list[dict]]:
-    """Read the Portfolio worksheet and normalize it for the app database."""
+    """Extract the Portfolio sheet while preserving the workbook's bold task hierarchy."""
     raw = uploaded_file.getvalue() if hasattr(uploaded_file, "getvalue") else uploaded_file.read()
-    book = pd.ExcelFile(io.BytesIO(raw), engine="openpyxl")
-    portfolio_name = next((n for n in book.sheet_names if n.strip().lower() == "portfolio"), None)
+    wb = load_workbook(io.BytesIO(raw), data_only=False, read_only=False)
+    portfolio_name = next((n for n in wb.sheetnames if n.strip().lower() == "portfolio"), None)
     if not portfolio_name:
         raise ValueError("The workbook must contain a worksheet named 'Portfolio'.")
-    preview = pd.read_excel(io.BytesIO(raw), sheet_name=portfolio_name, header=None, engine="openpyxl", nrows=25)
+    ws = wb[portfolio_name]
     header_row = None
-    for idx, row in preview.iterrows():
-        vals = {_text(v).lower() for v in row.tolist()}
-        if "id" in vals and "program" in vals and any("initiative" in v for v in vals):
-            header_row = idx
+    header_map = {}
+    for r in range(1, min(ws.max_row, 30) + 1):
+        vals = {_text(ws.cell(r, c).value).lower(): c for c in range(1, ws.max_column + 1) if _text(ws.cell(r, c).value)}
+        if "id" in vals and "program" in vals and any("initiative" in k for k in vals):
+            header_row, header_map = r, vals
             break
-    if header_row is None:
-        raise ValueError("Could not find the Portfolio header row. Required columns include ID, Program, Initiative / Milestone / Task, Owner, and Status.")
-    data = pd.read_excel(io.BytesIO(raw), sheet_name=portfolio_name, header=header_row, engine="openpyxl")
-    data.columns = [_text(c) or f"Column_{i}" for i, c in enumerate(data.columns)]
-    def col(*names):
-        normalized = {re.sub(r"\W+", " ", c.lower()).strip(): c for c in data.columns}
+    if not header_row:
+        raise ValueError("Could not find the Portfolio header row.")
+    def hcol(*names):
+        norm={re.sub(r"\W+"," ",k.lower()).strip():v for k,v in header_map.items()}
         for name in names:
-            key = re.sub(r"\W+", " ", name.lower()).strip()
-            if key in normalized: return normalized[key]
+            key=re.sub(r"\W+"," ",name.lower()).strip()
+            if key in norm: return norm[key]
         return None
-    c_id, c_program = col("ID"), col("Program")
-    c_item = col("Initiative / Milestone / Task", "Initiative Milestone Task")
-    c_start, c_end, c_owner, c_status = col("Start Date"), col("End Date"), col("Owner"), col("Status")
-    c_update, c_remarks, c_pc = col("Update"), col("Remarks"), col("PC")
-    required = {"ID": c_id, "Program": c_program, "Initiative / Milestone / Task": c_item}
-    missing = [k for k,v in required.items() if not v]
+    cols={
+        "pc":hcol("PC"), "id":hcol("ID"), "program":hcol("Program"),
+        "item":hcol("Initiative / Milestone / Task","Initiative Milestone Task"),
+        "start":hcol("Start Date"), "end":hcol("End Date"), "owner":hcol("Owner"),
+        "status":hcol("Status"), "update":hcol("Update"), "remarks":hcol("Remarks")}
+    missing=[x for x in ("id","program","item") if not cols[x]]
     if missing: raise ValueError("Missing required Portfolio columns: " + ", ".join(missing))
-    rows=[]
-    for _,r in data.iterrows():
-        rid=_text(r.get(c_id)); program=_text(r.get(c_program)); item=_text(r.get(c_item))
+    rows=[]; current_pc=""; current_program=""
+    for r in range(header_row+1, ws.max_row+1):
+        def val(k): return ws.cell(r, cols[k]).value if cols.get(k) else None
+        pc=_text(val("pc")); program=_text(val("program")); rid=_text(val("id")); item=_text(val("item"))
+        if pc and pc.replace("\xa0","").strip(): current_pc=pc
+        if program: current_program=program
         if not rid or not item: continue
-        rows.append({"source_id":rid,"program":program,"item":item,"start":_iso(r.get(c_start)) if c_start else "","end":_iso(r.get(c_end)) if c_end else "","owner":_text(r.get(c_owner)) if c_owner else "","status":_text(r.get(c_status)) or "Not Started","update":_text(r.get(c_update)) if c_update else "","remarks":_text(r.get(c_remarks)) if c_remarks else "","pc":_text(r.get(c_pc)) if c_pc else ""})
-    if not rows: raise ValueError("No extractable rows were found in the Portfolio worksheet.")
+        cell=ws.cell(r, cols["item"])
+        rows.append({"row":r,"source_id":rid,"program":program or current_program,"item":item,
+          "is_bold":bool(cell.font and cell.font.bold),"start":_iso(val("start")),"end":_iso(val("end")),
+          "owner":_text(val("owner")),"status":_text(val("status")) or "Not Started",
+          "update":_text(val("update")),"remarks":_text(val("remarks")),"pc":pc or current_pc})
+    if not rows: raise ValueError("No extractable Portfolio rows were found.")
     groups={}
-    for r in rows:
-        root=r["source_id"].split(".")[0]
-        groups.setdefault(root,[]).append(r)
+    for row in rows: groups.setdefault(row["program"] or "Unassigned Project",[]).append(row)
     projects=[]; tasks=[]; milestones=[]; resources={}
-    for root,items in groups.items():
-        base=next((x for x in items if x["source_id"]==root),items[0])
-        leaf=[x for x in items if x["source_id"]!=root] or items
-        statuses=[x["status"].lower() for x in leaf]
-        complete=sum(1 for x in statuses if x in {"completed","complete","done"})
-        progress=round(100*complete/len(leaf)) if leaf else 0
+    for program,items in groups.items():
+        source_key=re.sub(r"[^A-Za-z0-9]+","-",program).strip("-").lower() or items[0]["source_id"]
+        project_manager=next((x["pc"] for x in items if x["pc"]),"")
         starts=[x["start"] for x in items if x["start"]]; ends=[x["end"] for x in items if x["end"]]
-        owner=base["owner"] or next((x["owner"] for x in items if x["owner"]),"")
-        status=base["status"] or ("Completed" if progress==100 else "In Progress" if progress else "Not Started")
-        project={"source_id":root,"name":base["program"] or base["item"],"owner":owner,"team":base["pc"] or "Portfolio","category":base["program"] or "Portfolio","status":status,"priority":"Medium","start_date":min(starts) if starts else "","end_date":max(ends) if ends else "","progress":progress,"tasks_done":complete,"tasks_total":len(leaf),"tags":base["program"],"short_desc":base["item"],"description":base["remarks"] or base["update"] or base["item"],"health":"Critical" if status.lower() in {"delayed","overdue"} else "At Risk" if "risk" in status.lower() else "Healthy"}
-        projects.append(project)
+        completed=sum(1 for x in items if x["status"].lower() in {"completed","complete","done"})
+        progress=round(100*completed/len(items)) if items else 0
+        projects.append({"source_id":source_key,"name":program,"owner":project_manager,"team":"Portfolio",
+          "category":"Portfolio","status":"Completed" if progress==100 else "In Progress" if progress else "Not Started",
+          "priority":"Medium","start_date":min(starts) if starts else "","end_date":max(ends) if ends else "",
+          "progress":progress,"tasks_done":completed,"tasks_total":len(items),"tags":"Portfolio",
+          "short_desc":program,"description":next((x["remarks"] for x in items if x["remarks"]),program),"health":"Healthy"})
+        current_main=None
         for x in items:
-            if x["source_id"]==root: continue
-            rec={"source_id":x["source_id"],"project_source_id":root,"name":x["item"],"team":x["pc"] or base["pc"] or "Portfolio","status":x["status"],"priority":"Medium","start_date":x["start"],"due_date":x["end"],"assignee":x["owner"],"progress":100 if x["status"].lower() in {"completed","complete","done"} else 50 if "progress" in x["status"].lower() else 0,"dependency":"","notes":"\n".join(v for v in [x["update"],x["remarks"]] if v)}
-            if "milestone" in x["item"].lower(): milestones.append(rec)
-            else: tasks.append(rec)
-        for x in items:
-            for person in _split_people(x["owner"]): resources.setdefault(person,{"name":person,"email":"","team":x["pc"] or "Portfolio","role":"Team Member","status":"Available","capacity":100,"notes":"Imported from Portfolio workbook"})
-    return {"projects":projects,"tasks":tasks,"milestones":milestones,"resources":list(resources.values()),"source_hash":hashlib.sha256(raw).hexdigest(),"rows":len(rows)}
+            if x["is_bold"]:
+                current_main=x["source_id"]
+                milestones.append({"source_id":x["source_id"],"project_source_id":source_key,"name":x["item"],
+                  "team":"Portfolio","status":x["status"],"start_date":x["start"],"due_date":x["end"],
+                  "assignee":x["owner"],"dependency":"","notes":x["remarks"] or x["update"]})
+            else:
+                tasks.append({"source_id":x["source_id"],"project_source_id":source_key,"name":x["item"],
+                  "team":"Portfolio","status":x["status"],"priority":"Medium","start_date":x["start"],"due_date":x["end"],
+                  "assignee":x["owner"],"progress":100 if x["status"].lower() in {"completed","complete","done"} else 50 if "progress" in x["status"].lower() else 0,
+                  "dependency":current_main or "","notes":x["remarks"] or x["update"]})
+            for person in _split_people(x["owner"]):
+                resources.setdefault(person,{"name":person,"email":"","team":"Portfolio","role":"Assigned Resource","status":"Available","capacity":100,"notes":"Imported from Portfolio workbook"})
+        if project_manager:
+            resources.setdefault(project_manager,{"name":project_manager,"email":"","team":"Portfolio","role":"Project Manager","status":"Available","capacity":100,"notes":"Imported from Portfolio PC column"})
+    return {"projects":projects,"tasks":tasks,"milestones":milestones,"resources":list(resources.values()),
+            "source_hash":hashlib.sha256(raw).hexdigest(),"rows":len(rows)}
 
 def import_portfolio(payload: dict, replace_existing: bool = True) -> dict[str,int]:
     with conn() as c:
@@ -1902,7 +1917,7 @@ if page == "Overview":
     with h_r1:
         ov_proj_filter = st.selectbox("Project", ["All Projects"] + projects_list, key="ov_proj_sel", label_visibility="collapsed")
     with h_r2:
-        st.date_input("Date Range", (date(2024, 4, 24), date(2024, 6, 30)), key="ov_date_sel", label_visibility="collapsed")
+        st.date_input("Date Range", (date.today().replace(day=1), date.today().replace(day=calendar.monthrange(date.today().year, date.today().month)[1])), key="ov_date_sel", label_visibility="collapsed")
 
     st.write("")
     # 6 KPI Cards Row (Exact numbers & progress bars from Project Overview screenshot)
@@ -2161,7 +2176,7 @@ elif page == "Projects":
     with h_s:
         proj_q = st.text_input("Search", placeholder="🔍 Search projects...", key="p_search_box", label_visibility="collapsed")
     with h_d:
-        st.date_input("Range", (date(2024, 4, 24), date(2024, 6, 30)), key="p_date_box", label_visibility="collapsed")
+        st.date_input("Range", (date.today().replace(day=1), date.today().replace(day=calendar.monthrange(date.today().year, date.today().month)[1])), key="p_date_box", label_visibility="collapsed")
     with h_b:
         if st.button("＋ New Project", type="primary", use_container_width=True, key="btn_new_proj_top"):
             st.session_state.active_modal = ("edit", None)
@@ -2435,13 +2450,13 @@ elif page == "Gantt Chart":
     with gh_s:
         gantt_q = st.text_input("Search", placeholder="🔍 Search projects or tasks...", key="gantt_search_top", label_visibility="collapsed")
     with gh_d:
-        st.date_input("Date Range", (date(2024, 4, 24), date(2024, 6, 30)), key="gantt_date_top", label_visibility="collapsed")
+        st.date_input("Date Range", (date.today().replace(day=1), date.today().replace(day=calendar.monthrange(date.today().year, date.today().month)[1])), key="gantt_date_top", label_visibility="collapsed")
 
     st.write("")
     # Filter Bar Card
     with st.container(border=True):
         gf1, gf2, gf3, gf4, gf_sp, gf_more = st.columns([1.15, 1.15, 1.15, 1.15, 0.8, 0.7])
-        gantt_projects = ["All Projects", "Website Revamp", "IT Infrastructure Upgrade", "Sustainability Initiative", "Marketing Campaign", "Training Program"]
+        gantt_projects = ["All Projects"] + projects_list
         with gf1:
             st.markdown("<div style='font-size:11.5px;font-weight:600;color:#475569;margin-bottom:3px'>Project</div>", unsafe_allow_html=True)
             g_proj_sel = st.selectbox("Project", gantt_projects, key="g_flt_proj", label_visibility="collapsed")
@@ -2495,13 +2510,9 @@ elif page == "Gantt Chart":
                 st.session_state.gantt_scale = "Month"
                 st.rerun()
         with w_col:
-            if st.button("Week", key="g_scale_week", type="primary" if st.session_state.gantt_scale == "Week" else "secondary", use_container_width=True):
-                st.session_state.gantt_scale = "Week"
-                st.rerun()
+            st.markdown("<div style='height:2.1rem'></div>", unsafe_allow_html=True)
         with d_col:
-            if st.button("Day", key="g_scale_day", type="primary" if st.session_state.gantt_scale == "Day" else "secondary", use_container_width=True):
-                st.session_state.gantt_scale = "Day"
-                st.rerun()
+            st.markdown("<div style='height:2.1rem'></div>", unsafe_allow_html=True)
         with exp_col:
             if st.button("⛶", key="g_fullscreen_btn", help="Toggle expanded Gantt view", use_container_width=True):
                 st.session_state["gantt_expanded"] = not st.session_state.get("gantt_expanded", False)
@@ -2591,7 +2602,27 @@ elif page == "Gantt Chart":
             ("3.3", 1, "doc", "#7C3AED", "Implementation", "Jun 11, 2024", "Jun 30, 2024", "20 days", "Not Started", "0%", 43.8, 24.5, "#8495B0", 100, "Complete", False, "#FFFFFF", "Implementation"),
         ]
 
-        active_rows = week_rows if scale == "Week" else (day_rows if scale == "Day" else month_day_rows)
+        # Build the visible monthly range from imported database records.
+        g_start, g_end = st.session_state.get("gantt_date_top", (date.today().replace(day=1), date.today().replace(day=calendar.monthrange(date.today().year, date.today().month)[1])))
+        if not isinstance(g_start, date): g_start = date.today().replace(day=1)
+        if not isinstance(g_end, date): g_end = date.today().replace(day=calendar.monthrange(date.today().year, date.today().month)[1])
+        span=max(1,(g_end-g_start).days)
+        active_rows=[]
+        for _,pr in P.iterrows():
+            try: ps=date.fromisoformat(str(pr.start_date)[:10]); pe=date.fromisoformat(str(pr.end_date)[:10])
+            except Exception: continue
+            left=max(0,min(100,100*(ps-g_start).days/span)); width=max(1,min(100-left,100*(pe-ps).days/span))
+            active_rows.append((str(pr.id),0,"folder",str(pr.bar_color or GREEN),str(pr["name"]),fmt_date(pr.start_date),fmt_date(pr.end_date),f"{max(1,(pe-ps).days)} days",str(pr.status),f"{int(pr.progress or 0)}%",left,width,str(pr.bar_color or GREEN),100,"",False,"#ECFDF5"))
+            for _,tr in T[T.project_id==pr.id].iterrows():
+                try: ts=date.fromisoformat(str(tr.start_date)[:10]); te=date.fromisoformat(str(tr.due_date)[:10])
+                except Exception: continue
+                tl=max(0,min(100,100*(ts-g_start).days/span)); tw=max(1,min(100-tl,100*(te-ts).days/span))
+                active_rows.append((str(tr.id),1,"play",BLUE,str(tr["name"]),fmt_date(tr.start_date),fmt_date(tr.due_date),f"{max(1,(te-ts).days)} days",str(tr.status),f"{int(tr.progress or 0)}%",tl,tw,BLUE,100,"",False,"#FFFFFF"))
+            for _,mr in M[M.project_id==pr.id].iterrows():
+                try: ms=date.fromisoformat(str(mr.start_date)[:10]); me=date.fromisoformat(str(mr.due_date)[:10])
+                except Exception: continue
+                ml=max(0,min(100,100*(ms-g_start).days/span)); mw=max(1,min(100-ml,100*(me-ms).days/span))
+                active_rows.append((f"M{mr.id}",1,"doc",PURPLE,str(mr["name"]),fmt_date(mr.start_date),fmt_date(mr.due_date),f"{max(1,(me-ms).days)} days",str(mr.status),"100%" if str(mr.status).lower()=="completed" else "0%",ml,mw,PURPLE,100,str(mr["name"]),False,"#FFFFFF"))
 
         # Apply Top Search & Dropdown Filters
         proj_prefix_map = {
@@ -3258,7 +3289,7 @@ elif page == "Task List":
     with th_s:
         tl_top_q = st.text_input("Search", placeholder="🔍 Search tasks, projects or assignees...", key="tl_q_top", label_visibility="collapsed")
     with th_d:
-        st.date_input("Date Range", (date(2024, 4, 24), date(2024, 6, 30)), key="tl_d_top", label_visibility="collapsed")
+        st.date_input("Date Range", (date.today().replace(day=1), date.today().replace(day=calendar.monthrange(date.today().year, date.today().month)[1])), key="tl_d_top", label_visibility="collapsed")
     with th_b:
         if st.button("＋ Add Task", type="primary", use_container_width=True, key="tl_btn_add_top"):
             st.session_state.task_modal = ("add", None)
@@ -3777,7 +3808,7 @@ elif page == "Resources":
                 st.session_state["rc_calendar_month"] = date.today().replace(day=1)
                 st.rerun()
         with tb3:
-            tile_toggle("", ["Month", "Week", "Day"], key="rc_scale", default="Month")
+            tile_toggle("", ["Month"], key="rc_scale", default="Month")
         with tb6:
             if st.button("＋ Add Event ▾", type="primary", key="rc_add_ev_btn", use_container_width=True):
                 st.session_state["calendar_add_event"] = True
@@ -4299,7 +4330,7 @@ elif page == "Resources":
     with rh_s:
         res_top_q = st.text_input("Search", placeholder="🔍 Search team members, skills, or projects...", key="res_q_top", label_visibility="collapsed")
     with rh_d:
-        st.date_input("Date Range", (date(2024, 4, 24), date(2024, 6, 30)), key="res_d_top", label_visibility="collapsed")
+        st.date_input("Date Range", (date.today().replace(day=1), date.today().replace(day=calendar.monthrange(date.today().year, date.today().month)[1])), key="res_d_top", label_visibility="collapsed")
     with rh_b:
         if st.button("＋ Add Resource", type="primary", use_container_width=True, key="res_btn_add_top"):
             st.session_state.res_modal = ("add", None)
@@ -4745,7 +4776,7 @@ elif page == "Calendar":
 
     ct_v, ct_nav, ct_tod, ct_sp, ct_q, ct_mf = st.columns([1.55, 1.0, 0.48, 0.65, 1.55, 0.65])
     with ct_v:
-        tile_toggle("", ["Month", "Week", "Day", "Agenda"], key="cal_view_mode", default="Month")
+        tile_toggle("", ["Month"], key="cal_view_mode", default="Month")
     with ct_nav:
         st.markdown(
             clean_html(
@@ -5113,7 +5144,7 @@ elif page == "Reports":
         )
     with rh_f1:
         st.markdown("<div style='font-size:11px;font-weight:600;color:#475569;margin-bottom:2px'>Date Range</div>", unsafe_allow_html=True)
-        st.date_input("Date Range", (date(2024, 4, 24), date(2024, 6, 30)), key="rep_top_dates", label_visibility="collapsed")
+        st.date_input("Date Range", (date.today().replace(day=1), date.today().replace(day=calendar.monthrange(date.today().year, date.today().month)[1])), key="rep_top_dates", label_visibility="collapsed")
     with rh_f2:
         st.markdown("<div style='font-size:11px;font-weight:600;color:#475569;margin-bottom:2px'>Project</div>", unsafe_allow_html=True)
         rep_proj_f = st.selectbox("Project", ["All Projects"] + projects_list, key="rep_top_proj", label_visibility="collapsed")
