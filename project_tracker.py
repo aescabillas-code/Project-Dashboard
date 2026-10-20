@@ -325,6 +325,10 @@ def init_db(force_reset: bool = False) -> None:
         c.execute("CREATE INDEX IF NOT EXISTS idx_projects_source_id ON projects(source_id)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_tasks_source_id ON tasks(source_id)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_milestones_source_id ON milestones(source_id)")
+        resource_cols = [row[1] for row in c.execute("PRAGMA table_info(resources)").fetchall()]
+        for col_name, col_type in (("skills", "TEXT"), ("project", "TEXT"), ("allocation", "INTEGER"), ("availability", "INTEGER")):
+            if col_name not in resource_cols:
+                c.execute(f"ALTER TABLE resources ADD COLUMN {col_name} {col_type}")
         c.commit()
         if False and c.execute("SELECT COUNT(*) FROM projects").fetchone()[0] == 0:
             # Demo seeding disabled: production data comes from Excel or user entry.
@@ -553,6 +557,26 @@ def _split_people(value: object) -> list[str]:
     names = re.split(r"\s*(?:&|/|;|,|\band\b)\s*", raw, flags=re.I)
     return [n.strip() for n in names if n.strip()]
 
+def extract_resources_worksheet(wb) -> list[dict]:
+    sheet_name = next((n for n in wb.sheetnames if n.strip().lower() == "resources"), None)
+    if not sheet_name:
+        return []
+    ws = wb[sheet_name]
+    headers = {_text(ws.cell(1, c).value).lower(): c for c in range(1, ws.max_column + 1) if _text(ws.cell(1, c).value)}
+    required = ("name", "email", "team", "role", "status", "capacity")
+    if any(name not in headers for name in required):
+        raise ValueError("Resources sheet requires Name, Email, Team, Role, Status, and Capacity columns.")
+    output=[]
+    for row_no in range(2, ws.max_row + 1):
+        def rv(name): return ws.cell(row_no, headers[name]).value if name in headers else None
+        name=_text(rv("name"))
+        if not name: continue
+        capacity=safe_int(rv("capacity"),100)
+        allocation=safe_int(rv("allocation"),0)
+        availability=safe_int(rv("availability"),max(0,100-allocation))
+        output.append({"name":name,"email":_text(rv("email")),"team":_text(rv("team")) or "Portfolio","role":_text(rv("role")) or "Team Member","status":_text(rv("status")) or "Available","capacity":capacity,"skills":_text(rv("skills")),"project":_text(rv("project")),"allocation":allocation,"availability":availability,"notes":_text(rv("notes"))})
+    return output
+
 def extract_portfolio_workbook(uploaded_file) -> dict[str, list[dict]]:
     """Extract Portfolio hierarchy strictly from dot-delimited Excel IDs."""
     raw = uploaded_file.getvalue() if hasattr(uploaded_file, "getvalue") else uploaded_file.read()
@@ -577,6 +601,7 @@ def extract_portfolio_workbook(uploaded_file) -> dict[str, list[dict]]:
     cols={"pc":hcol("PC"),"id":hcol("ID"),"program":hcol("Program"),"item":hcol("Initiative / Milestone / Task","Initiative Milestone Task"),"start":hcol("Start Date"),"end":hcol("End Date"),"owner":hcol("Owner"),"status":hcol("Status"),"update":hcol("Update"),"remarks":hcol("Remarks")}
     if any(not cols[name] for name in ("id","program","item")):
         raise ValueError("Required columns are ID, Program, and Initiative / Milestone / Task.")
+    sheet_resources = extract_resources_worksheet(wb)
     rows=[]; current_pc=""; current_program=""
     for row_no in range(header_row + 1, ws.max_row + 1):
         def value(name): return ws.cell(row_no, cols[name]).value if cols.get(name) else None
@@ -608,7 +633,8 @@ def extract_portfolio_workbook(uploaded_file) -> dict[str, list[dict]]:
                 resources.setdefault(person,{"name":person,"email":"","team":"Portfolio","role":"Assigned Resource","status":"Available","capacity":100,"notes":"Imported from Portfolio workbook"})
         if root["pc"]:
             resources.setdefault(root["pc"],{"name":root["pc"],"email":"","team":"Portfolio","role":"Project Manager","status":"Available","capacity":100,"notes":"Imported from Portfolio PC column"})
-    return {"projects":projects,"tasks":tasks,"milestones":milestones,"resources":list(resources.values()),"source_hash":hashlib.sha256(raw).hexdigest(),"rows":len(rows)}
+    final_resources = sheet_resources if sheet_resources else list(resources.values())
+    return {"projects":projects,"tasks":tasks,"milestones":milestones,"resources":final_resources,"source_hash":hashlib.sha256(raw).hexdigest(),"rows":len(rows)}
 
 def import_portfolio(payload: dict, replace_existing: bool = True) -> dict[str,int]:
     with conn() as c:
@@ -624,7 +650,7 @@ def import_portfolio(payload: dict, replace_existing: bool = True) -> dict[str,i
         for m in payload["milestones"]:
             c.execute("INSERT INTO milestones(source_id,name,project_id,team,status,start_date,due_date,completion_date,dependency,notes) VALUES(?,?,?,?,?,?,?,?,?,?)",(m["source_id"],m["name"],project_ids[m["project_source_id"]],m["team"],m["status"],m["start_date"],m["due_date"],m["due_date"] if m["status"].lower()=="completed" else "",m["dependency"],m["notes"]))
         for r in payload["resources"]:
-            c.execute("INSERT INTO resources(name,email,team,role,status,capacity,notes) VALUES(?,?,?,?,?,?,?)",(r["name"],r["email"],r["team"],r["role"],r["status"],r["capacity"],r["notes"]))
+            c.execute("INSERT INTO resources(name,email,team,role,status,capacity,notes,skills,project,allocation,availability) VALUES(?,?,?,?,?,?,?,?,?,?,?)",(r["name"],r["email"],r["team"],r["role"],r["status"],r["capacity"],r.get("notes",""),r.get("skills",""),r.get("project",""),safe_int(r.get("allocation"),0),safe_int(r.get("availability"),100)))
         c.execute("INSERT INTO settings(key,value) VALUES('last_import_hash',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",(payload["source_hash"],))
         c.execute("INSERT INTO audit_log(event,item_type,details) VALUES(?,?,?)",("Imported","Portfolio Workbook",f"{payload['rows']} rows"))
         c.commit()
@@ -1664,10 +1690,20 @@ def view_project_modal(pid: int) -> None:
             )
     with c_right, st.container(border=True):
         section_title("⏳ Timeline", "View Full Timeline →")
-        timeline_items = []
-        for _, mrow in project_milestones.head(6).iterrows():
-            timeline_items.append(f"<div style='min-width:130px;padding:8px;border:1px solid #E2E8F0;border-radius:8px;background:#F8FAFC'><b>{html.escape(str(mrow.source_id or mrow.id))}</b><br><span>{html.escape(str(mrow['name']))}</span><br><small>{fmt_date(mrow.due_date)} · {html.escape(str(mrow.status or 'Not Started'))}</small></div>")
-        st.markdown("<div style='display:flex;gap:8px;overflow-x:auto'>" + "".join(timeline_items) + "</div>" if timeline_items else "<div style='color:#64748B'>No timeline milestones available.</div>", unsafe_allow_html=True)
+        timeline_nodes = []
+        visible_ms = project_milestones.head(6)
+        for idx, (_, mrow) in enumerate(visible_ms.iterrows()):
+            mstat = str(mrow.status or "Not Started")
+            done = mstat.lower() == "completed"
+            current = mstat.lower() == "in progress"
+            circle_bg = GREEN if done else BLUE if current else "#94A3B8"
+            circle_text = "✓" if done else "●" if current else ""
+            box_bg = "#DCFCE7" if done else "#DBEAFE" if current else "#F1F5F9"
+            box_fg = "#15803D" if done else "#1D4ED8" if current else "#475569"
+            line_color = GREEN if done else BLUE if current else "#CBD5E1"
+            connector = f'<div style="position:absolute;top:46px;left:50%;width:100%;height:3px;background:{line_color};z-index:1"></div>' if idx < len(visible_ms)-1 else ""
+            timeline_nodes.append(f'<div style="flex:1;position:relative;display:flex;flex-direction:column;align-items:center;text-align:center;padding:0 4px">{connector}<div style="font-size:11px;font-weight:700;color:#1E293B">{html.escape(str(mrow.source_id or mrow.id))}</div><div style="font-size:10px;color:#64748B;margin-bottom:6px">{fmt_date(mrow.due_date)}</div><div style="width:24px;height:24px;border-radius:50%;background:{circle_bg};color:white;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:800;z-index:2">{circle_text}</div><div style="margin-top:10px;background:{box_bg};border-radius:6px;padding:6px;width:94%;min-height:44px"><div style="font-size:10.5px;font-weight:600;color:{box_fg}">{html.escape(str(mrow["name"]))}</div><div style="font-size:10px;font-weight:700;color:{box_fg}">{html.escape(mstat)}</div></div></div>')
+        st.markdown('<div style="display:flex;align-items:flex-start;justify-content:space-between;padding:8px 0 4px 0;overflow-x:auto">' + ''.join(timeline_nodes) + '</div>' if timeline_nodes else '<div style="color:#64748B">No timeline milestones available.</div>', unsafe_allow_html=True)
 
     b_left, b_right = st.columns([1.05, 1.95])
     with b_left, st.container(border=True):
@@ -3008,7 +3044,11 @@ elif page == "Task List":
     @st.dialog("View Task", width="large")
     def view_task_modal(task_rec: dict) -> None:
         task_db_id = safe_int(task_rec.get("db_id"), 0)
-        live = df("SELECT t.*, p.name AS project FROM tasks t LEFT JOIN projects p ON p.id=t.project_id WHERE t.id=?", (task_db_id,)) if task_db_id else pd.DataFrame()
+        is_milestone = task_rec.get("kind") == "milestone"
+        if is_milestone:
+            live = df("SELECT m.*, p.name AS project, 0 AS progress, 'Milestone' AS priority, '' AS assignee FROM milestones m LEFT JOIN projects p ON p.id=m.project_id WHERE m.id=?", (task_db_id,)) if task_db_id else pd.DataFrame()
+        else:
+            live = df("SELECT t.*, p.name AS project FROM tasks t LEFT JOIN projects p ON p.id=t.project_id WHERE t.id=?", (task_db_id,)) if task_db_id else pd.DataFrame()
         if live.empty:
             st.warning("Task not found. It may have been deleted or replaced by a newer import.")
             return
@@ -3503,17 +3543,26 @@ elif page == "Task List":
     task_groups = []
     for _, pr in P.iterrows():
         pr_tasks = T[T.project_id == pr.id].copy()
+        pr_milestones = M[M.project_id == pr.id].copy()
+        combined_rows = []
+        for _, mr in pr_milestones.iterrows():
+            combined_rows.append({"db_id":int(mr.id),"source_id":str(mr.source_id or mr.id),"name":str(mr["name"]),"start_date":mr.start_date,"due_date":mr.due_date,"status":str(mr.status or "Not Started"),"priority":"Milestone","assignee":"","progress":100 if str(mr.status).lower()=="completed" else 50 if str(mr.status).lower()=="in progress" else 0,"team":str(mr.team or "Portfolio"),"kind":"milestone"})
+        for _, tr in pr_tasks.iterrows():
+            combined_rows.append({"db_id":int(tr.id),"source_id":str(tr.source_id or tr.id),"name":str(tr["name"]),"start_date":tr.start_date,"due_date":tr.due_date,"status":str(tr.status or "Not Started"),"priority":str(tr.priority or "Medium"),"assignee":str(tr.assignee or "Unassigned"),"progress":safe_int(tr.progress,0),"team":str(tr.team or "Task"),"kind":"task"})
+        combined_rows.sort(key=lambda x: [int(p) if p.isdigit() else p for p in re.split(r"[.-]", x["source_id"])])
         live_tasks = []
-        for seq, (_, tr) in enumerate(pr_tasks.iterrows(), start=1):
+        for seq, tr in enumerate(combined_rows, start=1):
             try:
-                sd = date.fromisoformat(str(tr.start_date)[:10])
-                ed = date.fromisoformat(str(tr.due_date)[:10])
+                sd = date.fromisoformat(str(tr["start_date"])[:10])
+                ed = date.fromisoformat(str(tr["due_date"])[:10])
                 duration = f"{max(1, (ed-sd).days + 1)} days"
             except Exception:
                 duration = "—"
-            status = str(tr.status or "Not Started")
-            pct = int(tr.progress or 0)
-            live_tasks.append({"db_id": int(tr.id), "wbs": str(tr.source_id or f"{int(pr.id)}.{seq}"), "ico": "doc", "ic_col": GREEN if status == "Completed" else BLUE if status == "In Progress" else "#475569", "name": str(tr["name"]), "project": str(pr["name"]), "start_date": fmt_date(tr.start_date), "end_date": fmt_date(tr.due_date), "duration": duration, "status": status, "priority": str(tr.priority or "Medium"), "assignee": str(tr.assignee or "Unassigned"), "pct": pct, "bar_col": GREEN if pct == 100 else BLUE if pct else "#CBD5E1", "tag": str(tr.team or "Task"), "tag_bg": "#DBEAFE", "tag_fg": "#1D4ED8"})
+            status = str(tr["status"] or "Not Started")
+            pct = safe_int(tr["progress"],0)
+            level = hierarchy_level(tr["source_id"])
+            kind_label = "Parent + Milestone" if tr["kind"] == "milestone" else "Child" if level == 2 else "Grandchild" if level == 3 else f"Level {level}"
+            live_tasks.append({"db_id":tr["db_id"],"wbs":tr["source_id"],"level":level,"kind":tr["kind"],"kind_label":kind_label,"ico":"milestone" if tr["kind"]=="milestone" else "doc","ic_col":PURPLE if tr["kind"]=="milestone" else GREEN if status=="Completed" else BLUE if status=="In Progress" else "#475569","name":tr["name"],"project":str(pr["name"]),"start_date":fmt_date(tr["start_date"]),"end_date":fmt_date(tr["due_date"]),"duration":duration,"status":status,"priority":tr["priority"],"assignee":tr["assignee"] or "Unassigned","pct":pct,"bar_col":GREEN if pct==100 else BLUE if pct else "#CBD5E1","tag":kind_label,"tag_bg":"#F3E8FF" if tr["kind"]=="milestone" else "#DBEAFE","tag_fg":"#7C3AED" if tr["kind"]=="milestone" else "#1D4ED8"})
         if live_tasks:
             task_groups.append({"group_title": f"{pr['name']} ({len(live_tasks)})", "project": str(pr["name"]), "icon_bg": str(pr.bar_color or GREEN), "start": fmt_date(pr.start_date), "end": fmt_date(pr.end_date), "dur": "—", "pct": int(pr.progress or 0), "bar_col": str(pr.bar_color or GREEN), "row_bg": "#F0FDF4", "tasks": live_tasks})
     # Avatar initials and colors matching Image 12
@@ -3582,16 +3631,16 @@ elif page == "Task List":
             for t_item in filtered_tasks:
                 wbs_id = t_item["wbs"]
                 task_db_id = int(t_item.get("db_id") or 0)
-                unique_task_key = f"{task_db_id}_{wbs_id}"
+                unique_task_key = f"{t_item.get('kind','task')}_{task_db_id}_{wbs_id}"
                 rc = st.columns(col_weights)
                 with rc[0]:
                     st.markdown(f"<div style='font-size:11.5px;color:#475569;padding-top:5px;white-space:nowrap;overflow:visible'><b style='color:#1E293B'>{html.escape(str(wbs_id))}</b></div>", unsafe_allow_html=True)
                 with rc[1]:
-                    t_ico = "▤" if t_item["ico"] == "doc" else "▶"
+                    t_ico = "◆" if t_item["ico"] == "milestone" else "▤"
                     st.markdown(
                         clean_html(
                             f"""
-                            <div style="display:flex;align-items:center;gap:7px;padding-top:4px">
+                            <div style="display:flex;align-items:center;gap:7px;padding-top:4px;padding-left:{min(48, max(0, t_item.get('level', 1)-1)*16)}px">
                                 <span style="display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;border-radius:4px;background:{t_item['ic_col']};color:white;font-size:9px">{t_ico}</span>
                                 <span style="font-size:12.5px;font-weight:600;color:#0F172A">{html.escape(t_item['name'])}</span>
                             </div>
@@ -4438,11 +4487,11 @@ elif page == "Resources":
     # --- 5 KPI CARDS ROW (Exact Match to Image 20) ---
     rk1, rk2, rk3, rk4, rk5 = st.columns(5)
     res_kpis = [
-        (rk1, "#1473E6", "👥", "Total Resources", "#334155", "24", ""),
-        (rk2, "#00875A", "✓", "Available", "#334155", "8", "(33%)"),
-        (rk3, "#1473E6", "🕒", "Allocated", "#334155", "14", "(58%)"),
-        (rk4, "#F28C00", "!", "Overallocated", "#DC2626", "2", "(8%)"),
-        (rk5, "#64748B", "👤", "On Leave", "#334155", "0", "(0%)"),
+        (rk1, "#1473E6", "👥", "Total Resources", "#334155", str(len(R)), ""),
+        (rk2, "#00875A", "✓", "Available", "#334155", str(int((R.status=="Available").sum())), ""),
+        (rk3, "#1473E6", "🕒", "Allocated", "#334155", str(int((R.status=="Allocated").sum())), ""),
+        (rk4, "#F28C00", "!", "Overallocated", "#DC2626", str(int((R.status=="Overallocated").sum())), ""),
+        (rk5, "#64748B", "👤", "On Leave", "#334155", str(int((R.status=="On Leave").sum())), ""),
     ]
     for col, ibg, ico, lbl, lcol, val, pct_s in res_kpis:
         with col:
@@ -4578,7 +4627,7 @@ elif page == "Resources":
         res_sub_q = st.text_input("Search", placeholder="🔍 Search by name, role, skill or project...", key="res_q_sub", label_visibility="collapsed")
     with rf_rl:
         st.markdown("<div style='font-size:11.5px;font-weight:600;color:#475569;margin-bottom:3px'>Role</div>", unsafe_allow_html=True)
-        res_role_f = st.selectbox("Role", ["All Roles", "UX Designer", "Business Analyst", "Frontend Developer", "Project Manager", "Backend Developer", "QA Engineer", "Content Specialist", "DevOps Engineer", "IT Support", "Data Analyst"], key="res_f_role", label_visibility="collapsed")
+        res_role_f = st.selectbox("Role", ["All Roles"] + sorted(R.role.dropna().astype(str).unique().tolist()), key="res_f_role", label_visibility="collapsed")
     with rf_sk:
         st.markdown("<div style='font-size:11.5px;font-weight:600;color:#475569;margin-bottom:3px'>Skill</div>", unsafe_allow_html=True)
         res_skill_f = st.selectbox("Skill", ["All Skills", "UI/UX", "Figma", "Analysis", "React", "Planning", "Python", "Testing", "Content", "Azure", "Infrastructure", "Power BI"], key="res_f_skill", label_visibility="collapsed")
@@ -4587,7 +4636,7 @@ elif page == "Resources":
         res_stat_f = st.selectbox("Status", ["All Statuses", "Allocated", "Available", "Overallocated", "On Leave"], key="res_f_stat", label_visibility="collapsed")
     with rf_pr:
         st.markdown("<div style='font-size:11.5px;font-weight:600;color:#475569;margin-bottom:3px'>Project</div>", unsafe_allow_html=True)
-        res_proj_f = st.selectbox("Project", ["All Projects", "Website Revamp", "Sustainability Initiative", "Marketing Campaign", "IT Infrastructure Upgrade", "Internal Operations"], key="res_f_proj", label_visibility="collapsed")
+        res_proj_f = st.selectbox("Project", ["All Projects"] + projects_list, key="res_f_proj", label_visibility="collapsed")
     with rf_mr:
         st.markdown("<div style='font-size:11.5px;margin-bottom:3px'>&nbsp;</div>", unsafe_allow_html=True)
         if st.button("▽ More Filters", key="res_btn_more", use_container_width=True):
@@ -4610,6 +4659,13 @@ elif page == "Resources":
         {"id": 10, "ini": "CT", "av_col": "#EA580C", "name": "Chloe Tan", "email": "chloe.tan@hpe.com", "role": "Data Analyst", "skills": ["Power BI", "Excel"], "sk_cols": [("#DBEAFE", "#1D4ED8"), ("#DCFCE7", "#15803D")], "project": "Sustainability Initiative", "alloc": 100, "avail": "0%", "status": "Allocated"},
     ]
 
+    res_directory = []
+    for _, rr in R.iterrows():
+        skills=[x.strip() for x in str(rr.get("skills","") or "").split(",") if x.strip()]
+        initials="".join(part[0] for part in str(rr["name"]).split()[:2]).upper() or "R"
+        allocation=safe_int(rr.get("allocation"),0)
+        availability=safe_int(rr.get("availability"),max(0,100-allocation))
+        res_directory.append({"id":int(rr.id),"ini":initials,"av_col":GREEN if str(rr.status)=="Available" else BLUE,"name":str(rr["name"]),"email":str(rr.email or ""),"role":str(rr.role or "Team Member"),"skills":skills,"sk_cols":[("#DBEAFE","#1D4ED8") for _ in skills],"project":str(rr.get("project","") or "Unassigned"),"alloc":allocation,"avail":f"{availability}%","status":str(rr.status or "Available")})
     q_res = (res_top_q + " " + res_sub_q).strip().lower()
     filtered_res = []
     for item in res_directory:
