@@ -2477,6 +2477,7 @@ elif page == "Gantt Chart":
         if isinstance(gantt_date_range, (tuple, list)) and len(gantt_date_range) == 2:
             _glo, _ghi = sorted(gantt_date_range)
             _filtered_rows = []
+            active_rows = []
             for _r in active_rows:
                 _rs = pd.to_datetime(_r[5], errors="coerce")
                 _re = pd.to_datetime(_r[6], errors="coerce")
@@ -3413,7 +3414,7 @@ elif page == "Task List":
                 with rc[11]:
                     b_v, b_e = st.columns(2)
                     with b_v:
-                        if st.button("👁", key=f"tl_v_{wbs_id}", help="View Task"):
+                        if st.button("👁",key=f"tl_v_{project_id}_{wbs_id}",help="View Task"):pass
                             st.session_state.task_modal = ("view", t_item)
                             st.rerun()
                     with b_e:
