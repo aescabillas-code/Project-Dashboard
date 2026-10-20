@@ -1832,7 +1832,7 @@ if page == "Overview":
                 f"<td>{fmt_date(pr.end_date)}</td>"
                 f"<td>{progress_html(pr.progress, GREEN)}</td>"
                 f"<td>{badge_html(pr.status)}</td>"
-                f"<td style='text-align:center;font-weight:600'>{int(pr.days_left or 0)}</td>"
+                f"<td style='text-align:center;font-weight:600'>{0 if pd.isna(pr.days_left) else int(pr.days_left)}</td>"
                 f"</tr>"
             )
         st.markdown(
@@ -2263,14 +2263,14 @@ elif page == "Projects":
                 with r_cols[7]:
                     st.markdown(f"<div style='padding-top:4px'>{badge_html(item.get('priority') or 'Medium')}</div>", unsafe_allow_html=True)
                 with r_cols[8]:
-                    st.markdown(f"<div style='padding-top:6px;font-size:12.5px;font-weight:700;color:#00875A'>{int(item.get('days_left') or 0)}</div>", unsafe_allow_html=True)
+                    _days_left = pd.to_numeric(item.get("days_left"), errors="coerce")
+                    st.markdown(f"<div style='padding-top:6px;font-size:12.5px;font-weight:700;color:#00875A'>{0 if pd.isna(_days_left) else int(_days_left)}</div>",unsafe_allow_html=True)
                 with r_cols[9]:
                     st.markdown(
                         f"<div style='padding-top:2px'><div style='font-size:11.5px;font-weight:600'>{tdone}/{ttot}</div>"
                         f"<div style='height:5px;background:#E2E8F0;border-radius:99px;overflow:hidden;margin-top:2px'>"
                         f"<div style='width:{task_pct}%;height:100%;background:#00875A'></div></div></div>",
-                        unsafe_allow_html=True,
-                    )
+                        unsafe_allow_html=True, )
                 with r_cols[10]:
                     st.markdown(f"<div style='padding-top:4px'>{tags_markup}</div>", unsafe_allow_html=True)
                 with r_cols[11]:
@@ -4410,8 +4410,8 @@ elif page == "Resources":
         _assigned_tasks = T[T["assignee"].astype(str) == _name].copy() if not T.empty else pd.DataFrame()
         if not _assigned_tasks.empty and isinstance(res_date_range, (tuple, list)) and len(res_date_range) == 2:
             _rlo, _rhi = sorted(res_date_range)
-            _rsd = pd.to_datetime(_assigned_tasks["start_date"], errors="coerce").dt.date
-            _red = pd.to_datetime(_assigned_tasks["due_date"], errors="coerce").dt.date
+            _rsd = pd.to_datetime(_assigned_tasks["start_date"],errors="coerce").dt.date
+            _red = pd.to_datetime(_assigned_tasks["due_date"],errors="coerce").dt.date
             _assigned_tasks = _assigned_tasks[(_rsd.isna() | (_rsd <= _rhi)) & (_red.isna() | (_red >= _rlo))].copy()
         _projects_assigned = list(dict.fromkeys(_assigned_tasks["project"].dropna().astype(str).tolist())) if not _assigned_tasks.empty else []
         _project_label = ", ".join(_projects_assigned) if _projects_assigned else "—"
