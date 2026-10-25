@@ -1,5 +1,3 @@
-# GANTT_FIX_2026
-# Changes: wider ID column, larger row height, improved layout proportions.
 """Vektor Project Management - High-Fidelity Streamlit Application.
 Install: pip install streamlit pandas plotly openpyxl pymongo
 Run: streamlit run vektor_project_management_app.py
@@ -2847,11 +2845,11 @@ elif page == "Gantt Chart":
             )
 
             grid_cols = 10 if scale == "Week" else (11 if scale == "Day" else 12)
-            bg_cells = "".join(f'<div style="border-right:1px solid #F1F5F9;height:40px"></div>' for _ in range(grid_cols))
+            bg_cells = "".join(f'<div style="border-right:1px solid #F1F5F9;height:32px"></div>' for _ in range(grid_cols))
 
             body_rows_html += f"""
-            <div style="display:grid;grid-template-columns:52% 48%;border-bottom:1px solid #EDF2F7;background:{rbg};align-items:center;font-size:12px">
-                <div style="display:grid;grid-template-columns:120px 2.4fr 95px 95px 70px 95px 80px;align-items:center;border-right:1px solid #E2E8F0;height:40px">
+            <div style="display:grid;grid-template-columns:46% 54%;border-bottom:1px solid #EDF2F7;background:{rbg};align-items:center;font-size:12px">
+                <div style="display:grid;grid-template-columns:110px 1.9fr 92px 92px 64px 92px 68px;align-items:center;border-right:1px solid #E2E8F0;height:32px">
                     <div style="padding-left:8px;font-weight:{fw};color:#334155;font-size:11.5px">{caret}{rid}</div>
                     <div style="padding-left:{pad_l}px;font-weight:{fw};color:#0F172A;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{ico_badge}{html.escape(rname)}</div>
                     <div style="font-weight:{fw};color:#334155;font-size:11.5px">{rstart}</div>
@@ -2860,7 +2858,7 @@ elif page == "Gantt Chart":
                     <div>{badge_html(rstat)}</div>
                     <div style="font-weight:{fw};color:#0F172A;padding-left:6px">{rpct}</div>
                 </div>
-                <div style="position:relative;height:40px">
+                <div style="position:relative;height:32px">
                     <div style="display:grid;grid-template-columns:repeat({grid_cols},1fr);position:absolute;inset:0">{bg_cells}</div>
                     {bar_el}{dep_el}{ms_el}{day_txt_el}
                 </div>
@@ -2870,8 +2868,8 @@ elif page == "Gantt Chart":
         gantt_html = clean_html(
             f"""
             <div style="border:1px solid #E2E8F0;border-radius:10px;overflow:hidden;background:white;margin-top:8px">
-                <div style="display:grid;grid-template-columns:52% 48%;border-bottom:1px solid #CBD5E1;background:#F8FAFC;align-items:end">
-                    <div style="display:grid;grid-template-columns:120px 2.4fr 95px 95px 70px 95px 80px;padding:10px 0;font-size:12px;font-weight:700;color:#1E293B;border-right:1px solid #E2E8F0">
+                <div style="display:grid;grid-template-columns:46% 54%;border-bottom:1px solid #CBD5E1;background:#F8FAFC;align-items:end">
+                    <div style="display:grid;grid-template-columns:110px 1.9fr 92px 92px 64px 92px 68px;padding:10px 0;font-size:11.5px;font-weight:700;color:#1E293B;border-right:1px solid #E2E8F0">
                         <div style="padding-left:14px">ID</div>
                         <div style="padding-left:8px">Task Name</div>
                         <div>Start Date</div>
@@ -3398,7 +3396,7 @@ elif page == "Task List":
     with th_s:
         tl_top_q = st.text_input("Search", placeholder="🔍 Search tasks, projects or assignees...", key="tl_q_top", label_visibility="collapsed")
     with th_d:
-        month_year_picker("Month / Year", "tl_d_top")
+        st.date_input("Date Range", value=(), key="tl_date_range")
     with th_b:
         if st.button("＋ Add Task", type="primary", use_container_width=True, key="tl_btn_add_top"):
             st.session_state.task_modal = ("add", None)
@@ -3636,13 +3634,13 @@ elif page == "Task List":
                 unique_task_key = f"{t_item.get('kind','task')}_{task_db_id}_{wbs_id}"
                 rc = st.columns(col_weights)
                 with rc[0]:
-                    st.markdown(f"<div style='font-size:11.5px;color:#475569;padding-top:5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis'><b style='color:#1E293B'>{html.escape(str(wbs_id))}</b></div>", unsafe_allow_html=True)
+                    st.markdown(f"<div style='font-size:11.5px;color:#475569;padding-top:5px;white-space:nowrap;overflow:visible'><b style='color:#1E293B'>{html.escape(str(wbs_id))}</b></div>", unsafe_allow_html=True)
                 with rc[1]:
                     t_ico = "◆" if t_item["ico"] == "milestone" else "▤"
                     st.markdown(
                         clean_html(
                             f"""
-                            <div style="display:flex;align-items:center;gap:7px;padding-top:4px;padding-left:{min(48, max(0, t_item.get('level', 1)-1)*16)}px">
+                            <div style="display:flex;align-items:center;gap:7px;padding-top:4px;padding-left:{min(48, max(0, t_item.get('level', 1)-1)*48)}px">
                                 <span style="display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;border-radius:4px;background:{t_item['ic_col']};color:white;font-size:9px">{t_ico}</span>
                                 <span style="font-size:12.5px;font-weight:600;color:#0F172A">{html.escape(t_item['name'])}</span>
                             </div>
@@ -7364,7 +7362,7 @@ elif page == "Settings":
                     clean_html(
                         f"""
                         <div style="display:flex;align-items:center;gap:10px;padding:4px 0">
-                            <span style="width:32px;height:40px;min-width:32px;border-radius:8px;background:#F8FAFC;border:1px solid #E2E8F0;color:{s_cl};display:inline-flex;align-items:center;justify-content:center;font-size:18px;font-weight:800">{s_ic}</span>
+                            <span style="width:32px;height:32px;min-width:32px;border-radius:8px;background:#F8FAFC;border:1px solid #E2E8F0;color:{s_cl};display:inline-flex;align-items:center;justify-content:center;font-size:18px;font-weight:800">{s_ic}</span>
                             <div>
                                 <div style="font-size:13px;font-weight:700;color:#0F172A;line-height:1.2">{s_nm}</div>
                                 <div style="font-size:11px;color:#64748B">{s_ds}</div>
