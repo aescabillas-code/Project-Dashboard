@@ -2849,7 +2849,7 @@ elif page == "Gantt Chart":
 
             body_rows_html += f"""
             <div style="display:grid;grid-template-columns:46% 54%;border-bottom:1px solid #EDF2F7;background:{rbg};align-items:center;font-size:12px">
-                <div style="display:grid;grid-template-columns:110px 1.9fr 92px 92px 64px 92px 68px;align-items:center;border-right:1px solid #E2E8F0;height:32px">
+                <div style="display:grid;grid-template-columns:52px 1.9fr 92px 92px 64px 92px 68px;align-items:center;border-right:1px solid #E2E8F0;height:32px">
                     <div style="padding-left:8px;font-weight:{fw};color:#334155;font-size:11.5px">{caret}{rid}</div>
                     <div style="padding-left:{pad_l}px;font-weight:{fw};color:#0F172A;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{ico_badge}{html.escape(rname)}</div>
                     <div style="font-weight:{fw};color:#334155;font-size:11.5px">{rstart}</div>
@@ -2869,7 +2869,7 @@ elif page == "Gantt Chart":
             f"""
             <div style="border:1px solid #E2E8F0;border-radius:10px;overflow:hidden;background:white;margin-top:8px">
                 <div style="display:grid;grid-template-columns:46% 54%;border-bottom:1px solid #CBD5E1;background:#F8FAFC;align-items:end">
-                    <div style="display:grid;grid-template-columns:110px 1.9fr 92px 92px 64px 92px 68px;padding:10px 0;font-size:11.5px;font-weight:700;color:#1E293B;border-right:1px solid #E2E8F0">
+                    <div style="display:grid;grid-template-columns:52px 1.9fr 92px 92px 64px 92px 68px;padding:10px 0;font-size:11.5px;font-weight:700;color:#1E293B;border-right:1px solid #E2E8F0">
                         <div style="padding-left:14px">ID</div>
                         <div style="padding-left:8px">Task Name</div>
                         <div>Start Date</div>
@@ -3396,7 +3396,7 @@ elif page == "Task List":
     with th_s:
         tl_top_q = st.text_input("Search", placeholder="🔍 Search tasks, projects or assignees...", key="tl_q_top", label_visibility="collapsed")
     with th_d:
-        st.date_input("Date Range", value=(), key="tl_date_range")
+        month_year_picker("Month / Year", "tl_d_top")
     with th_b:
         if st.button("＋ Add Task", type="primary", use_container_width=True, key="tl_btn_add_top"):
             st.session_state.task_modal = ("add", None)
@@ -3640,7 +3640,7 @@ elif page == "Task List":
                     st.markdown(
                         clean_html(
                             f"""
-                            <div style="display:flex;align-items:center;gap:7px;padding-top:4px;padding-left:{min(48, max(0, t_item.get('level', 1)-1)*48)}px">
+                            <div style="display:flex;align-items:center;gap:7px;padding-top:4px;padding-left:{min(48, max(0, t_item.get('level', 1)-1)*16)}px">
                                 <span style="display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;border-radius:4px;background:{t_item['ic_col']};color:white;font-size:9px">{t_ico}</span>
                                 <span style="font-size:12.5px;font-weight:600;color:#0F172A">{html.escape(t_item['name'])}</span>
                             </div>
