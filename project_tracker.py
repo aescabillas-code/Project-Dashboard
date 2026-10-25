@@ -3382,7 +3382,7 @@ elif page == "Task List":
                 st.rerun()
 
     # --- TASK LIST MAIN HEADER ---
-    th_l, th_s, th_d, th_dr, th_b = st.columns([1.8, 1.0, 0.8, 1.2, 0.65])
+    th_l, th_s, th_d, th_b = st.columns([1.9, 1.05, 0.95, 0.65])
     with th_l:
         st.markdown(
             clean_html(
@@ -3640,8 +3640,7 @@ elif page == "Task List":
                     st.markdown(
                         clean_html(
                             f"""
-                            <div style="display:flex;align-items:center;gap:8px;padding-top:4px;padding-bottom:4px;padding-left:{max(0, t_item.get('level', 1)-1)*48}px;position:relative">
-                                  <span style="color:#94A3B8;font-size:14px;font-family:monospace">{'├─' if t_item.get('level',1) > 1 else '▾'}</span>
+                            <div style="display:flex;align-items:center;gap:7px;padding-top:4px;padding-left:{min(48, max(0, t_item.get('level', 1)-1)*16)}px">
                                 <span style="display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;border-radius:4px;background:{t_item['ic_col']};color:white;font-size:9px">{t_ico}</span>
                                 <span style="font-size:12.5px;font-weight:600;color:#0F172A">{html.escape(t_item['name'])}</span>
                             </div>
